@@ -4,7 +4,7 @@ A Picture Archiving and Communication System (PACS) implementation in Go with a 
 
 ## Features
 
-- DICOM image storage and retrieval
+- DICOM image storage and retrieval using [dicom-go](https://github.com/ThalesMMS/dicom-go)
 - Modern cross-platform GUI
 - Network receiver for DICOM data
 - SQLite database for metadata storage
