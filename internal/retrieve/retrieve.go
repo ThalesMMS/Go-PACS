@@ -8,17 +8,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ThalesMMS/Go-PACS/internal/archive"
+	"github.com/ThalesMMS/Go-PACS/internal/nettimeout"
+	"github.com/ThalesMMS/Go-PACS/internal/netverify"
+	"github.com/ThalesMMS/Go-PACS/internal/nodes"
+	"github.com/ThalesMMS/Go-PACS/internal/receive"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/net/ul"
 	"github.com/ThalesMMS/dicom-go/object"
 	"github.com/ThalesMMS/dicom-go/transfer"
-	"github.com/ThalesMMS/Go-PACS/internal/archive"
-	"github.com/ThalesMMS/Go-PACS/internal/nettimeout"
-	"github.com/ThalesMMS/Go-PACS/internal/netverify"
-	"github.com/ThalesMMS/Go-PACS/internal/nodes"
-	"github.com/ThalesMMS/Go-PACS/internal/receive"
 )
 
 const DefaultTimeout = 60 * time.Second

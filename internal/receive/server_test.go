@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ThalesMMS/dicom-go/core"
-	"github.com/ThalesMMS/dicom-go/dictionary/std"
-	"github.com/ThalesMMS/dicom-go/object"
-	"github.com/ThalesMMS/dicom-go/transfer"
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/netverify"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/Go-PACS/internal/send"
+	"github.com/ThalesMMS/dicom-go/core"
+	"github.com/ThalesMMS/dicom-go/dictionary/std"
+	"github.com/ThalesMMS/dicom-go/object"
+	"github.com/ThalesMMS/dicom-go/transfer"
 )
 
 const (

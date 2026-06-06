@@ -11,14 +11,14 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/ThalesMMS/Go-PACS/internal/archive"
+	"github.com/ThalesMMS/Go-PACS/internal/netverify"
+	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/net/ul"
 	"github.com/ThalesMMS/dicom-go/object"
 	"github.com/ThalesMMS/dicom-go/transfer"
-	"github.com/ThalesMMS/Go-PACS/internal/archive"
-	"github.com/ThalesMMS/Go-PACS/internal/netverify"
-	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 )
 
 const (

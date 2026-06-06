@@ -79,6 +79,29 @@ func TestApplyCompactTableRowsSetsDenseDefaultHeight(t *testing.T) {
 	}
 }
 
+func TestStudyTableUsesReferenceArchiveRowHeight(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+
+	table := newStudyTable(state)
+
+	rowHeights := reflect.ValueOf(table).Elem().FieldByName("rowHeights")
+	defaultHeight := rowHeights.MapIndex(reflect.ValueOf(-1))
+	if !defaultHeight.IsValid() {
+		t.Fatal("archive study table should set the default row height")
+	}
+	got := defaultHeight.Float()
+	if got != float64(archiveTableRowHeight) {
+		t.Fatalf("archive study table row height = %v, want %v", got, archiveTableRowHeight)
+	}
+	if archiveTableRowHeight <= compactTableRowHeight {
+		t.Fatalf("archive row height = %v, want taller than generic compact rows", archiveTableRowHeight)
+	}
+	if archiveTableRowHeight >= networkTableRowHeight {
+		t.Fatalf("archive row height = %v, want below network rows with native controls", archiveTableRowHeight)
+	}
+}
+
 func TestRecordOperationPrependsAndCapsHistory(t *testing.T) {
 	state := &uiState{}
 	for i := 0; i < maxTaskHistory+2; i++ {
@@ -258,7 +281,7 @@ func TestNewActivityDismissButtonIsCompactIconOnly(t *testing.T) {
 	}
 }
 
-func TestNewQueryRetrieveButtonIsNativeIconOnly(t *testing.T) {
+func TestNewQueryRetrieveButtonIsGreenIconOnly(t *testing.T) {
 	tapped := 0
 	button := newQueryRetrieveButton(func() {
 		tapped++
@@ -267,8 +290,8 @@ func TestNewQueryRetrieveButtonIsNativeIconOnly(t *testing.T) {
 	if button.Text != "" {
 		t.Fatalf("button text = %q, want empty icon-only button", button.Text)
 	}
-	if button.Icon == nil || button.Icon.Name() != theme.DownloadIcon().Name() {
-		t.Fatalf("button icon = %#v, want download icon", button.Icon)
+	if button.Icon == nil || button.Icon.Name() != queryRetrieveRowIconResource.Name() {
+		t.Fatalf("button icon = %#v, want green row retrieve icon", button.Icon)
 	}
 	if button.Importance != widget.LowImportance {
 		t.Fatalf("button importance = %v, want LowImportance", button.Importance)
@@ -305,11 +328,35 @@ func TestArchiveActivityRowsMarkRecentOperationsDismissible(t *testing.T) {
 	if !strings.Contains(rows[0].Detail, "remote-a") || !strings.Contains(rows[0].Detail, "3/5") {
 		t.Fatalf("active retrieve detail = %q, want source and progress counts", rows[0].Detail)
 	}
-	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "import success") {
+	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "Import Success") {
 		t.Fatalf("first operation row = %#v", rows[1])
 	}
-	if !rows[2].Dismissible || rows[2].OperationIndex != 1 || !strings.Contains(rows[2].Text, "send_store warning") {
+	if !rows[2].Dismissible || rows[2].OperationIndex != 1 || !strings.Contains(rows[2].Text, "Send Warning") {
 		t.Fatalf("second operation row = %#v", rows[2])
+	}
+}
+
+func TestArchiveActivityHistoryUsesCompactCountLabels(t *testing.T) {
+	sent := uint64(3)
+	failed := uint64(1)
+	zeroWarnings := uint64(0)
+	summary := operations.Summary{
+		Kind:   operations.KindSendStore,
+		Status: operations.StatusWarning,
+		Counts: operations.Counts{
+			Sent:    &sent,
+			Failed:  &failed,
+			Skipped: &zeroWarnings,
+		},
+	}
+
+	got := archiveActivityHistoryText(summary)
+
+	if got != "Send Warning sent 3, fail 1" {
+		t.Fatalf("activity history text = %q, want compact count labels", got)
+	}
+	if strings.Contains(got, "failed") || strings.Contains(got, "skipped 0") {
+		t.Fatalf("activity history text should avoid verbose or zero counts: %q", got)
 	}
 }
 
@@ -326,10 +373,10 @@ func TestArchiveActivityRowsShowsActiveQueryBeforeHistory(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("len(rows) = %d, want 2", len(rows))
 	}
-	if rows[0].Text != "Querying..." || rows[0].Detail != "Study C-FIND 2 sources" || rows[0].Dismissible || rows[0].OperationIndex != -1 {
+	if rows[0].Text != "Querying..." || rows[0].Detail != "2 sources" || rows[0].Dismissible || rows[0].OperationIndex != -1 {
 		t.Fatalf("active query row = %#v, want non-dismissible query row", rows[0])
 	}
-	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "import success") {
+	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "Import Success") {
 		t.Fatalf("history row = %#v", rows[1])
 	}
 }
@@ -352,7 +399,7 @@ func TestArchiveActivityRowsShowsActiveQueryProgressCounts(t *testing.T) {
 	if rows[0].Text != "Querying..." {
 		t.Fatalf("active query text = %q, want Querying...", rows[0].Text)
 	}
-	for _, want := range []string{"Study C-FIND 3 sources", "2/3 src", "14 match", "1 fail"} {
+	for _, want := range []string{"3 sources", "2/3 src", "14 match", "1 fail"} {
 		if !strings.Contains(rows[0].Detail, want) {
 			t.Fatalf("active query progress detail missing %q in %q", want, rows[0].Detail)
 		}
@@ -372,10 +419,10 @@ func TestArchiveActivityRowsShowsActiveSendBeforeHistory(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("len(rows) = %d, want 2", len(rows))
 	}
-	if rows[0].Text != "Sending..." || rows[0].Detail != "Study C-STORE remote-a" || rows[0].Dismissible || rows[0].OperationIndex != -1 {
+	if rows[0].Text != "Sending..." || rows[0].Detail != "remote-a" || rows[0].Dismissible || rows[0].OperationIndex != -1 {
 		t.Fatalf("active send row = %#v, want non-dismissible send row", rows[0])
 	}
-	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "import success") {
+	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "Import Success") {
 		t.Fatalf("history row = %#v", rows[1])
 	}
 }
@@ -398,7 +445,7 @@ func TestArchiveActivityRowsShowsActiveSendProgressCounts(t *testing.T) {
 	if rows[0].Text != "Sending..." {
 		t.Fatalf("active send text = %q, want Sending...", rows[0].Text)
 	}
-	for _, want := range []string{"Study C-STORE remote-a", "3/5", "sent 2", "fail 1"} {
+	for _, want := range []string{"remote-a", "3/5", "sent 2", "fail 1"} {
 		if !strings.Contains(rows[0].Detail, want) {
 			t.Fatalf("active send progress detail missing %q in %q", want, rows[0].Detail)
 		}
@@ -421,7 +468,7 @@ func TestArchiveActivityRowsShowsActiveImportBeforeHistory(t *testing.T) {
 	if rows[0].Text != "Importing..." || rows[0].Detail != "folder-a" || rows[0].Dismissible || rows[0].OperationIndex != -1 {
 		t.Fatalf("active import row = %#v, want non-dismissible import row", rows[0])
 	}
-	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "send_store success") {
+	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "Send Success") {
 		t.Fatalf("history row = %#v", rows[1])
 	}
 }
@@ -472,7 +519,7 @@ func TestArchiveActivityRowsUseCompactProgressWording(t *testing.T) {
 	beginSendActivity(state, "Study C-STORE remote-a")
 	recordSendActivityProgress(state, send.Progress{Attempted: 3, Sent: 2, Failed: 1, Warnings: 1, Total: 5})
 	sendRow := archiveActivityRows(state)[0].Detail
-	for _, want := range []string{"3/5 sent 2", "fail 1", "warn 1"} {
+	for _, want := range []string{"3/5 files", "sent 2", "fail 1", "warn 1"} {
 		if !strings.Contains(sendRow, want) {
 			t.Fatalf("compact send activity detail missing %q in %q", want, sendRow)
 		}
@@ -490,6 +537,45 @@ func TestArchiveActivityRowsUseCompactProgressWording(t *testing.T) {
 	for _, reject := range []string{"scanned", "stored", "duplicates"} {
 		if strings.Contains(importRow, reject) {
 			t.Fatalf("compact import activity detail should not contain %q in %q", reject, importRow)
+		}
+	}
+}
+
+func TestArchiveActivityRowsHideDIMSEOperationWordsFromActiveDetails(t *testing.T) {
+	state := &uiState{}
+
+	beginQueryActivity(state, "Study C-FIND 3 sources")
+	recordQueryActivityProgress(state, queryActivityProgress{Attempted: 2, Total: 3, Matches: 14, Failures: 1})
+	queryRow := archiveActivityRows(state)[0]
+	if queryRow.Text != "Querying..." {
+		t.Fatalf("query activity text = %q", queryRow.Text)
+	}
+	for _, reject := range []string{"Study C-FIND", "C-FIND"} {
+		if strings.Contains(queryRow.Detail, reject) {
+			t.Fatalf("query activity detail should hide %q in %q", reject, queryRow.Detail)
+		}
+	}
+	for _, want := range []string{"3 sources", "2/3 src", "14 match", "1 fail"} {
+		if !strings.Contains(queryRow.Detail, want) {
+			t.Fatalf("query activity detail missing %q in %q", want, queryRow.Detail)
+		}
+	}
+
+	clearActiveQueryActivity(state)
+	beginSendActivity(state, "Study C-STORE remote-a")
+	recordSendActivityProgress(state, send.Progress{Attempted: 3, Sent: 2, Failed: 1, Warnings: 1, Total: 5})
+	sendRow := archiveActivityRows(state)[0]
+	if sendRow.Text != "Sending..." {
+		t.Fatalf("send activity text = %q", sendRow.Text)
+	}
+	for _, reject := range []string{"Study C-STORE", "C-STORE"} {
+		if strings.Contains(sendRow.Detail, reject) {
+			t.Fatalf("send activity detail should hide %q in %q", reject, sendRow.Detail)
+		}
+	}
+	for _, want := range []string{"remote-a", "3/5 files", "sent 2", "fail 1", "warn 1"} {
+		if !strings.Contains(sendRow.Detail, want) {
+			t.Fatalf("send activity detail missing %q in %q", want, sendRow.Detail)
 		}
 	}
 }
@@ -550,7 +636,7 @@ func TestArchiveActivityListRendersRetrieveDetailLine(t *testing.T) {
 	if findLabelContaining(item, "Retrieving images...") == nil {
 		t.Fatal("active retrieve Activity row should render the primary retrieving label")
 	}
-	detail := findLabelContaining(item, "remote-a 8/10 done, fail 1, warn 4")
+	detail := findLabelContaining(item, "remote-a 8/10 img, fail 1, warn 4")
 	if detail == nil {
 		t.Fatal("active retrieve Activity row should render source/counts in a secondary detail label")
 	}
@@ -667,6 +753,30 @@ func TestArchiveActivityRowDismissControlUsesTrailingSpacer(t *testing.T) {
 	}
 	if !dismiss.Visible() || dismiss.OnTapped == nil {
 		t.Fatal("activity row trailing dismiss button should remain visible and actionable for history rows")
+	}
+}
+
+func TestArchiveActivityRowUsesRailSpecificVerticalPadding(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	beginSendActivity(state, "Study C-STORE remote-a")
+	recordSendActivityProgress(state, send.Progress{Attempted: 1, Total: 2})
+	list := newArchiveActivityList(widget.NewLabel(""), state)
+	item := list.CreateItem()
+
+	list.UpdateItem(0, item)
+
+	stack := item.(*fyne.Container)
+	content := stack.Objects[1].(*fyne.Container)
+	padding, ok := content.Layout.(layout.CustomPaddedLayout)
+	if !ok {
+		t.Fatalf("activity row content layout = %T, want custom padded layout", content.Layout)
+	}
+	if padding.TopPadding < 3 || padding.BottomPadding < 3 {
+		t.Fatalf("activity row vertical padding = %.1f/%.1f, want at least 3 px for two-line rail rows", padding.TopPadding, padding.BottomPadding)
+	}
+	if padding.LeftPadding != tableCellHorizontalPadding || padding.RightPadding != tableCellHorizontalPadding {
+		t.Fatalf("activity row horizontal padding = %.1f/%.1f, want table horizontal rhythm %.1f", padding.LeftPadding, padding.RightPadding, tableCellHorizontalPadding)
 	}
 }
 
@@ -793,7 +903,7 @@ func TestBeginAndClearQueryActivityRefreshArchiveChrome(t *testing.T) {
 	if state.activeQueryActivityLabel != "Series C-FIND remote-a" {
 		t.Fatalf("activeQueryActivityLabel = %q", state.activeQueryActivityLabel)
 	}
-	if state.archiveActivity.Text != "Querying... Series C-FIND remote-a" {
+	if state.archiveActivity.Text != "Querying... remote-a" {
 		t.Fatalf("archive activity = %q", state.archiveActivity.Text)
 	}
 
@@ -815,7 +925,7 @@ func TestBeginAndClearSendActivityRefreshArchiveChrome(t *testing.T) {
 	if state.activeSendActivityLabel != "Series C-STORE remote-a" {
 		t.Fatalf("activeSendActivityLabel = %q", state.activeSendActivityLabel)
 	}
-	if state.archiveActivity.Text != "Sending... Series C-STORE remote-a" {
+	if state.archiveActivity.Text != "Sending... remote-a" {
 		t.Fatalf("archive activity = %q", state.archiveActivity.Text)
 	}
 
@@ -882,7 +992,7 @@ func TestDismissArchiveActivityRowRemovesSingleOperationAndPersistsHistory(t *te
 	if status.Text != "Activity row dismissed" {
 		t.Fatalf("status = %q", status.Text)
 	}
-	if !strings.Contains(state.archiveActivity.Text, "send_store warning") || strings.Contains(state.archiveActivity.Text, "import success") {
+	if !strings.Contains(state.archiveActivity.Text, "Send Warning") || strings.Contains(state.archiveActivity.Text, "Import Success") {
 		t.Fatalf("archive activity = %q", state.archiveActivity.Text)
 	}
 	history, err := operations.LoadHistory(historyPath)
@@ -1178,10 +1288,10 @@ func TestQueryResultSummaryTextUsesActiveQueryLevel(t *testing.T) {
 		kind queryRunKind
 		want string
 	}{
-		{name: "patient", kind: queryRunPatient, want: "2 patients found\nno source selected"},
-		{name: "series", kind: queryRunSeries, want: "2 series found\nno source selected"},
-		{name: "image", kind: queryRunImage, want: "2 images found\nno source selected"},
-		{name: "study singular", kind: queryRunStudy, want: "1 study found\nno source selected"},
+		{name: "patient", kind: queryRunPatient, want: "2 patients found"},
+		{name: "series", kind: queryRunSeries, want: "2 series found"},
+		{name: "image", kind: queryRunImage, want: "2 images found"},
+		{name: "study singular", kind: queryRunStudy, want: "1 study found"},
 	}
 
 	for _, tt := range tests {
@@ -1424,7 +1534,7 @@ func TestRefreshQueryResultSummaryUpdatesLabel(t *testing.T) {
 
 	refreshQueryResultSummary(state)
 
-	if label.Text != "1 study found\nno source selected" {
+	if label.Text != "1 study found" {
 		t.Fatalf("summary label = %q", label.Text)
 	}
 }
@@ -1466,6 +1576,32 @@ func TestQueryModalityColumnsMatchReferenceTwoColumnGrid(t *testing.T) {
 	}
 	if strings.Join(flattened, "|") != strings.Join(queryModalityCodes, "|") {
 		t.Fatalf("flattened modality columns = %q, want %q", strings.Join(flattened, "|"), strings.Join(queryModalityCodes, "|"))
+	}
+}
+
+func TestQueryModalityGridUsesStableCheckboxSlots(t *testing.T) {
+	checks := newQueryModalityChecks()
+	grid, ok := queryModalityGrid(checks).(*fyne.Container)
+	if !ok {
+		t.Fatalf("modality grid = %T, want container", queryModalityGrid(checks))
+	}
+	if len(grid.Objects) != 2 {
+		t.Fatalf("modality grid columns = %d, want 2", len(grid.Objects))
+	}
+	for columnIndex, columnObj := range grid.Objects {
+		column, ok := columnObj.(*fyne.Container)
+		if !ok {
+			t.Fatalf("modality column %d = %T, want container", columnIndex, columnObj)
+		}
+		for rowIndex, slotObj := range column.Objects {
+			slot, ok := slotObj.(*fyne.Container)
+			if !ok {
+				t.Fatalf("modality check %d/%d = %T, want stable slot container", columnIndex, rowIndex, slotObj)
+			}
+			if got := slot.MinSize().Width; got != 64 {
+				t.Fatalf("modality check slot %d/%d width = %.0f, want 64", columnIndex, rowIndex, got)
+			}
+		}
 	}
 }
 
@@ -1605,14 +1741,20 @@ func TestQueryDatePresetRadioGridKeepsSingleSelectionAcrossColumns(t *testing.T)
 func TestQueryDatePresetOptionsIncludeOn(t *testing.T) {
 	joined := strings.Join(queryDatePresetOptions, "|")
 	if !strings.Contains(joined, queryDatePresetOn) {
-		t.Fatalf("queryDatePresetOptions = %q, want On", joined)
+		t.Fatalf("queryDatePresetOptions = %q, want On:", joined)
+	}
+	if queryDatePresetOn != "On:" {
+		t.Fatalf("On preset label = %q, want On:", queryDatePresetOn)
 	}
 }
 
 func TestQueryDatePresetOptionsIncludeBetween(t *testing.T) {
 	joined := strings.Join(queryDatePresetOptions, "|")
 	if !strings.Contains(joined, queryDatePresetBetween) {
-		t.Fatalf("queryDatePresetOptions = %q, want Between", joined)
+		t.Fatalf("queryDatePresetOptions = %q, want Between:", joined)
+	}
+	if queryDatePresetBetween != "Between:" {
+		t.Fatalf("Between preset label = %q, want Between:", queryDatePresetBetween)
 	}
 }
 
@@ -1673,6 +1815,29 @@ func TestQueryDateTimePresetRangeWithOnDate(t *testing.T) {
 	}
 	if dateFrom != "20260604" || dateTo != "20260604" || timeFrom != "" || timeTo != "" {
 		t.Fatalf("range = %q/%q %q/%q, want 20260604/20260604 empty time", dateFrom, dateTo, timeFrom, timeTo)
+	}
+}
+
+func TestQueryDateTimePresetRangeAcceptsLegacyManualLabels(t *testing.T) {
+	dateFrom, dateTo, timeFrom, timeTo, ok := queryDateTimePresetRangeWithInputs("On", "20260604", "", time.Now())
+	if !ok {
+		t.Fatal("legacy On preset should remain supported")
+	}
+	if dateFrom != "20260604" || dateTo != "20260604" || timeFrom != "" || timeTo != "" {
+		t.Fatalf("legacy On range = %q/%q %q/%q, want 20260604/20260604 empty time", dateFrom, dateTo, timeFrom, timeTo)
+	}
+	if !queryDatePresetPreservesManualRange("Between") {
+		t.Fatal("legacy Between preset should preserve manual date/time range fields")
+	}
+}
+
+func TestAutoQueryCriteriaForStateNormalizesLegacyManualDatePreset(t *testing.T) {
+	state := &uiState{autoQueryDatePreset: "On"}
+
+	criteria := autoQueryCriteriaForState(state)
+
+	if criteria.DatePreset != queryDatePresetOn {
+		t.Fatalf("auto query criteria date preset = %q, want %q", criteria.DatePreset, queryDatePresetOn)
 	}
 }
 
@@ -1933,6 +2098,20 @@ func TestWorkbenchWindowTitleLabelPreservesMutableTitleInHeaderChrome(t *testing
 	}
 }
 
+func TestWorkbenchCenteredTitleUsesTruncation(t *testing.T) {
+	label := workbenchCenteredTitle("Maria Antonia De Cristo Oliveira Com Nome Muito Longo")
+
+	if label.Alignment != fyne.TextAlignCenter {
+		t.Fatalf("centered title alignment = %v, want center", label.Alignment)
+	}
+	if !label.TextStyle.Bold {
+		t.Fatal("centered title should remain bold")
+	}
+	if label.Wrapping != fyne.TextTruncate {
+		t.Fatalf("centered title wrapping = %v, want truncate for narrow reference headers", label.Wrapping)
+	}
+}
+
 func TestAutoQueryTitleAndProfileControlsShareHeaderChrome(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
@@ -2096,8 +2275,8 @@ func TestQueryQuickSearchNameSegmentUsesReferenceCompactWidth(t *testing.T) {
 	if !ok || len(row.Objects) == 0 {
 		t.Fatal("Query quick-search strip should expose segment slots")
 	}
-	if got := row.Objects[0].MinSize().Width; got > 104 {
-		t.Fatalf("Name query quick-search segment width = %.1f, want at most 104 like the compact reference segment", got)
+	if got := row.Objects[0].MinSize().Width; got > 80 {
+		t.Fatalf("Name query quick-search segment width = %.1f, want at most 80 like the compact reference segment", got)
 	}
 }
 
@@ -2172,11 +2351,74 @@ func TestQueryQuickSearchFieldStripUsesNeutralSelectedSegment(t *testing.T) {
 	if active == nil || inactive == nil {
 		t.Fatal("Query quick-search strip should expose active and inactive segment buttons")
 	}
-	if active.Importance != widget.MediumImportance {
-		t.Fatalf("active query quick-search segment importance = %v, want MediumImportance", active.Importance)
+	if active.Importance != widget.LowImportance {
+		t.Fatalf("active query quick-search segment importance = %v, want LowImportance because selected state is shown by the neutral pill fill", active.Importance)
 	}
 	if inactive.Importance != widget.LowImportance {
 		t.Fatalf("inactive query quick-search segment importance = %v, want LowImportance", inactive.Importance)
+	}
+}
+
+func TestQueryQuickSearchFieldStripHighlightsSelectedSegmentWithRoundedNeutralFill(t *testing.T) {
+	fynetest.NewApp()
+	selectWidget := widget.NewSelect(queryQuickSearchOptions, nil)
+	selectWidget.SetSelected(queryQuickSearchPatientName)
+	wantFill := color.NRGBA{R: 82, G: 82, B: 82, A: 255}
+
+	strip := newQueryQuickSearchFieldStrip(selectWidget, widget.NewEntry())
+	scroll := findHorizontalScroll(strip)
+	if scroll == nil {
+		t.Fatal("Query quick-search field strip should be horizontally scrollable")
+	}
+
+	if got := countCanvasRoundedRectanglesWithColor(scroll.Content, wantFill); got != 1 {
+		t.Fatalf("selected query quick-search segment fills = %d, want one rounded neutral fill", got)
+	}
+	patientIDButton := findButtonWithText(strip, queryQuickSearchPatientID)
+	if patientIDButton == nil || patientIDButton.OnTapped == nil {
+		t.Fatalf("Query quick-search strip should expose actionable %q field", queryQuickSearchPatientID)
+	}
+	patientIDButton.OnTapped()
+	if got := countCanvasRoundedRectanglesWithColor(scroll.Content, wantFill); got != 1 {
+		t.Fatalf("selected query quick-search segment fills after selection = %d, want one rounded neutral fill", got)
+	}
+}
+
+func TestQueryQuickSearchSelectedSegmentFillUsesReferenceInset(t *testing.T) {
+	fynetest.NewApp()
+	selectWidget := widget.NewSelect(queryQuickSearchOptions, nil)
+	selectWidget.SetSelected(queryQuickSearchPatientName)
+	wantFill := color.NRGBA{R: 82, G: 82, B: 82, A: 255}
+	wantHorizontalInset := float32(3)
+	wantVerticalInset := float32(2)
+
+	strip := newQueryQuickSearchFieldStrip(selectWidget, widget.NewEntry())
+	scroll := findHorizontalScroll(strip)
+	if scroll == nil {
+		t.Fatal("Query quick-search field strip should be horizontally scrollable")
+	}
+	stack, ok := scroll.Content.(*fyne.Container)
+	if !ok || len(stack.Objects) < 2 {
+		t.Fatal("Query quick-search strip should wrap segments in workstation chrome")
+	}
+	row, ok := stack.Objects[1].(*fyne.Container)
+	if !ok || len(row.Objects) == 0 {
+		t.Fatal("Query quick-search strip should expose segment slots")
+	}
+
+	segment := row.Objects[0]
+	segmentSize := segment.MinSize()
+	segment.Resize(segmentSize)
+	fill := findCanvasRoundedRectangleWithColor(segment, wantFill)
+	if fill == nil {
+		t.Fatal("selected query quick-search segment should expose a rounded neutral fill")
+	}
+	if fill.Position().X < wantHorizontalInset || fill.Position().Y < wantVerticalInset {
+		t.Fatalf("selected query quick-search segment fill position = %v, want inset at least %.1fx%.1f", fill.Position(), wantHorizontalInset, wantVerticalInset)
+	}
+	if fill.Size().Width > segmentSize.Width-(wantHorizontalInset*2) ||
+		fill.Size().Height > segmentSize.Height-(wantVerticalInset*2) {
+		t.Fatalf("selected query quick-search segment fill size = %v in segment %v, want inset fill", fill.Size(), segmentSize)
 	}
 }
 
@@ -2237,6 +2479,18 @@ func TestQuerySearchBarFieldMenuAffordanceCanBeActionable(t *testing.T) {
 	menuButton.OnTapped()
 	if !tapped {
 		t.Fatal("Query search bar field-menu disclosure should invoke the menu callback")
+	}
+}
+
+func TestQuerySearchBarUsesStableReferenceWidth(t *testing.T) {
+	fynetest.NewApp()
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder("Patient Name")
+
+	bar := newQuerySearchBar(entry, nil)
+
+	if !findEntrySlotWithPlaceholderAndExactWidth(bar, "Patient Name", querySearchBarEntryWidth) {
+		t.Fatalf("Query search bar entry should sit in a stable %.0f px reference slot", querySearchBarEntryWidth)
 	}
 }
 
@@ -2460,11 +2714,11 @@ func TestArchiveWorkbenchUsesNarrowReferenceLeftRail(t *testing.T) {
 	offsets := collectSplitOffsets(workbench)
 
 	for _, offset := range offsets {
-		if offset >= 0.11 && offset <= 0.14 {
+		if offset >= 0.10 && offset <= 0.12 {
 			return
 		}
 	}
-	t.Fatalf("archive workbench split offsets = %#v, want left rail offset around 0.13 like the reference sidebar", offsets)
+	t.Fatalf("archive workbench split offsets = %#v, want left rail offset around 0.11 like the wide reference sidebar", offsets)
 }
 
 func TestQueryTabPlacesDateAndModalityPanelsSideBySide(t *testing.T) {
@@ -2559,8 +2813,8 @@ func TestQueryModalityFilterPanelUsesReferenceNarrowWidth(t *testing.T) {
 	if !ok || len(row.Objects) != 2 {
 		t.Fatal("Query Date/Modalities panel should keep Date and Modalities slots")
 	}
-	if got := row.Objects[1].MinSize().Width; got > 170 {
-		t.Fatalf("Query Modalities panel width = %.1f, want at most 170 for the compact reference modality block", got)
+	if got := row.Objects[1].MinSize().Width; got > 154 {
+		t.Fatalf("Query Modalities panel width = %.1f, want at most 154 for the compact reference modality block", got)
 	}
 }
 
@@ -2807,6 +3061,18 @@ func TestQueryTabUsesIconOnlyRefreshButton(t *testing.T) {
 	}
 }
 
+func TestQueryRefreshButtonUsesCompactIconSlot(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findButtonIconSlotWithMinSize(tab, theme.ViewRefreshIcon(), autoQueryProfileIconSlotSize) {
+		t.Fatal("Query refresh button should sit in a compact fixed icon slot")
+	}
+}
+
 func TestQueryActionStripGroupsDestinationWithPrimaryActions(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
@@ -2891,6 +3157,19 @@ func TestQueryPrimaryActionStripUsesStableButtonSlots(t *testing.T) {
 	}
 }
 
+func TestQueryPrimaryActionStripUsesInternalDividers(t *testing.T) {
+	fynetest.NewApp()
+	queryButton := widget.NewButton(queryActionLabelQuery, nil)
+	patientButton := widget.NewButton(queryActionLabelPatient, nil)
+	retrieveButton := widget.NewButton(queryActionLabelRetrieve, nil)
+
+	strip := newQueryPrimaryActionStrip(queryButton, patientButton, retrieveButton)
+
+	if got := countCanvasRectanglesWithColor(strip, tableColumnDividerColor); got < 4 {
+		t.Fatalf("Query primary action strip divider rectangles = %d, want internal action dividers plus outer chrome", got)
+	}
+}
+
 func TestQueryPrimaryActionStripUsesReferenceCompactQuerySlot(t *testing.T) {
 	fynetest.NewApp()
 	queryButton := widget.NewButton(queryActionLabelQuery, nil)
@@ -2908,8 +3187,8 @@ func TestQueryPrimaryActionStripUsesReferenceCompactQuerySlot(t *testing.T) {
 	if !ok || len(row.Objects) == 0 {
 		t.Fatal("Query primary action strip should keep action buttons in a row")
 	}
-	if got := row.Objects[0].MinSize().Width; got > 104 {
-		t.Fatalf("Query primary action button slot width = %.1f, want at most 104 like the compact reference action strip", got)
+	if got := row.Objects[0].MinSize().Width; got > 92 {
+		t.Fatalf("Query primary action button slot width = %.1f, want at most 92 like the compact reference action strip", got)
 	}
 }
 
@@ -2954,15 +3233,15 @@ func TestQueryRefreshCadenceUsesCompactReferenceSlot(t *testing.T) {
 	}
 }
 
-func TestQueryRefreshClusterUsesStableCountdownSlot(t *testing.T) {
+func TestQueryRefreshClusterHidesDormantCountdownText(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
 	status := widget.NewLabel("")
 
 	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
 
-	if !findLabelSlotWithPrefixAndMinWidth(tab, "Next:", queryRefreshCountdownSlotWidth) {
-		t.Fatal("Query refresh countdown label should sit in a stable-width slot")
+	if findLabelWithText(tab, "Next: --:--") != nil {
+		t.Fatal("Query refresh cluster should hide dormant countdown text in Don't refresh mode")
 	}
 }
 
@@ -3059,9 +3338,9 @@ func TestQueryPrimaryActionButtonsUseCompactImportance(t *testing.T) {
 func TestMainToolbarButtonLabelsAreCompact(t *testing.T) {
 	labels := mainToolbarButtonLabels()
 	want := []string{
-		"Import", "Export", "Open", "Inspect", "Folder", "Refresh",
-		"Query", "Send", "Send Series", "Send Image", "Get Series", "Get Image",
-		"Cancel", "Anonymize", "Meta-Data", "Add", "Edit", "Delete", "Verify", "Listen", "Stop", "Settings",
+		"Import", "Export", "Query", "Send", "Anonymize", "Meta-Data", "Delete",
+		"Open", "Inspect", "Folder", "Refresh", "Send Series", "Send Image", "Get Series", "Get Image",
+		"Cancel", "Add", "Edit", "Verify", "Listen", "Stop", "Settings",
 	}
 
 	if strings.Join(labels, "|") != strings.Join(want, "|") {
@@ -3077,10 +3356,12 @@ func TestMainToolbarButtonLabelsAreCompact(t *testing.T) {
 func TestMainToolbarButtonGroupsSeparateOperationalClusters(t *testing.T) {
 	groups := mainToolbarButtonGroups()
 	want := [][]string{
-		{"Import", "Export", "Open", "Inspect", "Folder", "Refresh"},
-		{"Query", "Send", "Send Series", "Send Image"},
-		{"Get Series", "Get Image", "Cancel"},
-		{"Anonymize", "Meta-Data", "Add", "Edit", "Delete", "Verify"},
+		{"Import", "Export"},
+		{"Query", "Send"},
+		{"Anonymize", "Meta-Data", "Delete"},
+		{"Open", "Inspect", "Folder", "Refresh"},
+		{"Send Series", "Send Image", "Get Series", "Get Image", "Cancel"},
+		{"Add", "Edit", "Verify"},
 		{"Listen", "Stop", "Settings"},
 	}
 
@@ -3103,6 +3384,28 @@ func TestMainToolbarDisabledLabelsExposeUnavailableParityActions(t *testing.T) {
 
 	if strings.Join(labels, "|") != strings.Join(want, "|") {
 		t.Fatalf("disabled toolbar labels = %q, want %q", strings.Join(labels, "|"), strings.Join(want, "|"))
+	}
+}
+
+func TestMainToolbarPrimaryIconsMatchReferenceDirections(t *testing.T) {
+	tests := []struct {
+		label string
+		want  string
+	}{
+		{toolbarLabelImport, "main-toolbar-transfer-down-green.svg"},
+		{toolbarLabelExport, "main-toolbar-transfer-up-blue.svg"},
+		{toolbarLabelQuery, "main-toolbar-transfer-down-green.svg"},
+		{toolbarLabelSendStudy, "main-toolbar-transfer-up-blue.svg"},
+		{toolbarLabelAnonymize, "main-toolbar-anonymize-question.svg"},
+		{toolbarLabelMetaData, "main-toolbar-metadata-warning.svg"},
+		{toolbarLabelDelete, "main-toolbar-delete-trash.svg"},
+	}
+
+	for _, tt := range tests {
+		got := mainToolbarIconResource(tt.label)
+		if got == nil || got.Name() != tt.want {
+			t.Fatalf("toolbar icon for %q = %v, want %s", tt.label, got, tt.want)
+		}
 	}
 }
 
@@ -3136,6 +3439,17 @@ func TestGroupedToolbarActionsUseStableGroupSeparatorSlots(t *testing.T) {
 	want := len(mainToolbarButtonGroups()) - 1
 	if got := countToolbarGroupSeparatorSlots(actions); got != want {
 		t.Fatalf("toolbar group separator slots = %d, want %d", got, want)
+	}
+}
+
+func TestMainToolbarCompositionOmitsBrandText(t *testing.T) {
+	toolbar := newMainToolbar(widget.NewLabel("status"), widget.NewLabel("actions"), widget.NewLabel("search"))
+
+	if findLabelWithText(toolbar, "go-pacs") != nil {
+		t.Fatal("main toolbar should not render a competing go-pacs text label")
+	}
+	if findLabelWithText(toolbar, "actions") == nil || findLabelWithText(toolbar, "search") == nil {
+		t.Fatal("main toolbar should preserve actions and search content")
 	}
 }
 
@@ -3242,6 +3556,17 @@ func TestMainToolbarActionUsesStableCaptionSlot(t *testing.T) {
 	}
 	if label.Alignment != fyne.TextAlignCenter {
 		t.Fatalf("toolbar action caption alignment = %v, want center", label.Alignment)
+	}
+}
+
+func TestMainToolbarCaptionUsesNonMonospaceText(t *testing.T) {
+	action := mainToolbarAction("Meta-Data", theme.SearchIcon(), nil)
+	label := findLabelContaining(action, "Meta-Data")
+	if label == nil {
+		t.Fatal("toolbar action caption should contain the action label")
+	}
+	if label.TextStyle.Monospace {
+		t.Fatal("toolbar action captions should not inherit table/rail monospace styling")
 	}
 }
 
@@ -5021,6 +5346,38 @@ func TestAutoQueryResultSummaryTextShowsCheckedSources(t *testing.T) {
 	}
 }
 
+func TestAutoQueryResultSummaryTextUsesActiveQueryLevel(t *testing.T) {
+	tests := []struct {
+		name string
+		kind queryRunKind
+		want string
+	}{
+		{name: "patient", kind: queryRunPatient, want: "2 patients found\nno source selected"},
+		{name: "series", kind: queryRunSeries, want: "2 series found\nno source selected"},
+		{name: "image", kind: queryRunImage, want: "2 images found\nno source selected"},
+		{name: "study singular", kind: queryRunStudy, want: "1 study found\nno source selected"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queries := []query.Match{{}, {}}
+			if strings.Contains(tt.name, "singular") {
+				queries = queries[:1]
+			}
+			state := &uiState{
+				queries:       queries,
+				autoQueryLast: lastQueryRequest{kind: tt.kind},
+			}
+
+			text := autoQueryResultSummaryText(state)
+
+			if text != tt.want {
+				t.Fatalf("auto Q/R summary = %q, want %q", text, tt.want)
+			}
+		})
+	}
+}
+
 func TestAutoQueryResultSummaryTextUsesResultSources(t *testing.T) {
 	state := &uiState{
 		queries: []query.Match{
@@ -5209,6 +5566,14 @@ func TestQueryCountdownTextDescribesRefreshState(t *testing.T) {
 				t.Fatalf("countdown text = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestQueryCountdownTextHidesDormantManualRefresh(t *testing.T) {
+	now := time.Date(2026, 6, 5, 15, 0, 0, 0, time.Local)
+
+	if got := queryCountdownText(queryRefreshModeDont, time.Time{}, false, now); got != "" {
+		t.Fatalf("manual Q/R dormant countdown = %q, want hidden text", got)
 	}
 }
 
@@ -6335,8 +6700,8 @@ func TestNetworkHeaderUsesWorkbenchChrome(t *testing.T) {
 	if hint == nil {
 		t.Fatal("Network header should keep the delete shortcut hint visible")
 	}
-	if !hint.TextStyle.Italic {
-		t.Fatal("Network header delete shortcut hint should use subdued italic detail styling")
+	if hint.TextStyle.Italic {
+		t.Fatal("Network header delete shortcut hint should not use italic styling in the reference header")
 	}
 }
 
@@ -7526,8 +7891,8 @@ func TestListenerSettingsActionButtonsUseReferenceSlots(t *testing.T) {
 	fynetest.NewApp()
 
 	editSlot := listenerSettingsActionButtonSlot(newListenerAddressEditButton())
-	if got := editSlot.MinSize().Width; got != listenerSettingsActionButtonSlotWidth {
-		t.Fatalf("listener settings edit slot width = %.0f, want %.0f", got, listenerSettingsActionButtonSlotWidth)
+	if got := editSlot.MinSize().Width; got != 62 {
+		t.Fatalf("listener settings edit slot width = %.0f, want 62", got)
 	}
 
 	copyButton := compactToolbarButton("Copy", theme.ContentCopyIcon(), nil)
@@ -7905,8 +8270,8 @@ func TestNewReceiverPortControlsUseReferenceEntrySlot(t *testing.T) {
 
 	_, controls := newReceiverPortControls("4007")
 
-	if !findEntrySlotWithTextAndMinWidth(controls, "4007", 340) {
-		t.Fatal("receiver port entry should sit in a stable reference-width slot")
+	if !findEntrySlotWithTextAndMinWidth(controls, "4007", listenerPrimaryEntrySlotWidth) {
+		t.Fatal("receiver port entry should align to the primary listener field width")
 	}
 }
 
@@ -7957,6 +8322,16 @@ func TestListenerIncomingFilesRadioLabelSharesReferenceRow(t *testing.T) {
 
 	if !findDirectContainerWithLabelAndRadioOption(panel, "Incoming files:", "Don't modify") {
 		t.Fatal("Incoming files label should share the first radio row like listener_config.png")
+	}
+}
+
+func TestListenerUnreadableObjectChoicesUseIndentedReferenceRow(t *testing.T) {
+	fynetest.NewApp()
+
+	panel := newListenerIncomingPolicyControls()
+
+	if !findIndentedRadioOptionRow(panel, "Move it to the NOT READABLE folder") {
+		t.Fatal("unreadable-object choices should be indented under their explanatory label like listener_config.png")
 	}
 }
 
@@ -8216,8 +8591,11 @@ func TestNewPreferredReceiveSyntaxControlsUseReferenceSelectSlot(t *testing.T) {
 
 	_, _, controls := newPreferredReceiveSyntaxControls(receive.PreferredTransferSyntaxExplicitVRLittleEndian)
 
-	if !findSelectSlotWithMinWidth(controls, receivePreferredSyntaxExplicitLabel, 340) {
-		t.Fatal("preferred syntax select should sit in a stable reference-width slot")
+	if !findSelectSlotWithExactWidth(controls, receivePreferredSyntaxExplicitLabel, listenerPreferredSyntaxSlotWidth) {
+		t.Fatal("preferred syntax select should use the compact reference-width slot")
+	}
+	if listenerPreferredSyntaxSlotWidth >= listenerPrimaryEntrySlotWidth {
+		t.Fatal("preferred syntax select should stay narrower than primary listener text fields")
 	}
 }
 
@@ -8409,8 +8787,8 @@ func TestArchiveAlbumListUsesNativeIconsAndTrailingCounts(t *testing.T) {
 	}
 	list.UpdateItem(widget.ListItemID(0), albumItem)
 
-	if albumItem.albumIcon.Resource == nil || albumItem.albumIcon.Resource.Name() != theme.StorageIcon().Name() {
-		t.Fatalf("database icon = %#v, want storage icon", albumItem.albumIcon.Resource)
+	if albumItem.albumIcon.Resource == nil || albumItem.albumIcon.Resource.Name() != "archive-album-database-blue.svg" {
+		t.Fatalf("database icon = %#v, want reference database icon", albumItem.albumIcon.Resource)
 	}
 	if albumItem.label.Text != "Database" {
 		t.Fatalf("database label = %q", albumItem.label.Text)
@@ -8433,8 +8811,8 @@ func TestArchiveAlbumListUsesNativeIconsAndTrailingCounts(t *testing.T) {
 	}
 
 	list.UpdateItem(widget.ListItemID(1), albumItem)
-	if albumItem.albumIcon.Resource == nil || albumItem.albumIcon.Resource.Name() != theme.FolderIcon().Name() {
-		t.Fatalf("album icon = %#v, want folder icon", albumItem.albumIcon.Resource)
+	if albumItem.albumIcon.Resource == nil || albumItem.albumIcon.Resource.Name() != "archive-album-comments-purple.svg" {
+		t.Fatalf("album icon = %#v, want reference comments icon", albumItem.albumIcon.Resource)
 	}
 	if albumItem.label.Text != "Cases with comments" {
 		t.Fatalf("comments label = %q", albumItem.label.Text)
@@ -8474,6 +8852,28 @@ func TestArchiveAlbumRowsSeparateTrailingCountColumn(t *testing.T) {
 
 	if got := countCanvasRectanglesWithColor(item.Container, tableColumnDividerColor); got < 3 {
 		t.Fatalf("album row divider rectangles = %d, want left count separator plus right and bottom dividers", got)
+	}
+}
+
+func TestArchiveAlbumIconsUseReferenceColoredAssets(t *testing.T) {
+	tests := []struct {
+		id   archiveAlbumID
+		want string
+	}{
+		{archiveAlbumDatabase, "archive-album-database-blue.svg"},
+		{archiveAlbumComments, "archive-album-comments-purple.svg"},
+		{archiveAlbumInteresting, "archive-album-interesting-blue.svg"},
+		{archiveAlbumLastHour, "archive-album-acquired-clock-purple.svg"},
+		{archiveAlbumAddedLastHour, "archive-album-added-clock-purple.svg"},
+		{archiveAlbumTodayCR, "archive-album-today-cr-purple.svg"},
+		{archiveAlbumTodayCT, "archive-album-today-ct-purple.svg"},
+	}
+
+	for _, tt := range tests {
+		got := archiveAlbumIcon(tt.id)
+		if got == nil || got.Name() != tt.want {
+			t.Fatalf("archive album icon for %q = %v, want %s", tt.id, got, tt.want)
+		}
 	}
 }
 
@@ -8770,14 +9170,20 @@ func TestArchiveSourceRowsUseNativeIconsAndSelection(t *testing.T) {
 	if len(rows) != 4 {
 		t.Fatalf("len(rows) = %d, want local receiver plus 2 nodes", len(rows))
 	}
-	if rows[0].Icon == nil || rows[0].Icon.Name() != theme.StorageIcon().Name() {
-		t.Fatalf("local icon = %#v, want storage icon", rows[0].Icon)
+	if rows[0].Icon == nil || rows[0].Icon.Name() != "archive-source-local-db-blue.svg" {
+		t.Fatalf("local icon = %#v, want reference local DB icon", rows[0].Icon)
 	}
-	if rows[1].Icon == nil || rows[1].Icon.Name() != theme.ComputerIcon().Name() {
-		t.Fatalf("receiver icon = %#v, want computer icon", rows[1].Icon)
+	if rows[1].Icon == nil || rows[1].Icon.Name() != "archive-source-receiver-red.svg" {
+		t.Fatalf("receiver icon = %#v, want reference receiver icon", rows[1].Icon)
 	}
-	if rows[2].Icon == nil || rows[2].Icon.Name() != theme.DesktopIcon().Name() {
-		t.Fatalf("node icon = %#v, want desktop icon", rows[2].Icon)
+	if rows[1].Text != "Documents DB" {
+		t.Fatalf("receiver visible source label = %q, want compact reference Documents DB label", rows[1].Text)
+	}
+	if !strings.Contains(rows[1].LegacyText, "Receiver GOPACS stopped") {
+		t.Fatalf("receiver legacy detail = %q, want receiver AE/status details preserved", rows[1].LegacyText)
+	}
+	if rows[2].Icon == nil || rows[2].Icon.Name() != "archive-source-remote-globe-blue.svg" {
+		t.Fatalf("node icon = %#v, want reference remote node icon", rows[2].Icon)
 	}
 	if rows[2].Selected {
 		t.Fatalf("first node should not be selected: %#v", rows[2])
@@ -8790,6 +9196,28 @@ func TestArchiveSourceRowsUseNativeIconsAndSelection(t *testing.T) {
 	}
 	if !rows[3].Selected || rows[3].Text != "HOROSMINI" || rows[3].NodeIndex != 1 {
 		t.Fatalf("selected node row = %#v", rows[3])
+	}
+}
+
+func TestArchiveSourceRowsSelectLocalDatabaseWhenNoRemoteNodeIsActive(t *testing.T) {
+	state := &uiState{
+		nodes:           []nodes.Node{{Name: "RADIANT", Host: "192.168.100.26", Port: 11112}},
+		selectedNodeRow: -1,
+	}
+
+	rows := archiveSourceRows(state)
+
+	if len(rows) < 3 {
+		t.Fatalf("source rows = %#v, want local DB, receiver, and remote node", rows)
+	}
+	if !rows[0].Selected {
+		t.Fatalf("local DB row should be selected when no remote node is active: %#v", rows[0])
+	}
+	if rows[1].Selected {
+		t.Fatalf("receiver row should not be the selected source: %#v", rows[1])
+	}
+	if rows[2].Selected {
+		t.Fatalf("remote row should not be selected when selectedNodeRow is -1: %#v", rows[2])
 	}
 }
 
@@ -8807,8 +9235,8 @@ func TestArchiveSourceListUsesNativeIconWidgets(t *testing.T) {
 	}
 	list.UpdateItem(widget.ListItemID(2), sourceItem)
 
-	if sourceItem.sourceIcon.Resource == nil || sourceItem.sourceIcon.Resource.Name() != theme.DesktopIcon().Name() {
-		t.Fatalf("source icon = %#v, want desktop icon", sourceItem.sourceIcon.Resource)
+	if sourceItem.sourceIcon.Resource == nil || sourceItem.sourceIcon.Resource.Name() != "archive-source-remote-globe-blue.svg" {
+		t.Fatalf("source icon = %#v, want reference remote node icon", sourceItem.sourceIcon.Resource)
 	}
 	if findIconWithResource(sourceItem.Container, theme.NavigateNextIcon()) != nil {
 		t.Fatal("source rows should not reserve a leading selection marker")
@@ -8845,6 +9273,11 @@ func TestArchiveSourceListSelectsRemoteNode(t *testing.T) {
 	list.OnSelected(widget.ListItemID(0))
 	if state.selectedNodeRow != -1 {
 		t.Fatalf("local DB selection changed node row to %d", state.selectedNodeRow)
+	}
+	state.selectedNodeRow = 1
+	list.OnSelected(widget.ListItemID(0))
+	if state.selectedNodeRow != -1 {
+		t.Fatalf("local DB selection should clear the active remote source, got %d", state.selectedNodeRow)
 	}
 	list.OnSelected(widget.ListItemID(1))
 	if state.selectedNodeRow != -1 {
@@ -8889,6 +9322,33 @@ func TestArchiveSourcePriorityButtonsMoveSelectedNode(t *testing.T) {
 	}
 }
 
+func TestArchiveSourcePriorityButtonsHideUntilRemoteSourceSelected(t *testing.T) {
+	state := &uiState{
+		nodes: []nodes.Node{
+			{Name: "RADIANT", Host: "192.168.100.26", Port: 11112},
+			{Name: "HOROSMINI", Host: "192.168.100.50", Port: 4007},
+		},
+		selectedNodeRow: -1,
+	}
+	status := widget.NewLabel("")
+
+	newArchiveSidebar(nil, status, archiveTables{}, state)
+
+	if state.archiveSourceMoveUpButton == nil || state.archiveSourceMoveDownButton == nil {
+		t.Fatal("source priority buttons should be wired")
+	}
+	if state.archiveSourceMoveUpButton.Visible() || state.archiveSourceMoveDownButton.Visible() {
+		t.Fatal("source priority buttons should be hidden while the local DB source is selected")
+	}
+
+	state.selectedNodeRow = 1
+	refreshArchiveChrome(state)
+
+	if !state.archiveSourceMoveUpButton.Visible() || !state.archiveSourceMoveDownButton.Visible() {
+		t.Fatal("source priority buttons should appear when a remote source is selected")
+	}
+}
+
 func TestArchiveSidebarSectionsUseWorkbenchChrome(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
@@ -8913,6 +9373,28 @@ func TestArchiveSidebarSectionsUseWorkbenchChrome(t *testing.T) {
 	}
 	if got := countCanvasRectanglesWithColor(content, tableColumnDividerColor); got < 6 {
 		t.Fatalf("archive sidebar divider rectangles = %d, want panel borders and header dividers", got)
+	}
+}
+
+func TestArchiveSidebarSectionTitlesAreCentered(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	sidebar := newArchiveSidebar(nil, status, archiveTables{}, state)
+	content := sidebar
+	if scroll, ok := sidebar.(*container.Scroll); ok {
+		content = scroll.Content
+	}
+
+	for _, title := range []string{"Albums", "Sources", "Activity"} {
+		label := findLabelContaining(content, title)
+		if label == nil {
+			t.Fatalf("archive sidebar should expose %q section title", title)
+		}
+		if label.Alignment != fyne.TextAlignCenter {
+			t.Fatalf("%q alignment = %v, want centered like the reference rail", title, label.Alignment)
+		}
 	}
 }
 
@@ -8943,6 +9425,37 @@ func TestArchiveSidebarOmitsLegacyActivityRailControls(t *testing.T) {
 	}
 	if findProgressBar(sidebar) != nil {
 		t.Fatal("archive Activity rail should not include the legacy global progress bar")
+	}
+}
+
+func TestArchiveSidebarPlacesClearActivityActionInHeader(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	sidebar := newArchiveSidebar(nil, status, archiveTables{}, state)
+	scroll, ok := sidebar.(*container.Scroll)
+	if !ok {
+		t.Fatalf("archive sidebar = %T, want scroll container", sidebar)
+	}
+	sections, ok := scroll.Content.(*fyne.Container)
+	if !ok || len(sections.Objects) < 3 {
+		t.Fatalf("archive sidebar content = %T with %d sections, want section stack", scroll.Content, len(sections.Objects))
+	}
+	activitySection, ok := sections.Objects[2].(*fyne.Container)
+	if !ok || len(activitySection.Objects) == 0 {
+		t.Fatalf("activity section = %T, want stack container", sections.Objects[2])
+	}
+	activityBox, ok := activitySection.Objects[0].(*fyne.Container)
+	if !ok || len(activityBox.Objects) != 2 {
+		t.Fatalf("activity section body = %T with %d objects, want header/body", activitySection.Objects[0], len(activityBox.Objects))
+	}
+
+	if !containsCanvasObject(activityBox.Objects[0], state.archiveClearActivityButton) {
+		t.Fatal("Activity clear action should live in the section header")
+	}
+	if containsCanvasObject(activityBox.Objects[1], state.archiveClearActivityButton) {
+		t.Fatal("Activity clear action should not reserve a separate body row")
 	}
 }
 
@@ -9020,6 +9533,9 @@ func TestArchiveSummaryPaneTitleUsesSelectedPatientName(t *testing.T) {
 	}
 	if got := state.archiveSummaryTitle.Text; got != "MARIA OLIVEIRA" {
 		t.Fatalf("archive summary title = %q, want selected patient name", got)
+	}
+	if got := state.archiveSummaryTitle.Alignment; got != fyne.TextAlignCenter {
+		t.Fatalf("archive summary title alignment = %v, want centered like the reference side pane", got)
 	}
 
 	state.selectedStudyRow = -1
@@ -9117,6 +9633,38 @@ func TestArchiveSummaryPaneUsesIconOnlyMetadataEditControl(t *testing.T) {
 	}
 	if state.archiveEditStudyButton.Icon == nil || state.archiveEditStudyButton.Icon.Name() != theme.DocumentCreateIcon().Name() {
 		t.Fatalf("archive summary edit button icon = %#v, want document-create icon", state.archiveEditStudyButton.Icon)
+	}
+}
+
+func TestArchiveSummaryPaneShowsMetadataEditOnlyWhenActionable(t *testing.T) {
+	fynetest.NewApp()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	state := &uiState{}
+
+	_ = newArchiveSummaryPane(nil, widget.NewLabel(""), archiveTables{}, state)
+	refreshArchiveChrome(state)
+
+	if state.archiveEditStudyButton == nil {
+		t.Fatal("archive summary edit button was not wired")
+	}
+	if state.archiveEditStudyButton.Visible() {
+		t.Fatal("archive summary edit button should be hidden until a selected study can be edited")
+	}
+
+	state.catalog = catalog
+	state.studies = []archive.Study{{StudyInstanceUID: "1.2.3.study", StudyDescription: "CT Abdomen"}}
+	state.selectedStudyRow = 0
+	refreshArchiveChrome(state)
+
+	if !state.archiveEditStudyButton.Visible() {
+		t.Fatal("archive summary edit button should be visible when selected-study metadata can be edited")
+	}
+	if state.archiveEditStudyButton.Disabled() {
+		t.Fatal("archive summary edit button should be enabled when selected-study metadata can be edited")
 	}
 }
 
@@ -9279,7 +9827,7 @@ func TestPatientStudySummaryRowsListSamePatientStudies(t *testing.T) {
 	if rows[2].Selected || rows[2].StudyIndex != 2 || rows[2].Primary != "CR Hand" || rows[2].Modality != "CR" || rows[2].Secondary != "1/6/26" || rows[2].Images != "1 image" {
 		t.Fatalf("single-image patient study row = %#v", rows[2])
 	}
-	if rows[3].Selected || rows[3].StudyIndex != 3 || rows[3].Primary != "CT Abdomen" || rows[3].Modality != "CT" || rows[3].Secondary != "2/6/26" || rows[3].Images != "1'180 images" {
+	if rows[3].Selected || rows[3].StudyIndex != 3 || rows[3].Primary != "CT Abdomen" || rows[3].Modality != "CT" || rows[3].Secondary != "2/6/26" || rows[3].Images != "1180 images" {
 		t.Fatalf("thousands-image patient study row = %#v", rows[3])
 	}
 }
@@ -9324,8 +9872,8 @@ func TestArchiveSummaryPaneUsesNativePatientStudyList(t *testing.T) {
 	if studyItem.secondary.Text != "31/5/26" {
 		t.Fatalf("secondary text = %q", studyItem.secondary.Text)
 	}
-	if !studyItem.secondary.TextStyle.Italic {
-		t.Fatal("secondary patient study line should remain visually subdued")
+	if studyItem.secondary.TextStyle.Italic {
+		t.Fatal("secondary patient study line should use subdued regular typography, not italic technical styling")
 	}
 	if studyItem.images.Text != "8 images" {
 		t.Fatalf("images text = %q", studyItem.images.Text)
@@ -9333,11 +9881,17 @@ func TestArchiveSummaryPaneUsesNativePatientStudyList(t *testing.T) {
 	if studyItem.images.Alignment != fyne.TextAlignTrailing {
 		t.Fatalf("images alignment = %v, want trailing", studyItem.images.Alignment)
 	}
+	if studyItem.images.TextStyle.Italic {
+		t.Fatal("image count should use subdued regular typography, not italic technical styling")
+	}
 	if studyItem.metricsSlot.MinSize().Width != archivePatientStudyMetricsSlotWidth {
 		t.Fatalf("patient study metrics slot width = %.0f, want %.0f", studyItem.metricsSlot.MinSize().Width, archivePatientStudyMetricsSlotWidth)
 	}
-	if got := color.NRGBAModel.Convert(studyItem.background.FillColor).(color.NRGBA); got != archiveOddRowColor {
-		t.Fatalf("selected patient study fill = %#v, want subtle right-summary fill %#v", got, archiveOddRowColor)
+	if got := color.NRGBAModel.Convert(studyItem.background.FillColor).(color.NRGBA); got != archiveSummarySelectedStudyRowColor {
+		t.Fatalf("selected patient study fill = %#v, want subtle right-summary selection fill %#v", got, archiveSummarySelectedStudyRowColor)
+	}
+	if archiveSummarySelectedStudyRowColor == archiveSelectedRowColor {
+		t.Fatal("right summary selected study fill should stay subtler than the central archive table selection")
 	}
 	if got := countCanvasRectanglesWithColor(studyItem.Container, tableColumnDividerColor); got < 2 {
 		t.Fatalf("patient study row dividers = %d, want right and bottom divider", got)
@@ -9363,6 +9917,10 @@ func TestArchivePatientStudyListUsesCompactRowHeights(t *testing.T) {
 		}
 		if height != compactArchivePatientStudyRowHeight {
 			t.Fatalf("patient study summary row %d height = %.0f, want %.0f", id, height, compactArchivePatientStudyRowHeight)
+		}
+		const referencePatientStudyRowHeight float32 = 40
+		if height != referencePatientStudyRowHeight {
+			t.Fatalf("patient study summary row %d reference height = %.0f, want %.0f", id, height, referencePatientStudyRowHeight)
 		}
 	}
 }
@@ -9587,8 +10145,8 @@ func TestArchiveBrowserKeepsDetailTablesAsCompactTransitionBand(t *testing.T) {
 	if !ok {
 		t.Fatalf("archive browser = %T, want split", browser)
 	}
-	if split.Offset < 0.86 {
-		t.Fatalf("archive browser main tree offset = %.2f, want at least 0.86 so Series/Instances remain a compact transition band", split.Offset)
+	if split.Offset < 0.92 {
+		t.Fatalf("archive browser main tree offset = %.2f, want at least 0.92 so Series/Instances remain a compact transition band", split.Offset)
 	}
 }
 
@@ -10885,13 +11443,16 @@ func TestArchiveStatusTableCellShowsEditableTrailingGlyph(t *testing.T) {
 	if cell.sortLabel == nil || !cell.sortLabel.Visible() {
 		t.Fatal("archive status cells should show a subtle trailing edit glyph")
 	}
-	if cell.sortLabel.Text != "⌄" {
-		t.Fatalf("archive status edit glyph = %q, want subtle dropdown chevron", cell.sortLabel.Text)
+	if cell.sortLabel.Text != "▾" {
+		t.Fatalf("archive status edit glyph = %q, want solid dropdown chevron", cell.sortLabel.Text)
 	}
 
 	applyArchiveTableCellWithColumn(cell, 2, archiveStudyTableColumnComments, "Discuss with surgeon", archiveBrowserRow{kind: archiveRowStudy}, false, false)
-	if cell.sortLabel.Visible() {
-		t.Fatal("archive comments cells should not show the status edit glyph")
+	if cell.sortLabel == nil || !cell.sortLabel.Visible() {
+		t.Fatal("archive comments cells should show a subtle trailing edit glyph")
+	}
+	if cell.sortLabel.Text != "▾" {
+		t.Fatalf("archive comments edit glyph = %q, want solid dropdown chevron", cell.sortLabel.Text)
 	}
 }
 
@@ -10959,6 +11520,16 @@ func TestWorkstationTableCellsIncludeRowAndColumnDividers(t *testing.T) {
 				t.Fatalf("%s cell has %d rectangles, want background plus row and column dividers", tt.name, got)
 			}
 		})
+	}
+}
+
+func TestWorkstationTableDividersUseReferenceContrast(t *testing.T) {
+	const referenceMinimumDividerComponent uint8 = 88
+
+	if tableColumnDividerColor.R < referenceMinimumDividerComponent ||
+		tableColumnDividerColor.G < referenceMinimumDividerComponent ||
+		tableColumnDividerColor.B < referenceMinimumDividerComponent {
+		t.Fatalf("table divider color = %#v, want at least %d per RGB channel for reference-visible grid lines", tableColumnDividerColor, referenceMinimumDividerComponent)
 	}
 }
 
@@ -11316,6 +11887,54 @@ func countCanvasRectanglesWithColor(obj fyne.CanvasObject, want color.NRGBA) int
 	return count
 }
 
+func countCanvasRoundedRectanglesWithColor(obj fyne.CanvasObject, want color.NRGBA) int {
+	count := 0
+	if rect, ok := obj.(*canvas.Rectangle); ok {
+		if got := color.NRGBAModel.Convert(rect.FillColor).(color.NRGBA); got == want && rect.CornerRadius > 0 {
+			count++
+		}
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			count += countCanvasRoundedRectanglesWithColor(child, want)
+		}
+	}
+	return count
+}
+
+func findCanvasRoundedRectangleWithColor(obj fyne.CanvasObject, want color.NRGBA) *canvas.Rectangle {
+	if rect, ok := obj.(*canvas.Rectangle); ok {
+		if got := color.NRGBAModel.Convert(rect.FillColor).(color.NRGBA); got == want && rect.CornerRadius > 0 {
+			return rect
+		}
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findCanvasRoundedRectangleWithColor(child, want); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func containsCanvasObject(root fyne.CanvasObject, target fyne.CanvasObject) bool {
+	if root == target {
+		return true
+	}
+	if scroll, ok := root.(*container.Scroll); ok {
+		return containsCanvasObject(scroll.Content, target)
+	}
+	if c, ok := root.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if containsCanvasObject(child, target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func listItemHeight(list *widget.List, id int) (float32, bool) {
 	if list == nil {
 		return 0, false
@@ -11403,8 +12022,8 @@ func TestQueryRetrieveTableCellUsesIconAction(t *testing.T) {
 	if !cell.retrieveButton.Visible() {
 		t.Fatal("retrieve action cell should show native icon button")
 	}
-	if cell.retrieveButton.Icon == nil || cell.retrieveButton.Icon.Name() != theme.DownloadIcon().Name() {
-		t.Fatalf("retrieve button icon = %#v, want download icon", cell.retrieveButton.Icon)
+	if cell.retrieveButton.Icon == nil || cell.retrieveButton.Icon.Name() != queryRetrieveRowIconResource.Name() {
+		t.Fatalf("retrieve button icon = %#v, want green row retrieve icon", cell.retrieveButton.Icon)
 	}
 	if got := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA); got != queryRetrieveActionRowColor {
 		t.Fatalf("retrieve fill = %#v, want %#v", got, queryRetrieveActionRowColor)
@@ -11485,10 +12104,16 @@ func TestQueryTableHeadersFollowWorkstationPrimaryOrderAndHideTechnicalUIDs(t *t
 }
 
 func TestAutoQueryTableHeadersFollowReferencePrimaryOrder(t *testing.T) {
-	want := []string{"Patient Name", "", "Patient ID", "Date of Birth", "Description", "Modality", "# im", "Date", "Time", "Source", "Accession #", "Local Comments", "Server Comme...", "Local", "Referrer", "Institution", "Study Status", "Series #", "Instance #", "Status"}
+	want := []string{"Patient Name", "", "Patient ID", "Date of Birth", "Descripti...", "Modality", "# im", "Date", "Time", "Source", "Accession #", "Local Comments", "Server Comme...", "Local", "Referrer", "Institution", "Study Status", "Series #", "Instance #", "Status"}
 
 	if got := autoQueryTableHeaders(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("auto Q/R headers = %q, want %q", strings.Join(got, "|"), strings.Join(want, "|"))
+	}
+}
+
+func TestManualQueryTableKeepsFullDescriptionHeader(t *testing.T) {
+	if got := queryTableHeaderForColumn(queryTableColumnDescription); got != "Description" {
+		t.Fatalf("manual Query description header = %q, want full Description", got)
 	}
 }
 
@@ -12500,9 +13125,14 @@ func TestArchiveActivityRowsUsesRetrieveActivityLabel(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("expected active retrieve row")
 	}
-	for _, want := range []string{"1 study - DOE JANE", "remote-a", "3/5 done"} {
+	for _, want := range []string{"1 study - DOE JANE", "3/5 img"} {
 		if !strings.Contains(rows[0].Detail, want) {
 			t.Fatalf("retrieve detail missing %q in %q", want, rows[0].Detail)
+		}
+	}
+	for _, reject := range []string{"remote-a", " done", "fail 0", "warn 0"} {
+		if strings.Contains(rows[0].Detail, reject) {
+			t.Fatalf("retrieve detail should hide %q in %q", reject, rows[0].Detail)
 		}
 	}
 }
@@ -12728,6 +13358,19 @@ func TestDisabledNodeTableCellUsesSubduedStyling(t *testing.T) {
 	}
 	if got := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA); got != nodeDisabledRowColor {
 		t.Fatalf("disabled node fill = %#v, want %#v", got, nodeDisabledRowColor)
+	}
+}
+
+func TestDisabledNodeRowFillStaysLegibleWithinDarkTableRhythm(t *testing.T) {
+	if nodeDisabledRowColor.R <= archiveSeriesRowColor.R ||
+		nodeDisabledRowColor.G <= archiveSeriesRowColor.G ||
+		nodeDisabledRowColor.B <= archiveSeriesRowColor.B {
+		t.Fatalf("disabled node fill %#v should stay lighter than deep series rows for readable Network controls", nodeDisabledRowColor)
+	}
+	if nodeDisabledRowColor.R >= archiveOddRowColor.R ||
+		nodeDisabledRowColor.G >= archiveOddRowColor.G ||
+		nodeDisabledRowColor.B >= archiveOddRowColor.B {
+		t.Fatalf("disabled node fill %#v should remain below ordinary odd rows to signal disabled state", nodeDisabledRowColor)
 	}
 }
 
@@ -13079,7 +13722,7 @@ func TestArchiveQuickSearchFieldMenuItemsSelectSearchMode(t *testing.T) {
 	}
 }
 
-func TestArchiveQuickSearchUsesIconOnlySearchButton(t *testing.T) {
+func TestArchiveQuickSearchUsesEntrySubmitInsteadOfSeparateSearchButton(t *testing.T) {
 	fynetest.NewApp()
 	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
 	if err != nil {
@@ -13096,12 +13739,15 @@ func TestArchiveQuickSearchUsesIconOnlySearchButton(t *testing.T) {
 
 	controls := newArchiveControlSet(nil, status, tables, state).toolbarSearch
 
-	searchButton := findButtonWithIconAndText(controls, theme.SearchIcon(), "")
-	if searchButton == nil {
-		t.Fatal("archive toolbar search action should be an icon-only button")
+	if buttons := findButtonsWithIcon(controls, theme.SearchIcon()); len(buttons) != 0 {
+		t.Fatalf("archive toolbar should rely on entry submit instead of a separate search button, found %d", len(buttons))
 	}
-	if searchButton.OnTapped == nil {
-		t.Fatal("archive toolbar search action should remain actionable")
+	quickSearch := findEntryWithPlaceholder(controls, archiveQuickSearchPatientName)
+	if quickSearch == nil {
+		t.Fatal("archive toolbar should expose quick search entry")
+	}
+	if quickSearch.OnSubmitted == nil {
+		t.Fatal("archive toolbar quick search entry should remain submittable with Return")
 	}
 }
 
@@ -13157,8 +13803,60 @@ func TestArchiveToolbarQuickSearchBoxUsesStableWidth(t *testing.T) {
 	if mode.Alignment != fyne.TextAlignTrailing {
 		t.Fatalf("archive toolbar quick search mode alignment = %v, want trailing", mode.Alignment)
 	}
-	if !findLabelSlotWithPrefixAndMinWidth(box, "Search by", archiveToolbarQuickSearchWidth) {
-		t.Fatal("archive toolbar quick search mode label should sit in the same stable-width slot as the entry")
+	containerBox, ok := box.(*fyne.Container)
+	if !ok || len(containerBox.Objects) < 2 {
+		t.Fatalf("archive toolbar quick search box = %T with %d rows, want compact container", box, len(containerBox.Objects))
+	}
+	if width := containerBox.Objects[1].MinSize().Width; width < archiveToolbarQuickSearchWidth {
+		t.Fatalf("archive toolbar quick search bottom row width = %.1f, want at least %.1f", width, archiveToolbarQuickSearchWidth)
+	}
+}
+
+func TestArchiveToolbarQuickSearchBoxUsesCompactBottomRow(t *testing.T) {
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder(archiveQuickSearchPatientName)
+	soundex := widget.NewCheck("Soundex", nil)
+	mode := compactWorkbenchLabel()
+	mode.SetText(archiveQuickSearchModeText(archiveQuickSearchPatientName))
+
+	box := newArchiveToolbarQuickSearchBox(entry, soundex, mode)
+
+	containerBox, ok := box.(*fyne.Container)
+	if !ok {
+		t.Fatalf("archive toolbar quick search box = %T, want container", box)
+	}
+	if len(containerBox.Objects) != 2 {
+		t.Fatalf("archive toolbar quick search rows = %d, want field row plus compact Soundex/mode row", len(containerBox.Objects))
+	}
+	bottomRow := containerBox.Objects[1]
+	if findCheckWithText(bottomRow, "Soundex") == nil {
+		t.Fatal("compact bottom row should preserve Soundex")
+	}
+	if findLabelContaining(bottomRow, "Search by Patient Name") == nil {
+		t.Fatal("compact bottom row should preserve search mode label")
+	}
+	if width := bottomRow.MinSize().Width; width < archiveToolbarQuickSearchWidth {
+		t.Fatalf("compact bottom row width = %.1f, want at least %.1f", width, archiveToolbarQuickSearchWidth)
+	}
+	if mode.Alignment != fyne.TextAlignTrailing {
+		t.Fatalf("compact bottom row mode alignment = %v, want trailing", mode.Alignment)
+	}
+}
+
+func TestArchiveToolbarQuickSearchModeLabelUsesToolbarTypography(t *testing.T) {
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder(archiveQuickSearchPatientName)
+	soundex := widget.NewCheck("Soundex", nil)
+	mode := compactWorkbenchLabel()
+	mode.SetText(archiveQuickSearchModeText(archiveQuickSearchPatientName))
+
+	_ = newArchiveToolbarQuickSearchBox(entry, soundex, mode)
+
+	if mode.TextStyle.Monospace {
+		t.Fatal("archive toolbar search mode label should not inherit table/rail monospace styling")
+	}
+	if mode.Wrapping != fyne.TextTruncate {
+		t.Fatalf("archive toolbar search mode wrapping = %v, want truncate", mode.Wrapping)
 	}
 }
 
@@ -13227,6 +13925,12 @@ func TestArchiveToolbarQuickSearchOmitsSeparateSearchLabel(t *testing.T) {
 	}
 	if findButtonWithIcon(controls, theme.MenuDropDownIcon()) == nil {
 		t.Fatal("archive toolbar quick search should keep the field disclosure")
+	}
+	if buttons := findButtonsWithIcon(controls, theme.SearchIcon()); len(buttons) != 0 {
+		t.Fatalf("archive toolbar quick search should not render a separate search button, found %d", len(buttons))
+	}
+	if findIconWithResource(controls, theme.SearchIcon()) == nil {
+		t.Fatal("archive toolbar quick search should keep the leading search icon inside the field")
 	}
 	if findLabelContaining(controls, "Search by Patient Name") == nil {
 		t.Fatal("archive toolbar quick search should keep the selected mode label")
@@ -13390,6 +14094,30 @@ func findDirectContainerWithLabelAndRadioOption(obj fyne.CanvasObject, label str
 	return false
 }
 
+func findIndentedRadioOptionRow(obj fyne.CanvasObject, option string) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		hasIndentSlot := false
+		hasRadioOption := false
+		for _, child := range c.Objects {
+			if childContainer, ok := child.(*fyne.Container); ok && childContainer.MinSize().Width >= listenerIncomingUnreadableIndentWidth {
+				hasIndentSlot = true
+			}
+			if radio, ok := child.(*widget.RadioGroup); ok && slices.Contains(radio.Options, option) {
+				hasRadioOption = true
+			}
+		}
+		if hasIndentSlot && hasRadioOption {
+			return true
+		}
+		for _, child := range c.Objects {
+			if findIndentedRadioOptionRow(child, option) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func collectWidgetTexts(obj fyne.CanvasObject) []string {
 	var texts []string
 	switch value := obj.(type) {
@@ -13461,6 +14189,22 @@ func findSelectSlotWithMinWidth(obj fyne.CanvasObject, selected string, minWidth
 		}
 		for _, child := range c.Objects {
 			if findSelectSlotWithMinWidth(child, selected, minWidth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findSelectSlotWithExactWidth(obj fyne.CanvasObject, selected string, width float32) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if len(c.Objects) == 1 && c.MinSize().Width == width {
+			if selectWidget, ok := c.Objects[0].(*widget.Select); ok && selectWidget.Selected == selected {
+				return true
+			}
+		}
+		for _, child := range c.Objects {
+			if findSelectSlotWithExactWidth(child, selected, width) {
 				return true
 			}
 		}
@@ -13571,6 +14315,22 @@ func findEntrySlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWid
 		}
 		for _, child := range c.Objects {
 			if findEntrySlotWithTextAndMinWidth(child, text, minWidth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findEntrySlotWithPlaceholderAndExactWidth(obj fyne.CanvasObject, placeholder string, width float32) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if len(c.Objects) == 1 && c.MinSize().Width == width {
+			if entry, ok := c.Objects[0].(*widget.Entry); ok && entry.PlaceHolder == placeholder {
+				return true
+			}
+		}
+		for _, child := range c.Objects {
+			if findEntrySlotWithPlaceholderAndExactWidth(child, placeholder, width) {
 				return true
 			}
 		}

@@ -51,6 +51,22 @@ var queryModalityCodes = []string{
 }
 
 var autoQueryProfileLockIconResource = theme.NewThemedResource(fyne.NewStaticResource("auto-query-profile-lock.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M7 10V8a5 5 0 0 1 10 0v2h1a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h1zm2 0h6V8a3 3 0 0 0-6 0v2zm2 5.73V18h2v-2.27a2 2 0 1 0-2 0z"/></svg>`)))
+var queryRetrieveRowIconResource = fyne.NewStaticResource("query-retrieve-row-download-green.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M10 3h4v9h4l-6 7-6-7h4z" fill="#80d95a"/><path d="M5 19h14v2H5z" fill="#5fbf3f"/><path d="M12 19 6 12h4V4h2z" fill="#9bef72" opacity=".9"/></svg>`))
+var mainToolbarTransferDownIconResource = fyne.NewStaticResource("main-toolbar-transfer-down-green.svg", []byte(`<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><path d="M12 5h16l8 8v18h-8v-8h-8v8h-8z" fill="#f3f6f8"/><path d="M28 5v8h8z" fill="#cfd6de"/><path d="M22 15h12v13h8L28 43 14 28h8z" fill="#5cc23d"/><path d="M22 15h12v4H22zm6 28L14 28h8V18h6z" fill="#6eda4b"/><path d="M12 5h16l8 8v10h-3v-8h-8V8H15v20h-3z" fill="#ffffff" opacity=".55"/></svg>`))
+var mainToolbarTransferUpIconResource = fyne.NewStaticResource("main-toolbar-transfer-up-blue.svg", []byte(`<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><path d="M12 15h8v8h8v-8h8v28H12z" fill="#f3f6f8"/><path d="M14 41h20V18h-4v8H18v-8h-4z" fill="#dfe5ea"/><path d="M22 33h12V20h8L28 5 14 20h8z" fill="#4c9bd7"/><path d="M28 5 14 20h8v13h6z" fill="#6bb7ed"/><path d="M12 24h3v16h18v-8h3v11H12z" fill="#ffffff" opacity=".5"/></svg>`))
+var mainToolbarAnonymizeIconResource = fyne.NewStaticResource("main-toolbar-anonymize-question.svg", []byte(`<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><path d="M12 5h18l6 6v27H12z" fill="#f3f6f8"/><path d="M30 5v7h7z" fill="#cfd6de"/><path d="M22 31h5v5h-5zM18 17c.3-5 4.1-8 9.3-8 5.1 0 8.7 3 8.7 7.4 0 3.1-1.6 5-4.7 6.8-2.7 1.6-3.7 2.8-3.8 5.2h-5.1c0-4 1.6-6.1 4.8-8 2.3-1.4 3.2-2.4 3.2-4.2 0-2-1.5-3.3-3.8-3.3-2.4 0-4 1.4-4.3 3.9z" fill="#1c2025"/><path d="M11 5h19l7 7v7h-4v-5h-7V8H14v30h-3z" fill="#ffffff" opacity=".5"/></svg>`))
+var mainToolbarMetadataIconResource = fyne.NewStaticResource("main-toolbar-metadata-warning.svg", []byte(`<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><path d="M8 9h32v27H8z" fill="#22272e"/><path d="M11 12h26v21H11z" fill="#11151a"/><path d="M14 15h9v3h-9zm0 6h13v3H14zm0 6h8v3h-8z" fill="#f3c13a"/><path d="M29 14 42 37H16z" fill="#e3b21f"/><path d="M29 20v9" stroke="#1b1b1b" stroke-width="4" stroke-linecap="round"/><circle cx="29" cy="34" r="2.4" fill="#1b1b1b"/><path d="M8 9h32v4H12v23H8z" fill="#ffffff" opacity=".18"/></svg>`))
+var mainToolbarDeleteIconResource = fyne.NewStaticResource("main-toolbar-delete-trash.svg", []byte(`<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><path d="M14 14h20l-2 27H16z" fill="#b8c0c8"/><path d="M12 11h24v5H12z" fill="#d7dde3"/><path d="M19 7h10l2 4H17z" fill="#eef2f5"/><path d="M19 20v16m5-16v16m5-16v16" stroke="#5f6870" stroke-width="3" stroke-linecap="round"/><path d="M16 16h16l-.5 6H16.5z" fill="#89929b" opacity=".45"/><path d="M12 11h24v2H12z" fill="#ffffff" opacity=".65"/></svg>`))
+var archiveAlbumDatabaseIconResource = fyne.NewStaticResource("archive-album-database-blue.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h7l2 2h9v11H3z" fill="#6ca7e8"/><path d="M4 9h16v9H4z" fill="#4f8fd2"/><path d="M6 11h12v5H6z" fill="#2f5f93" opacity=".55"/><path d="M3 6h7l2 2h9v2H3z" fill="#9cc8f2"/><path d="M5 12h4v1.8H5zm0 3h8v1.8H5z" fill="#eaf4ff" opacity=".75"/></svg>`))
+var archiveAlbumCommentsIconResource = fyne.NewStaticResource("archive-album-comments-purple.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h7l2 2h9v11H3z" fill="#a77be8"/><path d="M4 9h16v9H4z" fill="#805cc5"/><path d="M6 11h12v5H6z" fill="#4d3a79" opacity=".55"/><path d="M8 12h7v1.5H8zm0 3h5v1.5H8z" fill="#f3eaff"/><path d="M6 10h4l1 2H6z" fill="#d7c0ff"/></svg>`))
+var archiveAlbumInterestingIconResource = fyne.NewStaticResource("archive-album-interesting-blue.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h7l2 2h9v11H3z" fill="#70aeea"/><path d="M4 9h16v9H4z" fill="#397cbf"/><path d="M12 11.2l1.2 2.4 2.7.4-2 1.9.5 2.7-2.4-1.3-2.4 1.3.5-2.7-2-1.9 2.7-.4z" fill="#ffd34f"/><path d="M3 6h7l2 2h9v2H3z" fill="#a7d3f5"/></svg>`))
+var archiveAlbumAcquiredClockIconResource = fyne.NewStaticResource("archive-album-acquired-clock-purple.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h7l2 2h9v11H3z" fill="#a77be8"/><path d="M4 9h16v9H4z" fill="#7651bf"/><path d="M3 6h7l2 2h9v2H3z" fill="#d4bdff"/><circle cx="12.2" cy="14.2" r="4.2" fill="#efe7ff"/><path d="M12.2 11.6v2.9l2.3 1.3" fill="none" stroke="#5d3c9e" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 11h3.5v1.5H6z" fill="#f6f0ff" opacity=".8"/></svg>`))
+var archiveAlbumAddedClockIconResource = fyne.NewStaticResource("archive-album-added-clock-purple.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h7l2 2h9v11H3z" fill="#a77be8"/><path d="M4 9h16v9H4z" fill="#7651bf"/><path d="M3 6h7l2 2h9v2H3z" fill="#d4bdff"/><circle cx="12.2" cy="14.2" r="4.2" fill="#efe7ff"/><path d="M12.2 11.7v5m-2.5-2.5h5" stroke="#5d3c9e" stroke-width="1.7" stroke-linecap="round"/><path d="M6 11h3.4v1.5H6z" fill="#f6f0ff" opacity=".8"/></svg>`))
+var archiveAlbumTodayCRIconResource = fyne.NewStaticResource("archive-album-today-cr-purple.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h7l2 2h9v11H3z" fill="#a77be8"/><path d="M4 9h16v9H4z" fill="#7651bf"/><path d="M3 6h7l2 2h9v2H3z" fill="#d4bdff"/><path d="M7 12h10v5H7z" fill="#efe7ff"/><path d="M7 12h10v1.6H7z" fill="#cdb4ff"/><path d="M9.2 16c-.8 0-1.4-.6-1.4-1.4s.6-1.4 1.4-1.4c.4 0 .8.2 1.1.5l-.7.7c-.1-.1-.2-.2-.4-.2-.3 0-.4.2-.4.4s.2.4.4.4c.2 0 .3-.1.4-.2l.7.7c-.3.3-.7.5-1.1.5zm2.2 0v-2.8h1.5c.7 0 1.1.4 1.1 1 0 .4-.2.7-.5.8l.7 1h-1.1l-.5-.8h-.2v.8zm1-1.6h.4c.2 0 .3-.1.3-.2s-.1-.2-.3-.2h-.4z" fill="#5d3c9e"/></svg>`))
+var archiveAlbumTodayCTIconResource = fyne.NewStaticResource("archive-album-today-ct-purple.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M3 6h7l2 2h9v11H3z" fill="#a77be8"/><path d="M4 9h16v9H4z" fill="#7651bf"/><path d="M3 6h7l2 2h9v2H3z" fill="#d4bdff"/><path d="M7 12h10v5H7z" fill="#efe7ff"/><path d="M7 12h10v1.6H7z" fill="#cdb4ff"/><path d="M9.2 16c-.8 0-1.4-.6-1.4-1.4s.6-1.4 1.4-1.4c.4 0 .8.2 1.1.5l-.7.7c-.1-.1-.2-.2-.4-.2-.3 0-.4.2-.4.4s.2.4.4.4c.2 0 .3-.1.4-.2l.7.7c-.3.3-.7.5-1.1.5zm2.5 0v-1.8h-.8v-1h2.6v1h-.8V16z" fill="#5d3c9e"/></svg>`))
+var archiveSourceLocalDBIconResource = fyne.NewStaticResource("archive-source-local-db-blue.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="16" height="15" rx="2" fill="#4f8fd2"/><path d="M6 8h10v2H6zm0 4h10v2H6zm0 4h7v2H6z" fill="#eaf4ff"/><path d="M17 7l4 4-4 4z" fill="#7bd6ff"/><path d="M3 5h16v3H3z" fill="#9cc8f2"/></svg>`))
+var archiveSourceReceiverIconResource = fyne.NewStaticResource("archive-source-receiver-red.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="7" width="14" height="12" rx="2" fill="#b63b37"/><path d="M6 10h10v2H6zm0 4h7v2H6z" fill="#ffe8e6"/><circle cx="18" cy="8" r="3.2" fill="#f04b45"/><path d="M18 6.4v3.2m-1.6-1.6h3.2" stroke="#fff1ef" stroke-width="1.3" stroke-linecap="round"/><path d="M4 7h14v3H4z" fill="#ee756e"/></svg>`))
+var archiveSourceRemoteNodeIconResource = fyne.NewStaticResource("archive-source-remote-globe-blue.svg", []byte(`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="8.5" fill="#69a7df"/><path d="M4.8 12h14.4M12 3.8c2 2.2 3 5 3 8.2s-1 6-3 8.2c-2-2.2-3-5-3-8.2s1-6 3-8.2z" fill="none" stroke="#dff2ff" stroke-width="1.4"/><path d="M6.4 7.8h11.2M6.4 16.2h11.2" stroke="#2f6fa9" stroke-width="1.4" stroke-linecap="round"/><path d="M5 9c1-3 3.7-5 7-5 2.2 0 4.2.8 5.7 2.2-6 .2-9.9 1.1-12.7 2.8z" fill="#a7d7f6" opacity=".8"/></svg>`))
 
 func autoQueryProfileLockIcon() fyne.Resource {
 	return autoQueryProfileLockIconResource
@@ -58,8 +74,8 @@ func autoQueryProfileLockIcon() fyne.Resource {
 
 const (
 	queryDatePresetAny                = "Any date"
-	queryDatePresetOn                 = "On"
-	queryDatePresetBetween            = "Between"
+	queryDatePresetOn                 = "On:"
+	queryDatePresetBetween            = "Between:"
 	queryDatePresetTodayAM            = "Today AM"
 	queryDatePresetTodayPM            = "Today PM"
 	queryDatePresetToday              = "Today"
@@ -93,8 +109,10 @@ const (
 	queryQuickSearchStatus             = "Status"
 )
 
-const queryQuickSearchSegmentMinWidth float32 = 96
+const queryQuickSearchSegmentMinWidth float32 = 72
 const queryQuickSearchSegmentHeight float32 = 24
+const queryQuickSearchSelectedSegmentHorizontalInset float32 = 3
+const queryQuickSearchSelectedSegmentVerticalInset float32 = 2
 
 const (
 	queryWorkspaceTitle      = "DICOM Query/Retrieve"
@@ -108,13 +126,15 @@ const (
 	dicomNodesInstruction    = "Drag sources into the priority order for retrieving"
 )
 
-const queryPrimaryActionButtonMinWidth float32 = 104
+const queryPrimaryActionButtonMinWidth float32 = 92
 const autoQueryProfileIconSlotSize float32 = 36
 const autoQueryProfileSelectSlotWidth float32 = 420
 
 const (
 	queryDateFilterPanelMinWidth       float32 = 560
-	queryModalityFilterPanelMinWidth   float32 = 168
+	queryModalityFilterPanelMinWidth   float32 = 152
+	queryModalityCheckSlotWidth        float32 = 64
+	querySearchBarEntryWidth           float32 = 820
 	queryRefreshCadenceSlotWidth       float32 = 220
 	queryRefreshCountdownSlotWidth     float32 = 96
 	autoQueryRefreshCountdownSlotWidth float32 = 72
@@ -173,7 +193,7 @@ const (
 	autoQueryProfileDefault     = "Default Instance"
 	autoQueryRefreshEvery30Min  = "Refresh every 30 min"
 	autoQueryCountdownDormant   = "--:--"
-	queryCountdownDormant       = "Next: --:--"
+	queryCountdownDormant       = ""
 	autoQuerySettingsButtonText = "Settings"
 )
 
@@ -211,16 +231,17 @@ const (
 	studyStatusPresetProblemLabel          = "Problem"
 )
 
-const listenerSettingsActionButtonSlotWidth float32 = 68
+const listenerSettingsActionButtonSlotWidth float32 = 62
 const listenerSettingsDialogWidth float32 = 960
 const listenerSettingsDialogHeight float32 = 760
-const listenerPortEntrySlotWidth float32 = 340
+const listenerPortEntrySlotWidth float32 = listenerPrimaryEntrySlotWidth
 const listenerTimeoutEntrySlotWidth float32 = 78
 const listenerIncomingScanEntrySlotWidth float32 = 62
 const listenerPreferredSyntaxSlotWidth float32 = 340
 const listenerTLSSettingsButtonSlotWidth float32 = 180
 const listenerPrimaryEntrySlotWidth float32 = 540
 const listenerAddressEntrySlotWidth float32 = 806
+const listenerIncomingUnreadableIndentWidth float32 = 304
 
 const listenerIncomingCompressPolicyLabel = "Compress non-compressed images with JPEG (See General Preferences)"
 
@@ -891,8 +912,8 @@ func autoQueryCriteriaForState(state *uiState) autoquery.Criteria {
 		criteria.SearchField = state.autoQuerySearchField
 	}
 	criteria.SearchText = strings.TrimSpace(state.autoQuerySearchText)
-	if stringInList(state.autoQueryDatePreset, queryDatePresetOptions) {
-		criteria.DatePreset = state.autoQueryDatePreset
+	if datePreset := normalizeQueryDatePreset(state.autoQueryDatePreset); stringInList(datePreset, queryDatePresetOptions) {
+		criteria.DatePreset = datePreset
 	}
 	criteria.OnDate = strings.TrimSpace(state.autoQueryOnDate)
 	criteria.LastHours = strings.TrimSpace(state.autoQueryLastHours)
@@ -907,6 +928,7 @@ func applyAutoQueryCriteria(state *uiState, criteria autoquery.Criteria) {
 	if state == nil {
 		return
 	}
+	criteria.DatePreset = normalizeQueryDatePreset(criteria.DatePreset)
 	if !stringInList(criteria.SearchField, queryQuickSearchOptions) {
 		criteria.SearchField = queryQuickSearchPatientName
 	}
@@ -1187,15 +1209,23 @@ func configureQueryQuickSearchPlaceholder(entry *widget.Entry, field string) {
 
 func newQueryQuickSearchFieldStrip(selectWidget *widget.Select, entry *widget.Entry) fyne.CanvasObject {
 	buttons := map[string]*widget.Button{}
+	highlights := map[string]*canvas.Rectangle{}
 	refreshButtons := func() {
 		if selectWidget == nil {
 			return
 		}
 		for field, button := range buttons {
+			button.Importance = widget.LowImportance
 			if selectWidget.Selected == field {
-				button.Importance = widget.MediumImportance
+				if highlight := highlights[field]; highlight != nil {
+					highlight.FillColor = queryQuickSearchSelectedSegmentColor
+					highlight.Refresh()
+				}
 			} else {
-				button.Importance = widget.LowImportance
+				if highlight := highlights[field]; highlight != nil {
+					highlight.FillColor = color.Transparent
+					highlight.Refresh()
+				}
 			}
 			button.Refresh()
 		}
@@ -1220,7 +1250,10 @@ func newQueryQuickSearchFieldStrip(selectWidget *widget.Select, entry *widget.En
 		})
 		button.Importance = widget.LowImportance
 		buttons[field] = button
-		objects = append(objects, newQueryQuickSearchSegment(button, index < len(queryQuickSearchOptions)-1))
+		highlight := canvas.NewRectangle(color.Transparent)
+		highlight.CornerRadius = 5
+		highlights[field] = highlight
+		objects = append(objects, newQueryQuickSearchSegment(button, index < len(queryQuickSearchOptions)-1, highlight))
 	}
 	initialField := ""
 	if selectWidget != nil {
@@ -1261,7 +1294,11 @@ func newQuerySearchBarWithFieldMenuButton(entry *widget.Entry, submit func(), fi
 	if len(fieldMenuTapped) == 0 || fieldMenuTapped[0] == nil {
 		fieldMenuButton.Disable()
 	}
-	return container.NewBorder(nil, nil, widget.NewIcon(theme.SearchIcon()), container.NewHBox(submitButton, fieldMenuButton), entry), fieldMenuButton
+	entrySlot := fyne.CanvasObject(entry)
+	if entry != nil {
+		entrySlot = container.NewGridWrap(fyne.NewSize(querySearchBarEntryWidth, entry.MinSize().Height), entry)
+	}
+	return container.NewBorder(nil, nil, widget.NewIcon(theme.SearchIcon()), container.NewHBox(submitButton, fieldMenuButton), entrySlot), fieldMenuButton
 }
 
 func showQueryQuickSearchFieldMenu(anchor fyne.CanvasObject, selected string, choose func(string)) {
@@ -1295,17 +1332,45 @@ func queryQuickSearchFieldMenuItems(selected string, choose func(string)) []*fyn
 	return items
 }
 
-func newQueryQuickSearchSegment(content fyne.CanvasObject, divider bool) fyne.CanvasObject {
+func newQueryQuickSearchSegment(content fyne.CanvasObject, divider bool, highlight *canvas.Rectangle) fyne.CanvasObject {
 	size := content.MinSize()
 	if size.Width < queryQuickSearchSegmentMinWidth {
 		size.Width = queryQuickSearchSegmentMinWidth
 	}
 	size.Height = queryQuickSearchSegmentHeight
 	content = container.NewGridWrap(size, content)
+	if highlight != nil {
+		highlight.CornerRadius = 5
+		highlight.SetMinSize(size)
+		highlightLayer := container.New(queryQuickSearchSegmentHighlightLayout{}, highlight)
+		content = container.NewStack(highlightLayer, content)
+	}
 	if !divider {
 		return content
 	}
 	return container.NewStack(content, newTableColumnDividerLayer())
+}
+
+type queryQuickSearchSegmentHighlightLayout struct{}
+
+func (queryQuickSearchSegmentHighlightLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	width := size.Width - (queryQuickSearchSelectedSegmentHorizontalInset * 2)
+	if width < 0 {
+		width = 0
+	}
+	height := size.Height - (queryQuickSearchSelectedSegmentVerticalInset * 2)
+	if height < 0 {
+		height = 0
+	}
+	highlightSize := fyne.NewSize(width, height)
+	for _, object := range objects {
+		object.Move(fyne.NewPos(queryQuickSearchSelectedSegmentHorizontalInset, queryQuickSearchSelectedSegmentVerticalInset))
+		object.Resize(highlightSize)
+	}
+}
+
+func (queryQuickSearchSegmentHighlightLayout) MinSize(_ []fyne.CanvasObject) fyne.Size {
+	return fyne.NewSize(0, 0)
 }
 
 func newQueryRefreshButton(tapped func()) *widget.Button {
@@ -1324,6 +1389,10 @@ func queryRefreshCountdownSlot(label *widget.Label) fyne.CanvasObject {
 
 func autoQueryRefreshCountdownSlot(label *widget.Label) fyne.CanvasObject {
 	return container.NewGridWrap(fyne.NewSize(autoQueryRefreshCountdownSlotWidth, label.MinSize().Height), label)
+}
+
+func queryRefreshButtonSlot(button *widget.Button) fyne.CanvasObject {
+	return autoQueryRefreshButtonSlot(button)
 }
 
 func autoQueryRefreshButtonSlot(button *widget.Button) fyne.CanvasObject {
@@ -1358,28 +1427,32 @@ func mainToolbarButtonGroups() [][]string {
 		{
 			toolbarLabelImport,
 			toolbarLabelExport,
+		},
+		{
+			toolbarLabelQuery,
+			toolbarLabelSendStudy,
+		},
+		{
+			toolbarLabelAnonymize,
+			toolbarLabelMetaData,
+			toolbarLabelDelete,
+		},
+		{
 			toolbarLabelOpen,
 			toolbarLabelInspect,
 			toolbarLabelFolder,
 			toolbarLabelRefresh,
 		},
 		{
-			toolbarLabelQuery,
-			toolbarLabelSendStudy,
 			toolbarLabelSendSeries,
 			toolbarLabelSendImage,
-		},
-		{
 			toolbarLabelRetrieveSeries,
 			toolbarLabelRetrieveImage,
 			toolbarLabelCancel,
 		},
 		{
-			toolbarLabelAnonymize,
-			toolbarLabelMetaData,
 			toolbarLabelAdd,
 			toolbarLabelEdit,
-			toolbarLabelDelete,
 			toolbarLabelVerify,
 		},
 		{
@@ -1393,6 +1466,45 @@ func mainToolbarButtonGroups() [][]string {
 func mainToolbarDisabledLabels() []string {
 	return []string{
 		toolbarLabelAnonymize,
+	}
+}
+
+func mainToolbarIconResource(label string) fyne.Resource {
+	switch label {
+	case toolbarLabelImport, toolbarLabelQuery:
+		return mainToolbarTransferDownIconResource
+	case toolbarLabelExport, toolbarLabelSendStudy:
+		return mainToolbarTransferUpIconResource
+	case toolbarLabelRetrieveSeries, toolbarLabelRetrieveImage, toolbarLabelListen:
+		return theme.DownloadIcon()
+	case toolbarLabelSendSeries, toolbarLabelSendImage:
+		return theme.UploadIcon()
+	case toolbarLabelOpen:
+		return theme.FolderOpenIcon()
+	case toolbarLabelInspect:
+		return theme.SearchIcon()
+	case toolbarLabelFolder:
+		return theme.FolderIcon()
+	case toolbarLabelRefresh:
+		return theme.ViewRefreshIcon()
+	case toolbarLabelCancel, toolbarLabelStop:
+		return theme.MediaStopIcon()
+	case toolbarLabelAnonymize:
+		return mainToolbarAnonymizeIconResource
+	case toolbarLabelAdd:
+		return theme.ContentAddIcon()
+	case toolbarLabelEdit:
+		return theme.DocumentCreateIcon()
+	case toolbarLabelDelete:
+		return mainToolbarDeleteIconResource
+	case toolbarLabelVerify:
+		return theme.ConfirmIcon()
+	case toolbarLabelMetaData:
+		return mainToolbarMetadataIconResource
+	case toolbarLabelSettings:
+		return theme.SettingsIcon()
+	default:
+		return theme.InfoIcon()
 	}
 }
 
@@ -1414,11 +1526,17 @@ func mainToolbarAction(label string, icon fyne.Resource, tapped func()) *fyne.Co
 	button := widget.NewButtonWithIcon("", icon, tapped)
 	button.Importance = widget.LowImportance
 	iconSlot := container.NewGridWrap(fyne.NewSize(mainToolbarActionIconSlotSize, mainToolbarActionIconSlotSize), button)
-	caption := compactWorkbenchLabel()
+	caption := mainToolbarCaptionLabel()
 	caption.SetText(label)
-	caption.Alignment = fyne.TextAlignCenter
 	captionSlot := container.NewGridWrap(fyne.NewSize(mainToolbarActionCaptionSlotWidth, caption.MinSize().Height), caption)
 	return container.NewVBox(iconSlot, captionSlot)
+}
+
+func mainToolbarCaptionLabel() *widget.Label {
+	label := widget.NewLabel("")
+	label.Wrapping = fyne.TextTruncate
+	label.Alignment = fyne.TextAlignCenter
+	return label
 }
 
 func disabledToolbarButton(label string, icon fyne.Resource) *widget.Button {
@@ -1471,6 +1589,10 @@ func groupedToolbarActions(buttons map[string]fyne.CanvasObject) *fyne.Container
 		newTableColumnDividerLayer(),
 		newTableRowDividerLayer(),
 	)
+}
+
+func newMainToolbar(status *widget.Label, actions fyne.CanvasObject, toolbarSearch fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewVBox(container.NewBorder(nil, nil, nil, toolbarSearch, actions), status)
 }
 
 func selectAppTabByText(tabs *container.AppTabs, text string) bool {
@@ -1617,77 +1739,75 @@ func run() {
 	archiveControls := archiveControlSet.archiveControls
 	var tabs *container.AppTabs
 
-	openButton := mainToolbarAction(toolbarLabelOpen, theme.FolderOpenIcon(), func() {
+	openButton := mainToolbarAction(toolbarLabelOpen, mainToolbarIconResource(toolbarLabelOpen), func() {
 		openFileDialog(w, status, summary, elementTable, state)
 	})
-	inspectArchiveButton := mainToolbarAction(toolbarLabelInspect, theme.SearchIcon(), func() {
+	inspectArchiveButton := mainToolbarAction(toolbarLabelInspect, mainToolbarIconResource(toolbarLabelInspect), func() {
 		inspectSelectedArchiveInstance(w, status, summary, elementTable, state)
 	})
-	importFileButton := mainToolbarAction(toolbarLabelImport, theme.ContentAddIcon(), func() {
+	importFileButton := mainToolbarAction(toolbarLabelImport, mainToolbarIconResource(toolbarLabelImport), func() {
 		importFileDialog(w, status, tables, state)
 	})
-	exportButton := mainToolbarAction(toolbarLabelExport, theme.DocumentSaveIcon(), func() {
+	exportButton := mainToolbarAction(toolbarLabelExport, mainToolbarIconResource(toolbarLabelExport), func() {
 		exportStudiesCSV(w, status, state)
 	})
-	importFolderButton := mainToolbarAction(toolbarLabelFolder, theme.FolderIcon(), func() {
+	importFolderButton := mainToolbarAction(toolbarLabelFolder, mainToolbarIconResource(toolbarLabelFolder), func() {
 		importFolderDialog(w, status, tables, state)
 	})
-	refreshButton := mainToolbarAction(toolbarLabelRefresh, theme.ViewRefreshIcon(), func() {
+	refreshButton := mainToolbarAction(toolbarLabelRefresh, mainToolbarIconResource(toolbarLabelRefresh), func() {
 		refreshStudies(w, status, tables, state)
 	})
-	queryButton := mainToolbarAction(toolbarLabelQuery, theme.SearchReplaceIcon(), func() {
+	queryButton := mainToolbarAction(toolbarLabelQuery, mainToolbarIconResource(toolbarLabelQuery), func() {
 		if selectAppTabByText(tabs, "Query") {
 			status.SetText("Showing Query workspace")
 		}
 	})
-	sendStudyButton := mainToolbarAction(toolbarLabelSendStudy, theme.UploadIcon(), func() {
+	sendStudyButton := mainToolbarAction(toolbarLabelSendStudy, mainToolbarIconResource(toolbarLabelSendStudy), func() {
 		sendSelectedStudy(w, status, state)
 	})
-	sendSeriesButton := mainToolbarAction(toolbarLabelSendSeries, theme.UploadIcon(), func() {
+	sendSeriesButton := mainToolbarAction(toolbarLabelSendSeries, mainToolbarIconResource(toolbarLabelSendSeries), func() {
 		sendSelectedSeries(w, status, state)
 	})
-	sendImageButton := mainToolbarAction(toolbarLabelSendImage, theme.UploadIcon(), func() {
+	sendImageButton := mainToolbarAction(toolbarLabelSendImage, mainToolbarIconResource(toolbarLabelSendImage), func() {
 		sendSelectedInstance(w, status, state)
 	})
-	retrieveSeriesButton := mainToolbarAction(toolbarLabelRetrieveSeries, theme.DownloadIcon(), func() {
+	retrieveSeriesButton := mainToolbarAction(toolbarLabelRetrieveSeries, mainToolbarIconResource(toolbarLabelRetrieveSeries), func() {
 		retrieveSelectedSeries(w, status, tables, state)
 	})
-	retrieveImageButton := mainToolbarAction(toolbarLabelRetrieveImage, theme.DownloadIcon(), func() {
+	retrieveImageButton := mainToolbarAction(toolbarLabelRetrieveImage, mainToolbarIconResource(toolbarLabelRetrieveImage), func() {
 		retrieveSelectedInstance(w, status, tables, state)
 	})
-	cancelRetrieveButton := mainToolbarAction(toolbarLabelCancel, theme.MediaStopIcon(), func() {
+	cancelRetrieveButton := mainToolbarAction(toolbarLabelCancel, mainToolbarIconResource(toolbarLabelCancel), func() {
 		cancelActiveRetrieve(status, state)
 	})
-	anonymizeButton := disabledMainToolbarAction(toolbarLabelAnonymize, theme.VisibilityOffIcon())
-	metaDataButton := mainToolbarAction(toolbarLabelMetaData, theme.SearchIcon(), func() {
+	anonymizeButton := disabledMainToolbarAction(toolbarLabelAnonymize, mainToolbarIconResource(toolbarLabelAnonymize))
+	metaDataButton := mainToolbarAction(toolbarLabelMetaData, mainToolbarIconResource(toolbarLabelMetaData), func() {
 		openMetadataInspector(tabs, status, state, func() {
 			inspectSelectedArchiveInstance(w, status, summary, elementTable, state)
 		})
 	})
-	addNodeButton := mainToolbarAction(toolbarLabelAdd, theme.ContentAddIcon(), func() {
+	addNodeButton := mainToolbarAction(toolbarLabelAdd, mainToolbarIconResource(toolbarLabelAdd), func() {
 		showAddNodeDialog(w, status, nodeTable, state)
 	})
-	editNodeButton := mainToolbarAction(toolbarLabelEdit, theme.DocumentCreateIcon(), func() {
+	editNodeButton := mainToolbarAction(toolbarLabelEdit, mainToolbarIconResource(toolbarLabelEdit), func() {
 		showEditNodeDialog(w, status, nodeTable, state)
 	})
-	deleteStudyButton := mainToolbarAction(toolbarLabelDelete, theme.DeleteIcon(), func() {
+	deleteStudyButton := mainToolbarAction(toolbarLabelDelete, mainToolbarIconResource(toolbarLabelDelete), func() {
 		showDeleteStudyDialog(w, status, tables, state)
 	})
-	echoButton := mainToolbarAction(toolbarLabelVerify, theme.ConfirmIcon(), func() {
+	echoButton := mainToolbarAction(toolbarLabelVerify, mainToolbarIconResource(toolbarLabelVerify), func() {
 		verifySelectedNode(w, status, nodeTable, state)
 	})
-	startReceiverButton := mainToolbarAction(toolbarLabelListen, theme.DownloadIcon(), func() {
+	startReceiverButton := mainToolbarAction(toolbarLabelListen, mainToolbarIconResource(toolbarLabelListen), func() {
 		startReceiver(w, status, state)
 	})
-	stopReceiverButton := mainToolbarAction(toolbarLabelStop, theme.MediaStopIcon(), func() {
+	stopReceiverButton := mainToolbarAction(toolbarLabelStop, mainToolbarIconResource(toolbarLabelStop), func() {
 		stopReceiver(w, status, tables, state)
 	})
-	settingsButton := mainToolbarAction(toolbarLabelSettings, theme.SettingsIcon(), func() {
+	settingsButton := mainToolbarAction(toolbarLabelSettings, mainToolbarIconResource(toolbarLabelSettings), func() {
 		showSettingsDialog(w, status, tables, state)
 	})
 
-	title := widget.NewLabelWithStyle("go-pacs", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	title.TextStyle.Monospace = false
 	actions := groupedToolbarActions(map[string]fyne.CanvasObject{
 		toolbarLabelOpen:           openButton,
 		toolbarLabelInspect:        inspectArchiveButton,
@@ -1714,7 +1834,7 @@ func run() {
 	})
 	actionsScroll := container.NewHScroll(actions)
 	actionsScroll.SetMinSize(fyne.NewSize(0, actions.MinSize().Height))
-	toolbar := container.NewVBox(container.NewBorder(nil, nil, title, archiveControlSet.toolbarSearch, actionsScroll), status)
+	toolbar := newMainToolbar(status, actionsScroll, archiveControlSet.toolbarSearch)
 
 	state.archiveSeriesSummary = compactWorkbenchLabel()
 	state.archiveInstancesSummary = compactWorkbenchLabel()
@@ -2417,7 +2537,7 @@ func newArchiveWorkbench(w fyne.Window, status *widget.Label, tables archiveTabl
 	centerAndSummary := container.NewHSplit(center, summary)
 	centerAndSummary.SetOffset(0.88)
 	workbench := container.NewHSplit(sidebar, centerAndSummary)
-	workbench.SetOffset(0.13)
+	workbench.SetOffset(0.11)
 	refreshArchiveChrome(state)
 	return workbench
 }
@@ -2432,7 +2552,7 @@ func newArchiveBrowser(studyTable *widget.Table, seriesTable *widget.Table, inst
 		container.NewStack(studyTable),
 		seriesAndInstances,
 	)
-	archiveBrowser.SetOffset(0.86)
+	archiveBrowser.SetOffset(0.92)
 	return archiveBrowser
 }
 
@@ -2450,14 +2570,14 @@ func newArchiveSidebar(w fyne.Window, status *widget.Label, tables archiveTables
 		clearRecentOperations(status, state)
 	})
 	state.archiveClearActivityButton.Hide()
+	refreshArchiveSourcePriorityActions(state)
 	content := container.NewVBox(
 		newArchiveSidebarSection("Albums", nil, state.archiveAlbumList),
 		newArchiveSidebarSection("Sources", container.NewHBox(state.archiveSourceMoveUpButton, state.archiveSourceMoveDownButton), state.archiveSourceList),
 		newArchiveSidebarSection(
 			"Activity",
-			nil,
-			state.archiveActivityList,
 			state.archiveClearActivityButton,
+			state.archiveActivityList,
 		),
 	)
 	scroll := container.NewVScroll(content)
@@ -2475,7 +2595,7 @@ func newArchiveFooter(content fyne.CanvasObject) fyne.CanvasObject {
 }
 
 func newArchiveSidebarSection(title string, actions fyne.CanvasObject, body ...fyne.CanvasObject) fyne.CanvasObject {
-	header := container.NewBorder(nil, nil, workbenchSectionTitle(title), actions)
+	header := container.NewBorder(nil, nil, nil, actions, workbenchCenteredTitle(title))
 	headerChrome := container.NewStack(
 		canvas.NewRectangle(archiveHeaderRowColor),
 		newCompactTableCellContent(header),
@@ -2525,6 +2645,19 @@ func newArchiveSourcePriorityButtons(w fyne.Window, status *widget.Label, state 
 	return moveUpButton, moveDownButton
 }
 
+func refreshArchiveSourcePriorityActions(state *uiState) {
+	if state == nil || state.archiveSourceMoveUpButton == nil || state.archiveSourceMoveDownButton == nil {
+		return
+	}
+	if state.selectedNodeRow >= 0 && state.selectedNodeRow < len(state.nodes) {
+		state.archiveSourceMoveUpButton.Show()
+		state.archiveSourceMoveDownButton.Show()
+		return
+	}
+	state.archiveSourceMoveUpButton.Hide()
+	state.archiveSourceMoveDownButton.Hide()
+}
+
 type archiveSourceListItem struct {
 	*fyne.Container
 	background     *canvas.Rectangle
@@ -2534,7 +2667,7 @@ type archiveSourceListItem struct {
 }
 
 func newArchiveSourceListItem() *archiveSourceListItem {
-	sourceIcon := widget.NewIcon(theme.StorageIcon())
+	sourceIcon := widget.NewIcon(archiveSourceLocalDBIconResource)
 	sourceIconSlot := newArchiveRailIconSlot(sourceIcon)
 	label := compactWorkbenchLabel()
 	row := container.NewBorder(nil, nil, sourceIconSlot, nil, label)
@@ -2588,7 +2721,15 @@ func newArchiveSourceList(state *uiState) *widget.List {
 		}
 		row := rows[id]
 		if row.NodeIndex < 0 {
-			list.Unselect(id)
+			if row.Selectable && state != nil {
+				state.selectedNodeRow = -1
+				refreshArchiveChrome(state)
+				refreshQueryDestination(state)
+				refreshQueryResultSummary(state)
+				refreshQuerySourceList(state)
+			} else {
+				list.Unselect(id)
+			}
 			return
 		}
 		state.selectedNodeRow = row.NodeIndex
@@ -2720,7 +2861,7 @@ func newArchiveActivityList(status *widget.Label, state *uiState) *widget.List {
 			)
 			return container.NewStack(
 				canvas.NewRectangle(archiveOddRowColor),
-				newCompactTableCellContent(content),
+				newArchiveActivityRowContent(content),
 				newTableColumnDividerLayer(),
 				newTableRowDividerLayer(),
 			)
@@ -2803,10 +2944,18 @@ const (
 	archiveSidebarMinWidth              float32 = 208
 	archiveSummaryPaneMinWidth          float32 = 220
 	archivePatientStudyMetricsSlotWidth float32 = 80
+	archiveActivityVerticalPadding      float32 = 3
 	compactArchiveRailListRowHeight     float32 = compactTableRowHeight + 4
 	compactArchiveActivityRowHeight     float32 = compactTableRowHeight + 32
-	compactArchivePatientStudyRowHeight float32 = compactTableRowHeight + 18
+	compactArchivePatientStudyRowHeight float32 = compactTableRowHeight + 16
 )
+
+func newArchiveActivityRowContent(content fyne.CanvasObject) *fyne.Container {
+	return container.New(
+		layout.NewCustomPaddedLayout(archiveActivityVerticalPadding, archiveActivityVerticalPadding, tableCellHorizontalPadding, tableCellHorizontalPadding),
+		content,
+	)
+}
 
 func archiveActivityProgressSlot(progress fyne.CanvasObject) *fyne.Container {
 	size := progress.MinSize()
@@ -2857,7 +3006,7 @@ func newActivityDismissButton(tapped func()) *widget.Button {
 }
 
 func newArchiveSummaryPane(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) fyne.CanvasObject {
-	state.archiveSummaryTitle = workbenchSectionTitle("Selected Study")
+	state.archiveSummaryTitle = workbenchCenteredTitle("Selected Study")
 	state.archiveSummary = compactWorkbenchLabel()
 	state.archiveSummary.Wrapping = fyne.TextWrapWord
 	state.archivePatientStudyList = newArchivePatientStudyList(state, tables)
@@ -2866,7 +3015,8 @@ func newArchiveSummaryPane(w fyne.Window, status *widget.Label, tables archiveTa
 	})
 	state.archiveEditStudyButton.Importance = widget.LowImportance
 	state.archiveEditStudyButton.Disable()
-	header := container.NewBorder(nil, nil, state.archiveSummaryTitle, state.archiveEditStudyButton)
+	state.archiveEditStudyButton.Hide()
+	header := container.NewBorder(nil, nil, nil, state.archiveEditStudyButton, state.archiveSummaryTitle)
 	body := newArchiveSummaryPaneBody(state.archiveSummary, state.archivePatientStudyList)
 	scroll := container.NewVScroll(body)
 	scroll.SetMinSize(fyne.NewSize(archiveSummaryPaneMinWidth, 0))
@@ -2914,7 +3064,9 @@ func workbenchSectionTitle(title string) *widget.Label {
 }
 
 func workbenchCenteredTitle(title string) *widget.Label {
-	return widget.NewLabelWithStyle(title, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	label := widget.NewLabelWithStyle(title, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	label.Wrapping = fyne.TextTruncate
+	return label
 }
 
 func workbenchWindowTitle(title string) fyne.CanvasObject {
@@ -2976,6 +3128,7 @@ func refreshArchiveChrome(state *uiState) {
 		applyCompactArchiveRailListRows(state.archiveSourceList, len(archiveSourceRows(state)))
 		state.archiveSourceList.Refresh()
 	}
+	refreshArchiveSourcePriorityActions(state)
 	if state.archiveActivity != nil {
 		state.archiveActivity.SetText(strings.Join(archiveActivityLines(state), "\n"))
 	}
@@ -2992,9 +3145,11 @@ func refreshArchiveChrome(state *uiState) {
 	}
 	if state.archiveEditStudyButton != nil {
 		if _, ok := selectedStudy(state); ok && state.catalog != nil {
+			state.archiveEditStudyButton.Show()
 			state.archiveEditStudyButton.Enable()
 		} else {
 			state.archiveEditStudyButton.Disable()
+			state.archiveEditStudyButton.Hide()
 		}
 	}
 	if state.archiveSummary != nil {
@@ -3311,10 +3466,26 @@ func archiveAlbumLabel(id archiveAlbumID) string {
 }
 
 func archiveAlbumIcon(id archiveAlbumID) fyne.Resource {
-	if id == archiveAlbumDatabase {
+	switch id {
+	case archiveAlbumDatabase:
+		return archiveAlbumDatabaseIconResource
+	case archiveAlbumComments:
+		return archiveAlbumCommentsIconResource
+	case archiveAlbumInteresting:
+		return archiveAlbumInterestingIconResource
+	case archiveAlbumLastHour:
+		return archiveAlbumAcquiredClockIconResource
+	case archiveAlbumAddedLastHour:
+		return archiveAlbumAddedClockIconResource
+	case archiveAlbumTodayCR:
+		return archiveAlbumTodayCRIconResource
+	case archiveAlbumTodayCT:
+		return archiveAlbumTodayCTIconResource
+	case archiveAlbumOpened:
 		return theme.StorageIcon()
+	default:
+		return theme.FolderIcon()
 	}
-	return theme.FolderIcon()
 }
 
 func activeArchiveSourceSummaryLabel(state *uiState) string {
@@ -3346,14 +3517,18 @@ type archiveSourceRow struct {
 	LegacyText string
 	Icon       fyne.Resource
 	Selected   bool
+	Selectable bool
 	NodeIndex  int
 }
 
 func archiveSourceRows(state *uiState) []archiveSourceRow {
+	localSelected := state == nil || state.selectedNodeRow < 0 || state.selectedNodeRow >= len(state.nodes)
 	rows := []archiveSourceRow{{
 		Text:       "Documents DB",
 		LegacyText: "▣ Documents DB",
-		Icon:       theme.StorageIcon(),
+		Icon:       archiveSourceLocalDBIconResource,
+		Selected:   localSelected,
+		Selectable: true,
 		NodeIndex:  -1,
 	}}
 	if state == nil {
@@ -3362,16 +3537,16 @@ func archiveSourceRows(state *uiState) []archiveSourceRow {
 	if state.receiver != nil {
 		snapshot := state.receiver.Snapshot()
 		rows = append(rows, archiveSourceRow{
-			Text:       fmt.Sprintf("Receiver %s %s", snapshot.AETitle, snapshot.Address),
+			Text:       "Documents DB",
 			LegacyText: fmt.Sprintf("● Receiver %s %s", snapshot.AETitle, snapshot.Address),
-			Icon:       theme.ComputerIcon(),
+			Icon:       archiveSourceReceiverIconResource,
 			NodeIndex:  -1,
 		})
 	} else {
 		rows = append(rows, archiveSourceRow{
-			Text:       fmt.Sprintf("Receiver %s stopped", localAETitle(state)),
+			Text:       "Documents DB",
 			LegacyText: fmt.Sprintf("● Receiver %s stopped", localAETitle(state)),
-			Icon:       theme.ComputerIcon(),
+			Icon:       archiveSourceReceiverIconResource,
 			NodeIndex:  -1,
 		})
 	}
@@ -3387,7 +3562,7 @@ func archiveSourceRows(state *uiState) []archiveSourceRow {
 		rows = append(rows, archiveSourceRow{
 			Text:       text,
 			LegacyText: "◉ " + legacyText,
-			Icon:       theme.DesktopIcon(),
+			Icon:       archiveSourceRemoteNodeIconResource,
 			Selected:   index == state.selectedNodeRow,
 			NodeIndex:  index,
 		})
@@ -3454,17 +3629,8 @@ func archiveActivityRows(state *uiState) []archiveActivityRow {
 		if i >= 4 {
 			break
 		}
-		counts := shortTaskCounts(summary.Counts)
-		if counts != "" {
-			rows = append(rows, archiveActivityRow{
-				Text:           fmt.Sprintf("%s %s %s", summary.Kind, summary.Status, counts),
-				OperationIndex: i,
-				Dismissible:    true,
-			})
-			continue
-		}
 		rows = append(rows, archiveActivityRow{
-			Text:           fmt.Sprintf("%s %s", summary.Kind, summary.Status),
+			Text:           archiveActivityHistoryText(summary),
 			OperationIndex: i,
 			Dismissible:    true,
 		})
@@ -3475,11 +3641,55 @@ func archiveActivityRows(state *uiState) []archiveActivityRow {
 	return rows
 }
 
+func archiveActivityHistoryText(summary ops.Summary) string {
+	parts := []string{archiveActivityKindLabel(summary.Kind)}
+	if summary.Status != "" {
+		parts = append(parts, archiveActivityStatusLabel(summary.Status))
+	}
+	if counts := shortTaskCounts(summary.Counts); counts != "" {
+		parts = append(parts, counts)
+	}
+	return strings.Join(parts, " ")
+}
+
+func archiveActivityStatusLabel(status ops.Status) string {
+	return titleWords(string(status))
+}
+
+func archiveActivityKindLabel(kind ops.Kind) string {
+	switch kind {
+	case ops.KindImport:
+		return "Import"
+	case ops.KindQueryFind:
+		return "Query"
+	case ops.KindRetrieveMove:
+		return "Retrieve"
+	case ops.KindSendStore:
+		return "Send"
+	case ops.KindStorageSCP:
+		return "Receive"
+	default:
+		return titleWords(strings.ReplaceAll(string(kind), "_", " "))
+	}
+}
+
+func titleWords(text string) string {
+	words := strings.Fields(text)
+	for index, word := range words {
+		runes := []rune(strings.ToLower(word))
+		if len(runes) > 0 {
+			runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
+		}
+		words[index] = string(runes)
+	}
+	return strings.Join(words, " ")
+}
+
 func queryActivityDetail(state *uiState) string {
 	if state == nil {
 		return "Query"
 	}
-	text := strings.TrimSpace(state.activeQueryActivityLabel)
+	text := activityDetailSubject(state.activeQueryActivityLabel, "C-FIND")
 	progress := state.activeQueryActivityProgress
 	if !state.activeQueryActivityHasProgress || progress.Total <= 0 {
 		return text
@@ -3495,12 +3705,12 @@ func sendActivityDetail(state *uiState) string {
 	if state == nil {
 		return "Send"
 	}
-	text := strings.TrimSpace(state.activeSendActivityLabel)
+	text := activityDetailSubject(state.activeSendActivityLabel, "C-STORE")
 	progress := state.activeSendActivityProgress
 	if !state.activeSendActivityHasProgress || progress.Total <= 0 {
 		return text
 	}
-	text += fmt.Sprintf(" %d/%d sent %d", progress.Attempted, progress.Total, progress.Sent)
+	text += fmt.Sprintf(" %d/%d files, sent %d", progress.Attempted, progress.Total, progress.Sent)
 	if progress.Failed > 0 {
 		text += fmt.Sprintf(", fail %d", progress.Failed)
 	}
@@ -3508,6 +3718,21 @@ func sendActivityDetail(state *uiState) string {
 		text += fmt.Sprintf(", warn %d", progress.Warnings)
 	}
 	return text
+}
+
+func activityDetailSubject(label string, dimseOperation string) string {
+	label = strings.TrimSpace(label)
+	dimseOperation = strings.TrimSpace(dimseOperation)
+	if label == "" || dimseOperation == "" {
+		return label
+	}
+	parts := strings.Fields(label)
+	for index, part := range parts {
+		if part == dimseOperation {
+			return strings.Join(parts[index+1:], " ")
+		}
+	}
+	return label
 }
 
 func importActivityDetail(state *uiState) string {
@@ -3622,10 +3847,8 @@ func newArchivePatientStudyListItem() *archivePatientStudyListItem {
 	modality.Alignment = fyne.TextAlignTrailing
 	modality.TextStyle = fyne.TextStyle{Bold: true}
 	secondary := compactWorkbenchLabel()
-	secondary.TextStyle = fyne.TextStyle{Italic: true}
 	images := compactWorkbenchLabel()
 	images.Alignment = fyne.TextAlignTrailing
-	images.TextStyle = fyne.TextStyle{Italic: true}
 	text := container.NewVBox(primary, secondary)
 	metrics := container.NewVBox(modality, images)
 	metricsSlot := container.NewGridWrap(fyne.NewSize(archivePatientStudyMetricsSlotWidth, metrics.MinSize().Height), metrics)
@@ -3677,7 +3900,11 @@ func newArchivePatientStudyList(state *uiState, optionalTables ...archiveTables)
 			item.modality.SetText(row.Modality)
 			item.secondary.SetText(row.Secondary)
 			item.images.SetText(row.Images)
-			item.background.FillColor = archiveOddRowColor
+			if row.Selected {
+				item.background.FillColor = archiveSummarySelectedStudyRowColor
+			} else {
+				item.background.FillColor = archiveOddRowColor
+			}
 			item.selectionIcon.Hide()
 			item.background.Refresh()
 		},
@@ -3770,7 +3997,7 @@ func archiveStudyImageCountLabel(count int) string {
 	if count == 1 {
 		return "1 image"
 	}
-	return workstationCountCell(strconv.Itoa(count)) + " images"
+	return strconv.Itoa(count) + " images"
 }
 
 func compactDisplayDate(value string) string {
@@ -4081,15 +4308,15 @@ func hasModality(modalities string, modality string) bool {
 func shortTaskCounts(counts ops.Counts) string {
 	var parts []string
 	appendCount := func(label string, value *uint64) {
-		if value != nil {
+		if value != nil && *value > 0 {
 			parts = append(parts, fmt.Sprintf("%s %d", label, *value))
 		}
 	}
-	appendCount("matched", counts.Matched)
-	appendCount("stored", counts.Stored)
-	appendCount("received", counts.Received)
+	appendCount("match", counts.Matched)
+	appendCount("store", counts.Stored)
+	appendCount("recv", counts.Received)
 	appendCount("sent", counts.Sent)
-	appendCount("failed", counts.Failed)
+	appendCount("fail", counts.Failed)
 	if len(parts) == 0 {
 		return ""
 	}
@@ -4283,10 +4510,6 @@ func newArchiveControlSet(w fyne.Window, status *widget.Label, tables archiveTab
 			applyQuickSearch()
 		}
 	}
-	searchButton := widget.NewButtonWithIcon("", theme.SearchIcon(), func() {
-		applyQuickSearch()
-	})
-	searchButton.Importance = widget.LowImportance
 	clearButton := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() {
 		applyingProgrammaticSearchText = true
 		quickSearch.SetText("")
@@ -4343,14 +4566,7 @@ func newArchiveControlSet(w fyne.Window, status *widget.Label, tables archiveTab
 		menu.ShowAtRelativePosition(fyne.NewPos(0, anchor.MinSize().Height), anchor)
 	}
 	quickSearchBox := newArchiveToolbarQuickSearchBox(quickSearch, soundexCheck, searchModeLabel, showQuickSearchFieldMenu)
-	quickSearchCluster := container.NewBorder(
-		nil,
-		nil,
-		nil,
-		container.NewHBox(searchButton),
-		quickSearchBox,
-	)
-	quickRow := workbenchStrip(quickSearchCluster)
+	quickRow := workbenchStrip(quickSearchBox)
 	albumScope := compactWorkbenchLabel()
 	albumScope.SetText(archiveAlbumScopeControlText(state.selectedArchiveAlbum))
 	state.archiveAlbumScopeLabel = albumScope
@@ -4411,6 +4627,8 @@ func newArchiveControlSet(w fyne.Window, status *widget.Label, tables archiveTab
 
 func newArchiveToolbarQuickSearchBox(entry *widget.Entry, soundex *widget.Check, modeLabel *widget.Label, fieldMenuTapped ...func(fyne.CanvasObject)) fyne.CanvasObject {
 	modeLabel.Alignment = fyne.TextAlignTrailing
+	modeLabel.TextStyle = fyne.TextStyle{}
+	modeLabel.Wrapping = fyne.TextTruncate
 	var fieldMenuButton *widget.Button
 	fieldMenuButton = widget.NewButtonWithIcon("", theme.MenuDropDownIcon(), func() {
 		if len(fieldMenuTapped) > 0 && fieldMenuTapped[0] != nil {
@@ -4422,10 +4640,10 @@ func newArchiveToolbarQuickSearchBox(entry *widget.Entry, soundex *widget.Check,
 		fieldMenuButton.Disable()
 	}
 	entryRow := container.NewBorder(nil, nil, widget.NewIcon(theme.SearchIcon()), fieldMenuButton, entry)
+	modeRow := container.NewBorder(nil, nil, soundex, nil, modeLabel)
 	return container.NewVBox(
 		container.NewGridWrap(fyne.NewSize(archiveToolbarQuickSearchWidth, entry.MinSize().Height), entryRow),
-		soundex,
-		container.NewGridWrap(fyne.NewSize(archiveToolbarQuickSearchWidth, modeLabel.MinSize().Height), modeLabel),
+		container.NewGridWrap(fyne.NewSize(archiveToolbarQuickSearchWidth, modeRow.MinSize().Height), modeRow),
 	)
 }
 
@@ -4550,7 +4768,19 @@ func flattenQueryDatePresetColumns(columns [][]string) []string {
 	return options
 }
 
+func normalizeQueryDatePreset(preset string) string {
+	switch strings.TrimSpace(preset) {
+	case "On":
+		return queryDatePresetOn
+	case "Between":
+		return queryDatePresetBetween
+	default:
+		return strings.TrimSpace(preset)
+	}
+}
+
 func queryDatePresetPreservesManualRange(preset string) bool {
+	preset = normalizeQueryDatePreset(preset)
 	return preset == queryDatePresetBetween
 }
 
@@ -4563,6 +4793,7 @@ func queryDateTimePresetRangeWithLastHours(preset string, hours string, now time
 }
 
 func queryDateTimePresetRangeWithInputs(preset string, onDate string, hours string, now time.Time) (string, string, string, string, bool) {
+	preset = normalizeQueryDatePreset(preset)
 	formatDay := func(value time.Time) string {
 		return value.Local().Format("20060102")
 	}
@@ -4805,7 +5036,10 @@ func queryModalityGrid(checks map[string]*widget.Check) fyne.CanvasObject {
 		columnChecks := make([]fyne.CanvasObject, 0, len(codes))
 		for _, code := range codes {
 			if check := checks[code]; check != nil {
-				columnChecks = append(columnChecks, check)
+				columnChecks = append(columnChecks, container.NewGridWrap(
+					fyne.NewSize(queryModalityCheckSlotWidth, check.MinSize().Height),
+					check,
+				))
 			}
 		}
 		columns = append(columns, container.NewVBox(columnChecks...))
@@ -5549,7 +5783,10 @@ func queryResultSummaryText(state *uiState) string {
 	}
 	noun := queryResultSummaryNoun(state, count)
 	source := queryResultSourceSummaryText(state)
-	lines := []string{fmt.Sprintf("%d %s found", count, noun), source}
+	lines := []string{fmt.Sprintf("%d %s found", count, noun)}
+	if source != "" {
+		lines = append(lines, source)
+	}
 	if selected := querySelectedRetrieveSummaryText(state); selected != "" {
 		lines = append(lines, selected)
 	}
@@ -5565,7 +5802,7 @@ func queryResultSourceSummaryText(state *uiState) string {
 	if node, ok := selectedQueryNode(state); ok {
 		return queryNodeSourceSummaryLabel(node)
 	}
-	return "no source selected"
+	return ""
 }
 
 func queryResultSourceLabels(state *uiState) []string {
@@ -5602,17 +5839,23 @@ func queryNodeSourceSummaryLabel(node nodes.Node) string {
 }
 
 func queryResultSummaryNoun(state *uiState, count int) string {
+	kind := queryRunStudy
+	if state != nil {
+		kind = state.lastQuery.kind
+	}
+	return queryRunKindNoun(kind, count)
+}
+
+func queryRunKindNoun(kind queryRunKind, count int) string {
 	singular := "study"
 	plural := "studies"
-	if state != nil {
-		switch state.lastQuery.kind {
-		case queryRunPatient:
-			singular, plural = "patient", "patients"
-		case queryRunSeries:
-			singular, plural = "series", "series"
-		case queryRunImage:
-			singular, plural = "image", "images"
-		}
+	switch kind {
+	case queryRunPatient:
+		singular, plural = "patient", "patients"
+	case queryRunSeries:
+		singular, plural = "series", "series"
+	case queryRunImage:
+		singular, plural = "image", "images"
 	}
 	if count == 1 {
 		return singular
@@ -6720,15 +6963,20 @@ func retrieveProgressDetail(activityLabel string, nodeName string, progress retr
 	detail := activityLabel
 	if detail == "" {
 		detail = nodeName
-	} else if !strings.EqualFold(detail, nodeName) {
-		detail += " (" + nodeName + ")"
 	}
 	done := int(progress.Completed) + int(progress.Failed) + int(progress.Warnings)
 	total := done + int(progress.Remaining)
 	if total == 0 {
 		return detail
 	}
-	return fmt.Sprintf("%s %d/%d done, fail %d, warn %d", detail, done, total, progress.Failed, progress.Warnings)
+	detail = fmt.Sprintf("%s %d/%d img", detail, done, total)
+	if progress.Failed > 0 {
+		detail += fmt.Sprintf(", fail %d", progress.Failed)
+	}
+	if progress.Warnings > 0 {
+		detail += fmt.Sprintf(", warn %d", progress.Warnings)
+	}
+	return detail
 }
 
 func retrieveMethodName(outcome retrieve.Outcome) string {
@@ -7110,14 +7358,16 @@ func newListenerIncomingPolicyControls() fyne.CanvasObject {
 		"Decompress compressed images",
 		listenerIncomingCompressPolicyLabel,
 	}, listenerIncomingCompressPolicyLabel)
+	unreadableObjects := newDisabledRadioGroup([]string{
+		"Delete it",
+		"Move it to the NOT READABLE folder",
+	}, "Move it to the NOT READABLE folder")
+	unreadableIndent := container.NewGridWrap(fyne.NewSize(listenerIncomingUnreadableIndentWidth, 1), canvas.NewRectangle(color.Transparent))
 	return container.NewVBox(
 		container.NewHBox(widget.NewLabel("Check for new files every:"), scanSecondsSlot, widget.NewLabel("seconds")),
 		container.NewHBox(widget.NewLabel("Incoming files:"), incomingFiles),
 		widget.NewLabel("If Go PACS is not able to open a file received by the DICOM listener:"),
-		newDisabledRadioGroup([]string{
-			"Delete it",
-			"Move it to the NOT READABLE folder",
-		}, "Move it to the NOT READABLE folder"),
+		container.NewHBox(unreadableIndent, unreadableObjects),
 		newDisabledCheck("Replace existing files with the newly received files", false),
 	)
 }
@@ -8016,7 +8266,7 @@ func showLoadNodesDialog(w fyne.Window, status *widget.Label, table *widget.Tabl
 
 func newNetworkHeader() fyne.CanvasObject {
 	title := widget.NewLabelWithStyle("DICOM Nodes for DICOM Query/Retrieve and DICOM Send", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	hint := widget.NewLabelWithStyle(networkDeleteShortcutHint(), fyne.TextAlignTrailing, fyne.TextStyle{Italic: true})
+	hint := widget.NewLabelWithStyle(networkDeleteShortcutHint(), fyne.TextAlignTrailing, fyne.TextStyle{})
 	hint.Alignment = fyne.TextAlignTrailing
 	return workbenchStrip(container.NewBorder(nil, nil, title, hint))
 }
@@ -9443,20 +9693,23 @@ func elementHeaderLabel(state *uiState, col int, label string) string {
 }
 
 var (
-	archiveHeaderRowColor       = color.NRGBA{R: 40, G: 40, B: 40, A: 255}
-	archivePatientRowColor      = color.NRGBA{R: 48, G: 48, B: 48, A: 255}
-	archiveOddRowColor          = color.NRGBA{R: 28, G: 28, B: 28, A: 255}
-	archiveEvenRowColor         = color.NRGBA{R: 34, G: 34, B: 34, A: 255}
-	archiveSeriesRowColor       = color.NRGBA{R: 24, G: 24, B: 24, A: 255}
-	archiveInstanceRowColor     = color.NRGBA{R: 18, G: 18, B: 18, A: 255}
-	archiveSelectedRowColor     = color.NRGBA{R: 45, G: 85, B: 128, A: 255}
-	nodeDisabledRowColor        = color.NRGBA{R: 22, G: 22, B: 22, A: 255}
-	tableColumnDividerColor     = color.NRGBA{R: 62, G: 62, B: 62, A: 255}
-	queryRetrieveActionRowColor = color.NRGBA{R: 34, G: 58, B: 38, A: 255}
+	archiveHeaderRowColor                = color.NRGBA{R: 40, G: 40, B: 40, A: 255}
+	archivePatientRowColor               = color.NRGBA{R: 48, G: 48, B: 48, A: 255}
+	archiveOddRowColor                   = color.NRGBA{R: 28, G: 28, B: 28, A: 255}
+	archiveEvenRowColor                  = color.NRGBA{R: 34, G: 34, B: 34, A: 255}
+	archiveSeriesRowColor                = color.NRGBA{R: 24, G: 24, B: 24, A: 255}
+	archiveInstanceRowColor              = color.NRGBA{R: 18, G: 18, B: 18, A: 255}
+	archiveSelectedRowColor              = color.NRGBA{R: 45, G: 85, B: 128, A: 255}
+	archiveSummarySelectedStudyRowColor  = color.NRGBA{R: 48, G: 48, B: 48, A: 255}
+	nodeDisabledRowColor                 = color.NRGBA{R: 26, G: 26, B: 26, A: 255}
+	tableColumnDividerColor              = color.NRGBA{R: 90, G: 90, B: 90, A: 255}
+	queryRetrieveActionRowColor          = color.NRGBA{R: 34, G: 58, B: 38, A: 255}
+	queryQuickSearchSelectedSegmentColor = color.NRGBA{R: 82, G: 82, B: 82, A: 255}
 )
 
 const tableColumnDividerWidth float32 = 1
 const compactTableRowHeight float32 = 24
+const archiveTableRowHeight float32 = compactTableRowHeight + 4
 const networkTableRowHeight float32 = compactTableRowHeight + 8
 
 const (
@@ -9469,6 +9722,13 @@ func applyCompactTableRows(table *widget.Table) {
 		return
 	}
 	table.SetRowHeight(-1, compactTableRowHeight)
+}
+
+func applyArchiveTableRows(table *widget.Table) {
+	if table == nil {
+		return
+	}
+	table.SetRowHeight(-1, archiveTableRowHeight)
 }
 
 func applyNetworkTableRows(table *widget.Table) {
@@ -9620,7 +9880,7 @@ func newQueryTableCell() *queryTableCell {
 }
 
 func newQueryRetrieveButton(tapped func()) *widget.Button {
-	button := widget.NewButtonWithIcon("", theme.DownloadIcon(), tapped)
+	button := widget.NewButtonWithIcon("", queryRetrieveRowIconResource, tapped)
 	button.Importance = widget.LowImportance
 	return button
 }
@@ -9643,10 +9903,12 @@ func applyArchiveTableCellWithColumn(cell *archiveTableCell, tableRow int, table
 		Italic: row.kind == archiveRowInstance,
 	}
 	cell.background.FillColor = archiveTableFillColor(tableRow, row, header, selected)
-	if !header && tableCol == archiveStudyTableColumnStatus {
-		cell.sortLabel.SetText("⌄")
+	if !header && (tableCol == archiveStudyTableColumnStatus || tableCol == archiveStudyTableColumnComments) {
+		cell.sortLabel.SetText("▾")
 		cell.sortLabel.Show()
 		cell.sortLabel.Refresh()
+	}
+	if !header && tableCol == archiveStudyTableColumnStatus {
 		if fill, ok := studyStatusDotColor(text); ok {
 			cell.statusDot.FillColor = fill
 			cell.statusDot.Refresh()
@@ -9853,7 +10115,7 @@ func newStudyTable(state *uiState) *widget.Table {
 	for col, width := range widths {
 		table.SetColumnWidth(col, width)
 	}
-	applyCompactTableRows(table)
+	applyArchiveTableRows(table)
 	return table
 }
 
@@ -11178,14 +11440,14 @@ func newSteppedEntry(entry *widget.Entry, step func(int) bool, apply func()) fyn
 
 func autoQueryResultSummaryText(state *uiState) string {
 	count := 0
+	kind := queryRunStudy
 	if state != nil {
 		count = len(state.queries)
+		kind = state.autoQueryLast.kind
 	}
+	noun := queryRunKindNoun(kind, count)
 	source := autoQueryResultSourceSummaryText(state)
-	if count == 1 {
-		return "1 study found\n" + source
-	}
-	return fmt.Sprintf("%d studies found\n%s", count, source)
+	return fmt.Sprintf("%d %s found\n%s", count, noun, source)
 }
 
 func autoQueryResultSourceSummaryText(state *uiState) string {
@@ -11732,7 +11994,7 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 	})
 
 	refreshCluster := workbenchStrip(container.NewVBox(
-		container.NewHBox(queryRefreshCadenceSlot(refreshMode), queryRefreshCountdownSlot(state.queryCountdownLabel), refreshButton),
+		container.NewHBox(queryRefreshCadenceSlot(refreshMode), queryRefreshCountdownSlot(state.queryCountdownLabel), queryRefreshButtonSlot(refreshButton)),
 		container.NewHBox(queryAutoRetrieveSlot(autoRetrieve), queryAutoRetrieveSettingsSlot(autoRetrieveSettings)),
 	))
 	filters := container.NewHBox(
@@ -11783,13 +12045,16 @@ func newQueryPrimaryActionButton(text string, tapped func()) *widget.Button {
 
 func queryPrimaryActionStripObjects(objects []fyne.CanvasObject) []fyne.CanvasObject {
 	out := make([]fyne.CanvasObject, 0, len(objects))
-	for _, object := range objects {
+	for index, object := range objects {
 		if _, ok := object.(*widget.Button); ok {
 			size := object.MinSize()
 			if size.Width < queryPrimaryActionButtonMinWidth {
 				size.Width = queryPrimaryActionButtonMinWidth
 			}
 			object = container.NewGridWrap(size, object)
+		}
+		if index < len(objects)-1 {
+			object = container.NewStack(object, newTableColumnDividerLayer())
 		}
 		out = append(out, object)
 	}
@@ -13496,7 +13761,7 @@ func queryTableHeaders() []string {
 }
 
 func autoQueryTableHeaders() []string {
-	return queryTableHeadersForColumns(autoQueryTableColumns())
+	return autoQueryTableHeadersForColumns(autoQueryTableColumns())
 }
 
 func queryTableColumns() []int {
@@ -13513,6 +13778,21 @@ func queryTableHeadersForColumns(columns []int) []string {
 		headers = append(headers, queryTableHeaderForColumn(col))
 	}
 	return headers
+}
+
+func autoQueryTableHeadersForColumns(columns []int) []string {
+	headers := make([]string, 0, len(columns))
+	for _, col := range columns {
+		headers = append(headers, autoQueryTableHeaderForColumn(col))
+	}
+	return headers
+}
+
+func autoQueryTableHeaderForColumn(col int) string {
+	if col == queryTableColumnDescription {
+		return "Descripti..."
+	}
+	return queryTableHeaderForColumn(col)
 }
 
 func queryTableHeaderForColumn(col int) string {

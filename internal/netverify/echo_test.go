@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/net/ul"
-	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 )
 
 func TestEchoAgainstLocalVerificationSCP(t *testing.T) {
