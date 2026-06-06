@@ -18,11 +18,11 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"github.com/ThalesMMS/Go-PACS/internal/dicominspect"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/object"
 	"github.com/ThalesMMS/dicom-go/transfer"
-	"github.com/ThalesMMS/Go-PACS/internal/dicominspect"
 )
 
 type Catalog struct {
@@ -47,8 +47,17 @@ type ImportReport struct {
 	Rejections   []Rejection
 }
 
+type ImportProgress struct {
+	ScannedFiles int
+	StoredFiles  int
+	Duplicates   int
+	InvalidFiles int
+	Path         string
+}
+
 type ImportOptions struct {
-	Limits ImportLimits
+	Limits     ImportLimits
+	OnProgress func(ImportProgress)
 }
 
 type ImportLimits struct {
@@ -137,6 +146,8 @@ type StudyFilters struct {
 	StudyDescription   string
 	StudyDateFrom      string
 	StudyDateTo        string
+	StudyDateTimeFrom  string
+	StudyDateTimeTo    string
 	ImportedAtFrom     string
 	ImportedAtTo       string
 	Modalities         []string
@@ -307,16 +318,19 @@ func (c *Catalog) importZip(ctx context.Context, zipPath string, report *ImportR
 		if !ok {
 			report.ScannedFiles++
 			report.Rejections = append(report.Rejections, Rejection{Path: sourcePath, Reason: "unsafe ZIP entry path"})
+			reportImportProgress(opts.OnProgress, *report, sourcePath)
 			continue
 		}
 		if seen[safeName] {
 			report.ScannedFiles++
 			report.Rejections = append(report.Rejections, Rejection{Path: sourcePath, Reason: "duplicate ZIP entry path"})
+			reportImportProgress(opts.OnProgress, *report, sourcePath)
 			continue
 		}
 		seen[safeName] = true
 		if rejectImportPathLength(report, safeName, opts.Limits.MaxImportPathLength) {
 			report.ScannedFiles++
+			reportImportProgress(opts.OnProgress, *report, sourcePath)
 			continue
 		}
 
@@ -327,6 +341,7 @@ func (c *Catalog) importZip(ctx context.Context, zipPath string, report *ImportR
 				Path:   fmt.Sprintf("zip://%s!%s", zipPath, safeName),
 				Reason: fmt.Sprintf("ZIP entry size %d exceeds limit %d", entrySize, opts.Limits.MaxZipEntryBytes),
 			})
+			reportImportProgress(opts.OnProgress, *report, sourcePath)
 			continue
 		}
 		if opts.Limits.MaxZipTotalBytes > 0 {
@@ -342,6 +357,7 @@ func (c *Catalog) importZip(ctx context.Context, zipPath string, report *ImportR
 						opts.Limits.MaxZipTotalBytes,
 					),
 				})
+				reportImportProgress(opts.OnProgress, *report, sourcePath)
 				return *report, nil
 			}
 		}
@@ -350,6 +366,7 @@ func (c *Catalog) importZip(ctx context.Context, zipPath string, report *ImportR
 		if err != nil {
 			report.ScannedFiles++
 			report.Rejections = append(report.Rejections, Rejection{Path: sourcePath, Reason: err.Error()})
+			reportImportProgress(opts.OnProgress, *report, sourcePath)
 			continue
 		}
 		if opts.Limits.MaxZipEntryBytes > 0 && extracted > opts.Limits.MaxZipEntryBytes {
@@ -359,6 +376,7 @@ func (c *Catalog) importZip(ctx context.Context, zipPath string, report *ImportR
 				Reason: limitExceededReason("max_zip_entry_bytes", extracted, opts.Limits.MaxZipEntryBytes),
 			})
 			_ = os.Remove(tempPath)
+			reportImportProgress(opts.OnProgress, *report, sourcePath)
 			continue
 		}
 		if opts.Limits.MaxZipTotalBytes > 0 && extractedBytes+extracted > opts.Limits.MaxZipTotalBytes {
@@ -368,6 +386,7 @@ func (c *Catalog) importZip(ctx context.Context, zipPath string, report *ImportR
 				Reason: limitExceededReason("max_zip_total_bytes", extractedBytes+extracted, opts.Limits.MaxZipTotalBytes),
 			})
 			_ = os.Remove(tempPath)
+			reportImportProgress(opts.OnProgress, *report, sourcePath)
 			return *report, nil
 		}
 		extractedBytes += extracted
@@ -602,6 +621,15 @@ func studyFilterWhere(filters StudyFilters) (string, []any) {
 	}
 	if value := strings.TrimSpace(filters.StudyDateTo); value != "" {
 		clauses = append(clauses, "study_date <= ?")
+		args = append(args, value)
+	}
+	studyDateTime := "(study_date || SUBSTR(REPLACE(COALESCE(study_time, ''), '.', '') || '000000', 1, 6))"
+	if value := strings.TrimSpace(filters.StudyDateTimeFrom); value != "" {
+		clauses = append(clauses, studyDateTime+" >= ?")
+		args = append(args, value)
+	}
+	if value := strings.TrimSpace(filters.StudyDateTimeTo); value != "" {
+		clauses = append(clauses, studyDateTime+" <= ?")
 		args = append(args, value)
 	}
 	if value := strings.TrimSpace(filters.ImportedAtFrom); value != "" {
@@ -1303,6 +1331,9 @@ func (c *Catalog) importFileWithSource(ctx context.Context, path string, sourceP
 		return
 	}
 	report.ScannedFiles++
+	defer func() {
+		reportImportProgress(opts.OnProgress, *report, sourcePath)
+	}()
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -1392,6 +1423,19 @@ func (c *Catalog) importFileWithSource(ctx context.Context, path string, sourceP
 		return
 	}
 	report.StoredFiles++
+}
+
+func reportImportProgress(onProgress func(ImportProgress), report ImportReport, path string) {
+	if onProgress == nil {
+		return
+	}
+	onProgress(ImportProgress{
+		ScannedFiles: report.ScannedFiles,
+		StoredFiles:  report.StoredFiles,
+		Duplicates:   report.Duplicates,
+		InvalidFiles: report.InvalidFiles,
+		Path:         path,
+	})
 }
 
 func limitExceededReason(limit string, got, max int64) string {

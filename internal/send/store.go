@@ -7,15 +7,15 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ThalesMMS/Go-PACS/internal/archive"
+	"github.com/ThalesMMS/Go-PACS/internal/nettimeout"
+	"github.com/ThalesMMS/Go-PACS/internal/netverify"
+	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/net/ul"
 	"github.com/ThalesMMS/dicom-go/object"
 	"github.com/ThalesMMS/dicom-go/transfer"
-	"github.com/ThalesMMS/Go-PACS/internal/archive"
-	"github.com/ThalesMMS/Go-PACS/internal/nettimeout"
-	"github.com/ThalesMMS/Go-PACS/internal/netverify"
-	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 )
 
 const DefaultTimeout = 30 * time.Second
@@ -38,6 +38,22 @@ type Outcome struct {
 	Duration  time.Duration
 }
 
+type Options struct {
+	CallingAETitle string
+	OnProgress     func(Progress)
+}
+
+type Progress struct {
+	Attempted int
+	Sent      int
+	Warnings  int
+	Failed    int
+	Total     int
+	Path      string
+	Status    uint16
+	Error     string
+}
+
 type Result struct {
 	Path                        string
 	SOPClassUID                 string
@@ -49,38 +65,59 @@ type Result struct {
 }
 
 func SendStudy(ctx context.Context, catalog *archive.Catalog, node nodes.Node, studyInstanceUID string, callingAETitle string) (Outcome, error) {
+	return SendStudyWithOptions(ctx, catalog, node, studyInstanceUID, Options{CallingAETitle: callingAETitle})
+}
+
+func SendStudyWithOptions(ctx context.Context, catalog *archive.Catalog, node nodes.Node, studyInstanceUID string, opts Options) (Outcome, error) {
 	instances, err := catalog.InstancesForStudy(ctx, studyInstanceUID)
 	if err != nil {
 		return Outcome{}, err
 	}
-	return sendInstances(ctx, node, instances, callingAETitle)
+	return sendInstancesWithOptions(ctx, node, instances, opts)
 }
 
 func SendSeries(ctx context.Context, catalog *archive.Catalog, node nodes.Node, seriesInstanceUID string, callingAETitle string) (Outcome, error) {
+	return SendSeriesWithOptions(ctx, catalog, node, seriesInstanceUID, Options{CallingAETitle: callingAETitle})
+}
+
+func SendSeriesWithOptions(ctx context.Context, catalog *archive.Catalog, node nodes.Node, seriesInstanceUID string, opts Options) (Outcome, error) {
 	instances, err := catalog.InstancesForSeries(ctx, seriesInstanceUID)
 	if err != nil {
 		return Outcome{}, err
 	}
-	return sendInstances(ctx, node, instances, callingAETitle)
+	return sendInstancesWithOptions(ctx, node, instances, opts)
 }
 
 func SendInstance(ctx context.Context, catalog *archive.Catalog, node nodes.Node, sopInstanceUID string, callingAETitle string) (Outcome, error) {
+	return SendInstanceWithOptions(ctx, catalog, node, sopInstanceUID, Options{CallingAETitle: callingAETitle})
+}
+
+func SendInstanceWithOptions(ctx context.Context, catalog *archive.Catalog, node nodes.Node, sopInstanceUID string, opts Options) (Outcome, error) {
 	instance, err := catalog.InstanceBySOPInstanceUID(ctx, sopInstanceUID)
 	if err != nil {
 		return Outcome{}, err
 	}
-	return sendInstances(ctx, node, []archive.Instance{instance}, callingAETitle)
+	return sendInstancesWithOptions(ctx, node, []archive.Instance{instance}, opts)
 }
 
 func sendInstances(ctx context.Context, node nodes.Node, instances []archive.Instance, callingAETitle string) (Outcome, error) {
+	return sendInstancesWithOptions(ctx, node, instances, Options{CallingAETitle: callingAETitle})
+}
+
+func sendInstancesWithOptions(ctx context.Context, node nodes.Node, instances []archive.Instance, opts Options) (Outcome, error) {
 	paths := make([]string, 0, len(instances))
 	for _, instance := range instances {
 		paths = append(paths, instance.StoredPath)
 	}
-	return SendFiles(ctx, node, paths, callingAETitle)
+	return SendFilesWithOptions(ctx, node, paths, opts)
 }
 
 func SendFiles(ctx context.Context, node nodes.Node, paths []string, callingAETitle string) (Outcome, error) {
+	return SendFilesWithOptions(ctx, node, paths, Options{CallingAETitle: callingAETitle})
+}
+
+func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, opts Options) (Outcome, error) {
+	callingAETitle := opts.CallingAETitle
 	if callingAETitle == "" {
 		callingAETitle = netverify.DefaultCallingAETitle
 	}
@@ -135,6 +172,7 @@ func SendFiles(ctx context.Context, node nodes.Node, paths []string, callingAETi
 			result.Error = err.Error()
 			outcome.Failures = append(outcome.Failures, fmt.Sprintf("%s: %v", file.path, err))
 			outcome.Results = append(outcome.Results, result)
+			reportSendProgress(opts.OnProgress, outcome, len(files), file.path, status, result.Error)
 			continue
 		}
 		if isWarningStatus(status) {
@@ -142,6 +180,7 @@ func SendFiles(ctx context.Context, node nodes.Node, paths []string, callingAETi
 		}
 		outcome.Sent++
 		outcome.Results = append(outcome.Results, result)
+		reportSendProgress(opts.OnProgress, outcome, len(files), file.path, status, "")
 	}
 
 	releaseCtx, cancelRelease := context.WithTimeout(context.Background(), netverify.DefaultReleaseTimeout)
@@ -156,6 +195,22 @@ func SendFiles(ctx context.Context, node nodes.Node, paths []string, callingAETi
 	released = true
 	outcome.Duration = time.Since(start)
 	return outcome, nil
+}
+
+func reportSendProgress(onProgress func(Progress), outcome Outcome, total int, path string, status uint16, resultError string) {
+	if onProgress == nil {
+		return
+	}
+	onProgress(Progress{
+		Attempted: outcome.Sent + outcome.Failed,
+		Sent:      outcome.Sent,
+		Warnings:  outcome.Warnings,
+		Failed:    outcome.Failed,
+		Total:     total,
+		Path:      path,
+		Status:    status,
+		Error:     resultError,
+	})
 }
 
 type storeFile struct {

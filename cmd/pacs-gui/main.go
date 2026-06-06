@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,6 +87,8 @@ const (
 	queryQuickSearchStatus             = "Status"
 )
 
+const queryQuickSearchSegmentMinWidth float32 = 112
+
 const (
 	queryWorkspaceTitle      = "DICOM Query/Retrieve"
 	queryActionLabelQuery    = "Query"
@@ -96,6 +99,17 @@ const (
 	queryActionLabelVerify   = "Verify"
 	dicomNodesTitle          = "DICOM Nodes:"
 	dicomNodesInstruction    = "Drag sources into the priority order for retrieving"
+)
+
+const queryPrimaryActionButtonMinWidth float32 = 116
+
+const (
+	queryDateFilterPanelMinWidth       float32 = 560
+	queryModalityFilterPanelMinWidth   float32 = 190
+	queryRefreshCadenceSlotWidth       float32 = 260
+	queryRefreshCountdownSlotWidth     float32 = 132
+	queryAutoRetrieveSlotWidth         float32 = 132
+	queryAutoRetrieveSettingsSlotWidth float32 = 112
 )
 
 const (
@@ -162,8 +176,9 @@ const (
 )
 
 const (
-	settingsLabelDICOMCommunicationTimeout = "DICOM Communications Timeout (s)"
-	settingsLabelDICOMConnectionTimeout    = "Connection Timeout (s)"
+	settingsLabelReceiverPort              = "Port Number"
+	settingsLabelDICOMCommunicationTimeout = "Time-out for DICOM communications"
+	settingsLabelDICOMConnectionTimeout    = "Connection time-out"
 	receivePreferredSyntaxAutoLabel        = "Auto"
 	receivePreferredSyntaxExplicitLabel    = "Explicit VR Little Endian"
 	receivePreferredSyntaxImplicitLabel    = "Implicit VR Little Endian"
@@ -209,6 +224,16 @@ const (
 	querySourceFail querySourceStatus = "fail"
 )
 
+type sourceStatusHistoryKind string
+
+const (
+	sourceStatusHistoryKindVerify sourceStatusHistoryKind = "C-ECHO"
+	sourceStatusHistoryKindQuery  sourceStatusHistoryKind = "Query"
+	sourceStatusHistoryOK         string                  = "OK"
+	sourceStatusHistoryFail       string                  = "failed"
+	sourceStatusHistoryLimit                              = 6
+)
+
 const queryLocalStatePresent = "local"
 
 const (
@@ -232,12 +257,21 @@ var (
 	studyStatusTeachingColor    = color.NRGBA{R: 144, G: 116, B: 206, A: 255}
 	studyStatusProblemColor     = color.NRGBA{R: 206, G: 76, B: 70, A: 255}
 	studyStatusCustomColor      = color.NRGBA{R: 140, G: 140, B: 140, A: 255}
+
+	studyStatusReviewedChipColor    = color.NRGBA{R: 30, G: 58, B: 34, A: 255}
+	studyStatusInterestingChipColor = color.NRGBA{R: 60, G: 49, B: 28, A: 255}
+	studyStatusFollowUpChipColor    = color.NRGBA{R: 32, G: 48, B: 68, A: 255}
+	studyStatusTeachingChipColor    = color.NRGBA{R: 45, G: 38, B: 66, A: 255}
+	studyStatusProblemChipColor     = color.NRGBA{R: 62, G: 32, B: 31, A: 255}
+	studyStatusCustomChipColor      = color.NRGBA{R: 44, G: 44, B: 44, A: 255}
 )
 
 const (
-	archiveQuickSearchPatientName = "Patient Name"
-	archiveQuickSearchPatientID   = "Patient ID"
-	archiveQuickSearchAccession   = "Accession"
+	archiveQuickSearchPatientName                       = "Patient Name"
+	archiveQuickSearchPatientID                         = "Patient ID"
+	archiveQuickSearchAccession                         = "Accession"
+	archiveToolbarQuickSearchFieldSelectorWidth float32 = 130
+	archiveToolbarQuickSearchWidth              float32 = 260
 )
 
 var queryDatePresetOptions = flattenQueryDatePresetColumns(queryDatePresetColumns())
@@ -257,6 +291,7 @@ var queryQuickSearchOptions = []string{
 
 var queryRefreshModeOptions = []string{
 	queryRefreshModeDont,
+	autoQueryRefreshEvery30Min,
 }
 
 var autoQueryRefreshModeOptions = []string{
@@ -1080,11 +1115,17 @@ func configureQueryQuickSearchPlaceholder(entry *widget.Entry, field string) {
 	if entry == nil {
 		return
 	}
-	if field == queryQuickSearchCustomDICOMField {
+	switch field {
+	case queryQuickSearchPatientName:
+		entry.SetPlaceHolder("Patient Name")
+	case queryQuickSearchCustomDICOMField:
 		entry.SetPlaceHolder("StudyID=ABC123")
-		return
+	case queryQuickSearchPatientID, queryQuickSearchAccession, queryQuickSearchBirthdate, queryQuickSearchDescription,
+		queryQuickSearchReferringPhysician, queryQuickSearchInstitution, queryQuickSearchComments, queryQuickSearchStatus:
+		entry.SetPlaceHolder(field)
+	default:
+		entry.SetPlaceHolder("Search")
 	}
-	entry.SetPlaceHolder("Search")
 }
 
 func newQueryQuickSearchFieldStrip(selectWidget *widget.Select, entry *widget.Entry) fyne.CanvasObject {
@@ -1103,13 +1144,17 @@ func newQueryQuickSearchFieldStrip(selectWidget *widget.Select, entry *widget.En
 		}
 	}
 	if selectWidget != nil {
+		previousOnChanged := selectWidget.OnChanged
 		selectWidget.OnChanged = func(field string) {
 			configureQueryQuickSearchPlaceholder(entry, field)
+			if previousOnChanged != nil {
+				previousOnChanged(field)
+			}
 			refreshButtons()
 		}
 	}
 	objects := make([]fyne.CanvasObject, 0, len(queryQuickSearchOptions))
-	for _, field := range queryQuickSearchOptions {
+	for index, field := range queryQuickSearchOptions {
 		field := field
 		button := widget.NewButton(field, func() {
 			if selectWidget != nil {
@@ -1118,11 +1163,16 @@ func newQueryQuickSearchFieldStrip(selectWidget *widget.Select, entry *widget.En
 		})
 		button.Importance = widget.LowImportance
 		buttons[field] = button
-		objects = append(objects, button)
+		objects = append(objects, newQueryQuickSearchSegment(button, index < len(queryQuickSearchOptions)-1))
 	}
-	configureQueryQuickSearchPlaceholder(entry, "")
+	initialField := ""
+	if selectWidget != nil {
+		initialField = selectWidget.Selected
+	}
+	configureQueryQuickSearchPlaceholder(entry, initialField)
 	refreshButtons()
-	return container.NewHBox(objects...)
+	strip := container.NewStack(canvas.NewRectangle(archiveHeaderRowColor), container.NewHBox(objects...), newTableRowDividerLayer())
+	return container.NewHScroll(strip)
 }
 
 func newQuerySearchBar(entry *widget.Entry, submit func()) fyne.CanvasObject {
@@ -1142,10 +1192,38 @@ func newQuerySearchBar(entry *widget.Entry, submit func()) fyne.CanvasObject {
 	return container.NewBorder(nil, nil, widget.NewIcon(theme.SearchIcon()), submitButton, entry)
 }
 
+func newQueryQuickSearchSegment(content fyne.CanvasObject, divider bool) fyne.CanvasObject {
+	size := content.MinSize()
+	if size.Width < queryQuickSearchSegmentMinWidth {
+		size.Width = queryQuickSearchSegmentMinWidth
+	}
+	content = container.NewGridWrap(size, content)
+	if !divider {
+		return content
+	}
+	return container.NewStack(content, newTableColumnDividerLayer())
+}
+
 func newQueryRefreshButton(tapped func()) *widget.Button {
 	button := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), tapped)
 	button.Importance = widget.LowImportance
 	return button
+}
+
+func queryRefreshCadenceSlot(selectWidget *widget.Select) fyne.CanvasObject {
+	return container.NewGridWrap(fyne.NewSize(queryRefreshCadenceSlotWidth, selectWidget.MinSize().Height), selectWidget)
+}
+
+func queryRefreshCountdownSlot(label *widget.Label) fyne.CanvasObject {
+	return container.NewGridWrap(fyne.NewSize(queryRefreshCountdownSlotWidth, label.MinSize().Height), label)
+}
+
+func queryAutoRetrieveSlot(check *widget.Check) fyne.CanvasObject {
+	return container.NewGridWrap(fyne.NewSize(queryAutoRetrieveSlotWidth, check.MinSize().Height), check)
+}
+
+func queryAutoRetrieveSettingsSlot(button *widget.Button) fyne.CanvasObject {
+	return container.NewGridWrap(fyne.NewSize(queryAutoRetrieveSettingsSlotWidth, button.MinSize().Height), button)
 }
 
 func mainToolbarButtonLabels() []string {
@@ -1205,17 +1283,62 @@ func compactToolbarButton(label string, icon fyne.Resource, tapped func()) *widg
 	return button
 }
 
+const (
+	mainToolbarActionIconSlotSize     float32 = 40
+	mainToolbarActionSlotWidth        float32 = 76
+	mainToolbarActionCaptionSlotWidth float32 = mainToolbarActionSlotWidth
+	mainToolbarGroupSeparatorWidth    float32 = 12
+	mainToolbarGroupSeparatorHeight   float32 = 64
+)
+
+func mainToolbarAction(label string, icon fyne.Resource, tapped func()) *fyne.Container {
+	button := widget.NewButtonWithIcon("", icon, tapped)
+	button.Importance = widget.LowImportance
+	iconSlot := container.NewGridWrap(fyne.NewSize(mainToolbarActionIconSlotSize, mainToolbarActionIconSlotSize), button)
+	caption := compactWorkbenchLabel()
+	caption.SetText(label)
+	caption.Alignment = fyne.TextAlignCenter
+	captionSlot := container.NewGridWrap(fyne.NewSize(mainToolbarActionCaptionSlotWidth, caption.MinSize().Height), caption)
+	return container.NewVBox(iconSlot, captionSlot)
+}
+
 func disabledToolbarButton(label string, icon fyne.Resource) *widget.Button {
 	button := compactToolbarButton(label, icon, nil)
 	button.Disable()
 	return button
 }
 
+func disabledMainToolbarAction(label string, icon fyne.Resource) *fyne.Container {
+	action := mainToolbarAction(label, icon, nil)
+	if button := findToolbarActionButton(action); button != nil {
+		button.Disable()
+	}
+	return action
+}
+
+func findToolbarActionButton(action fyne.CanvasObject) *widget.Button {
+	if button, ok := action.(*widget.Button); ok {
+		return button
+	}
+	if c, ok := action.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if button := findToolbarActionButton(child); button != nil {
+				return button
+			}
+		}
+	}
+	return nil
+}
+
+func mainToolbarGroupSeparator() fyne.CanvasObject {
+	return container.NewGridWrap(fyne.NewSize(mainToolbarGroupSeparatorWidth, mainToolbarGroupSeparatorHeight), widget.NewSeparator())
+}
+
 func groupedToolbarActions(buttons map[string]fyne.CanvasObject) *fyne.Container {
 	objects := []fyne.CanvasObject{}
 	for groupIndex, group := range mainToolbarButtonGroups() {
 		if groupIndex > 0 {
-			objects = append(objects, widget.NewSeparator())
+			objects = append(objects, mainToolbarGroupSeparator())
 		}
 		for _, label := range group {
 			if button := buttons[label]; button != nil {
@@ -1223,7 +1346,12 @@ func groupedToolbarActions(buttons map[string]fyne.CanvasObject) *fyne.Container
 			}
 		}
 	}
-	return container.NewHBox(objects...)
+	return container.NewStack(
+		canvas.NewRectangle(archiveHeaderRowColor),
+		newCompactTableCellContent(container.NewHBox(objects...)),
+		newTableColumnDividerLayer(),
+		newTableRowDividerLayer(),
+	)
 }
 
 func selectAppTabByText(tabs *container.AppTabs, text string) bool {
@@ -1237,6 +1365,21 @@ func selectAppTabByText(tabs *container.AppTabs, text string) bool {
 		}
 	}
 	return false
+}
+
+func openMetadataInspector(tabs *container.AppTabs, status *widget.Label, state *uiState, inspectSelected func()) {
+	if !selectAppTabByText(tabs, "Inspector") {
+		return
+	}
+	if _, ok := selectedInstance(state); ok {
+		if inspectSelected != nil {
+			inspectSelected()
+		}
+		return
+	}
+	if status != nil {
+		status.SetText("Showing metadata inspector")
+	}
 }
 
 var archiveQuickSearchOptions = []string{
@@ -1316,16 +1459,19 @@ func run() {
 	}
 
 	state := &uiState{
-		catalog:               catalog,
-		nodeStore:             nodeStore,
-		autoQueryProfileStore: autoQueryProfileStore,
-		nodes:                 nodeList,
-		appConfig:             appCfg,
-		appConfigPath:         configPath,
-		operations:            operationHistory,
-		operationHistoryPath:  operationHistoryPath,
+		catalog:                catalog,
+		nodeStore:              nodeStore,
+		autoQueryProfileStore:  autoQueryProfileStore,
+		nodes:                  nodeList,
+		appConfig:              appCfg,
+		appConfigPath:          configPath,
+		operations:             operationHistory,
+		operationHistoryPath:   operationHistoryPath,
+		openedArchiveStudyUIDs: openedArchiveStudyUIDMap(appCfg.OpenedArchiveStudyUIDs),
 	}
 	loadAutoQueryProfiles(state, autoQueryProfiles)
+	applySavedNodeSortPreference(state)
+	applySavedTaskSortPreference(state)
 	status := widget.NewLabel("Ready")
 	status.Wrapping = fyne.TextTruncate
 
@@ -1352,72 +1498,72 @@ func run() {
 	archiveControls := archiveControlSet.archiveControls
 	var tabs *container.AppTabs
 
-	openButton := compactToolbarButton(toolbarLabelOpen, theme.FolderOpenIcon(), func() {
+	openButton := mainToolbarAction(toolbarLabelOpen, theme.FolderOpenIcon(), func() {
 		openFileDialog(w, status, summary, elementTable, state)
 	})
-	inspectArchiveButton := compactToolbarButton(toolbarLabelInspect, theme.SearchIcon(), func() {
+	inspectArchiveButton := mainToolbarAction(toolbarLabelInspect, theme.SearchIcon(), func() {
 		inspectSelectedArchiveInstance(w, status, summary, elementTable, state)
 	})
-	importFileButton := compactToolbarButton(toolbarLabelImport, theme.ContentAddIcon(), func() {
+	importFileButton := mainToolbarAction(toolbarLabelImport, theme.ContentAddIcon(), func() {
 		importFileDialog(w, status, tables, state)
 	})
-	exportButton := compactToolbarButton(toolbarLabelExport, theme.DocumentSaveIcon(), func() {
+	exportButton := mainToolbarAction(toolbarLabelExport, theme.DocumentSaveIcon(), func() {
 		exportStudiesCSV(w, status, state)
 	})
-	importFolderButton := compactToolbarButton(toolbarLabelFolder, theme.FolderIcon(), func() {
+	importFolderButton := mainToolbarAction(toolbarLabelFolder, theme.FolderIcon(), func() {
 		importFolderDialog(w, status, tables, state)
 	})
-	refreshButton := compactToolbarButton(toolbarLabelRefresh, theme.ViewRefreshIcon(), func() {
+	refreshButton := mainToolbarAction(toolbarLabelRefresh, theme.ViewRefreshIcon(), func() {
 		refreshStudies(w, status, tables, state)
 	})
-	queryButton := compactToolbarButton(toolbarLabelQuery, theme.SearchReplaceIcon(), func() {
+	queryButton := mainToolbarAction(toolbarLabelQuery, theme.SearchReplaceIcon(), func() {
 		if selectAppTabByText(tabs, "Query") {
 			status.SetText("Showing Query workspace")
 		}
 	})
-	sendStudyButton := compactToolbarButton(toolbarLabelSendStudy, theme.UploadIcon(), func() {
+	sendStudyButton := mainToolbarAction(toolbarLabelSendStudy, theme.UploadIcon(), func() {
 		sendSelectedStudy(w, status, state)
 	})
-	sendSeriesButton := compactToolbarButton(toolbarLabelSendSeries, theme.UploadIcon(), func() {
+	sendSeriesButton := mainToolbarAction(toolbarLabelSendSeries, theme.UploadIcon(), func() {
 		sendSelectedSeries(w, status, state)
 	})
-	sendImageButton := compactToolbarButton(toolbarLabelSendImage, theme.UploadIcon(), func() {
+	sendImageButton := mainToolbarAction(toolbarLabelSendImage, theme.UploadIcon(), func() {
 		sendSelectedInstance(w, status, state)
 	})
-	retrieveSeriesButton := compactToolbarButton(toolbarLabelRetrieveSeries, theme.DownloadIcon(), func() {
+	retrieveSeriesButton := mainToolbarAction(toolbarLabelRetrieveSeries, theme.DownloadIcon(), func() {
 		retrieveSelectedSeries(w, status, tables, state)
 	})
-	retrieveImageButton := compactToolbarButton(toolbarLabelRetrieveImage, theme.DownloadIcon(), func() {
+	retrieveImageButton := mainToolbarAction(toolbarLabelRetrieveImage, theme.DownloadIcon(), func() {
 		retrieveSelectedInstance(w, status, tables, state)
 	})
-	cancelRetrieveButton := compactToolbarButton(toolbarLabelCancel, theme.MediaStopIcon(), func() {
+	cancelRetrieveButton := mainToolbarAction(toolbarLabelCancel, theme.MediaStopIcon(), func() {
 		cancelActiveRetrieve(status, state)
 	})
-	anonymizeButton := disabledToolbarButton(toolbarLabelAnonymize, theme.VisibilityOffIcon())
-	metaDataButton := compactToolbarButton(toolbarLabelMetaData, theme.SearchIcon(), func() {
-		if selectAppTabByText(tabs, "Inspector") {
-			status.SetText("Showing metadata inspector")
-		}
+	anonymizeButton := disabledMainToolbarAction(toolbarLabelAnonymize, theme.VisibilityOffIcon())
+	metaDataButton := mainToolbarAction(toolbarLabelMetaData, theme.SearchIcon(), func() {
+		openMetadataInspector(tabs, status, state, func() {
+			inspectSelectedArchiveInstance(w, status, summary, elementTable, state)
+		})
 	})
-	addNodeButton := compactToolbarButton(toolbarLabelAdd, theme.ContentAddIcon(), func() {
+	addNodeButton := mainToolbarAction(toolbarLabelAdd, theme.ContentAddIcon(), func() {
 		showAddNodeDialog(w, status, nodeTable, state)
 	})
-	editNodeButton := compactToolbarButton(toolbarLabelEdit, theme.DocumentCreateIcon(), func() {
+	editNodeButton := mainToolbarAction(toolbarLabelEdit, theme.DocumentCreateIcon(), func() {
 		showEditNodeDialog(w, status, nodeTable, state)
 	})
-	deleteStudyButton := compactToolbarButton(toolbarLabelDelete, theme.DeleteIcon(), func() {
+	deleteStudyButton := mainToolbarAction(toolbarLabelDelete, theme.DeleteIcon(), func() {
 		showDeleteStudyDialog(w, status, tables, state)
 	})
-	echoButton := compactToolbarButton(toolbarLabelVerify, theme.ConfirmIcon(), func() {
+	echoButton := mainToolbarAction(toolbarLabelVerify, theme.ConfirmIcon(), func() {
 		verifySelectedNode(w, status, nodeTable, state)
 	})
-	startReceiverButton := compactToolbarButton(toolbarLabelListen, theme.DownloadIcon(), func() {
+	startReceiverButton := mainToolbarAction(toolbarLabelListen, theme.DownloadIcon(), func() {
 		startReceiver(w, status, state)
 	})
-	stopReceiverButton := compactToolbarButton(toolbarLabelStop, theme.MediaStopIcon(), func() {
+	stopReceiverButton := mainToolbarAction(toolbarLabelStop, theme.MediaStopIcon(), func() {
 		stopReceiver(w, status, tables, state)
 	})
-	settingsButton := compactToolbarButton(toolbarLabelSettings, theme.SettingsIcon(), func() {
+	settingsButton := mainToolbarAction(toolbarLabelSettings, theme.SettingsIcon(), func() {
 		showSettingsDialog(w, status, tables, state)
 	})
 
@@ -1487,6 +1633,8 @@ func run() {
 		container.NewTabItemWithIcon("Inspector", theme.SearchIcon(), inspectorTab),
 	)
 	registerNetworkDeleteShortcut(w, tabs, status, nodeTable, state)
+	registerNetworkVerifyShortcut(w, tabs, status, nodeTable, state)
+	registerQueryShortcuts(w, tabs, status, tables, state)
 
 	content := container.NewBorder(
 		toolbar,
@@ -1504,109 +1652,136 @@ func run() {
 }
 
 type uiState struct {
-	elements                     []dicominspect.ElementSummary
-	studies                      []archive.Study
-	archiveRows                  []archiveBrowserRow
-	collapsedPatientGroups       map[string]bool
-	collapsedArchiveStudies      map[string]bool
-	archiveSeriesByStudy         map[string][]archive.Series
-	series                       []archive.Series
-	instances                    []archive.Instance
-	nodes                        []nodes.Node
-	nodeTableRows                []int
-	queries                      []query.Match
-	catalog                      *archive.Catalog
-	nodeStore                    *nodes.Store
-	autoQueryProfileStore        *autoquery.Store
-	autoQueryProfiles            []autoquery.Profile
-	autoQueryProfileName         string
-	autoQueryProfileLocked       bool
-	autoQuerySources             []autoquery.Source
-	receiver                     *receive.Server
-	appConfig                    appconfig.Config
-	appConfigPath                string
-	operations                   []ops.Summary
-	operationTable               *widget.Table
-	operationDetail              *widget.Entry
-	operationHistoryPath         string
-	archiveAlbumList             *widget.List
-	selectedArchiveAlbum         archiveAlbumID
-	archiveSourceList            *widget.List
-	archiveSourceMoveUpButton    *widget.Button
-	archiveSourceMoveDownButton  *widget.Button
-	archiveActivity              *widget.Label
-	archiveActivityList          *widget.List
-	archiveActivityProgress      *widget.ProgressBar
-	archiveCancelRetrieveButton  *widget.Button
-	archiveClearActivityButton   *widget.Button
-	archiveEditStudyButton       *widget.Button
-	archiveSummaryTitle          *widget.Label
-	archiveSummary               *widget.Label
-	archiveResultSummary         *widget.Label
-	archiveSeriesSummary         *widget.Label
-	archiveInstancesSummary      *widget.Label
-	queryDestinationLabel        *widget.Label
-	queryResultSummaryLabel      *widget.Label
-	querySelectedDetailsLabel    *widget.Label
-	autoQueryResultSummaryLabel  *widget.Label
-	autoQueryCountdownLabel      *widget.Label
-	querySourceList              *widget.List
-	queryMoveDestinationSelect   *widget.SelectEntry
-	lastQuery                    lastQueryRequest
-	autoQueryLast                lastQueryRequest
-	queryMoveDestination         string
-	queryAutoRetrieve            bool
-	queryKeepOnTop               bool
-	autoQueryAutoRetrieve        bool
-	autoQueryRetrieveLevel       string
-	autoQueryMaxMatches          string
-	autoQueryDuplicatePolicy     string
-	autoQueryRequireConfirmation bool
-	autoQuerySettingsConfigured  bool
-	autoQuerySearchField         string
-	autoQuerySearchText          string
-	autoQueryDatePreset          string
-	autoQueryModalities          []string
-	autoQueryRefreshMode         string
-	autoQueryRefreshCancel       context.CancelFunc
-	autoQueryNextRefresh         time.Time
-	nodeVerifyStatuses           map[string]nodeVerifyStatus
-	querySourceStatuses          map[string]querySourceStatus
-	queryRetrieveRows            map[string]string
-	receiverStartedAt            time.Time
-	activeRetrieveCancel         context.CancelFunc
-	retrieveActivityNode         string
-	retrieveActivityProgress     retrieve.Progress
-	activeQueryActivityLabel     string
-	activeSendActivityLabel      string
-	activeImportActivityLabel    string
-	selectedOperationRow         int
-	studyFilters                 archive.StudyFilters
-	seriesFilters                archive.SeriesFilters
-	selectedStudyRow             int
-	selectedSeriesRow            int
-	selectedInstanceRow          int
-	selectedNodeRow              int
-	selectedAutoQuerySourceRow   int
-	selectedQueryRow             int
-	selectedQueryVirtual         bool
-	selectedQueryVirtualMatch    query.Match
-	collapsedQueryGroups         map[string]bool
-	archiveSortActive            bool
-	archiveSortColumn            int
-	archiveSortDescending        bool
-	seriesSortActive             bool
-	seriesSortColumn             int
-	seriesSortDescending         bool
-	instanceSortActive           bool
-	instanceSortColumn           int
-	instanceSortDescending       bool
-	nodeSortActive               bool
-	nodeSortColumn               int
-	nodeSortDescending           bool
-	querySortActive              bool
-	querySortColumn              int
-	querySortDescending          bool
+	elements                        []dicominspect.ElementSummary
+	studies                         []archive.Study
+	archiveRows                     []archiveBrowserRow
+	collapsedPatientGroups          map[string]bool
+	collapsedArchiveStudies         map[string]bool
+	collapsedArchiveSeries          map[string]bool
+	archiveSeriesByStudy            map[string][]archive.Series
+	archiveInstancesBySeries        map[string][]archive.Instance
+	series                          []archive.Series
+	instances                       []archive.Instance
+	nodes                           []nodes.Node
+	nodeTableRows                   []int
+	queries                         []query.Match
+	catalog                         *archive.Catalog
+	nodeStore                       *nodes.Store
+	autoQueryProfileStore           *autoquery.Store
+	autoQueryProfiles               []autoquery.Profile
+	autoQueryProfileName            string
+	autoQueryProfileLocked          bool
+	autoQuerySources                []autoquery.Source
+	receiver                        *receive.Server
+	appConfig                       appconfig.Config
+	appConfigPath                   string
+	operations                      []ops.Summary
+	operationTable                  *widget.Table
+	operationDetail                 *widget.Entry
+	operationHistoryPath            string
+	archiveAlbumList                *widget.List
+	selectedArchiveAlbum            archiveAlbumID
+	openedArchiveStudyUIDs          map[string]bool
+	archiveSourceList               *widget.List
+	archiveSourceMoveUpButton       *widget.Button
+	archiveSourceMoveDownButton     *widget.Button
+	archiveActivity                 *widget.Label
+	archiveActivityList             *widget.List
+	archiveActivityProgress         *widget.ProgressBar
+	archiveCancelRetrieveButton     *widget.Button
+	archiveClearActivityButton      *widget.Button
+	archiveEditStudyButton          *widget.Button
+	archiveSummaryTitle             *widget.Label
+	archiveSummary                  *widget.Label
+	archivePatientStudyList         *widget.List
+	archiveResultSummary            *widget.Label
+	archiveAlbumScopeLabel          *widget.Label
+	archiveAdvancedFilterSync       func()
+	archiveSeriesSummary            *widget.Label
+	archiveInstancesSummary         *widget.Label
+	archiveSelectedDetailsLabel     *widget.Label
+	queryDestinationLabel           *widget.Label
+	queryResultSummaryLabel         *widget.Label
+	querySelectedDetailsLabel       *widget.Label
+	querySourceHistoryLabel         *widget.Label
+	queryCountdownLabel             *widget.Label
+	autoQueryResultSummaryLabel     *widget.Label
+	autoQueryCountdownLabel         *widget.Label
+	querySourceList                 *widget.List
+	queryMoveDestinationSelect      *widget.SelectEntry
+	lastQuery                       lastQueryRequest
+	autoQueryLast                   lastQueryRequest
+	queryMoveDestination            string
+	queryAutoRetrieve               bool
+	queryKeepOnTop                  bool
+	autoQueryAutoRetrieve           bool
+	autoQueryRetrieveLevel          string
+	autoQueryMaxMatches             string
+	autoQueryDuplicatePolicy        string
+	autoQueryRequireConfirmation    bool
+	autoQuerySettingsConfigured     bool
+	autoQuerySearchField            string
+	autoQuerySearchText             string
+	autoQueryDatePreset             string
+	autoQueryModalities             []string
+	autoQueryRefreshMode            string
+	autoQueryRefreshCancel          context.CancelFunc
+	autoQueryNextRefresh            time.Time
+	queryRefreshCancel              context.CancelFunc
+	queryNextRefresh                time.Time
+	nodeVerifyStatuses              map[string]nodeVerifyStatus
+	nodeVerifyStatusTimes           map[string]time.Time
+	querySourceStatuses             map[string]querySourceStatus
+	querySourceStatusTimes          map[string]time.Time
+	querySourceHistory              []sourceStatusHistoryEntry
+	queryRetrieveRows               map[string]string
+	receiverStartedAt               time.Time
+	activeRetrieveCancel            context.CancelFunc
+	retrieveActivityNode            string
+	retrieveActivityProgress        retrieve.Progress
+	activeQueryActivityLabel        string
+	activeQueryActivityProgress     queryActivityProgress
+	activeQueryActivityHasProgress  bool
+	activeSendActivityLabel         string
+	activeSendActivityProgress      send.Progress
+	activeSendActivityHasProgress   bool
+	activeImportActivityLabel       string
+	activeImportActivityProgress    archive.ImportProgress
+	activeImportActivityHasProgress bool
+	selectedOperationRow            int
+	studyFilters                    archive.StudyFilters
+	seriesFilters                   archive.SeriesFilters
+	selectedStudyRow                int
+	selectedSeriesRow               int
+	selectedInstanceRow             int
+	selectedNodeRow                 int
+	selectedAutoQuerySourceRow      int
+	selectedQueryRow                int
+	selectedQueryVirtual            bool
+	selectedQueryVirtualMatch       query.Match
+	collapsedQueryGroups            map[string]bool
+	queryRunShortcutAction          func()
+	archiveSortActive               bool
+	archiveSortColumn               int
+	archiveSortDescending           bool
+	seriesSortActive                bool
+	seriesSortColumn                int
+	seriesSortDescending            bool
+	instanceSortActive              bool
+	instanceSortColumn              int
+	instanceSortDescending          bool
+	elementSortActive               bool
+	elementSortColumn               int
+	elementSortDescending           bool
+	taskSortActive                  bool
+	taskSortColumn                  int
+	taskSortDescending              bool
+	nodeSortActive                  bool
+	nodeSortColumn                  int
+	nodeSortDescending              bool
+	querySortActive                 bool
+	querySortColumn                 int
+	querySortDescending             bool
 }
 
 type archiveTables struct {
@@ -1635,9 +1810,26 @@ func recordOperation(state *uiState, summary ops.Summary) {
 }
 
 type archiveActivityRow struct {
-	Text           string
-	OperationIndex int
-	Dismissible    bool
+	Text                  string
+	OperationIndex        int
+	Dismissible           bool
+	ProgressVisible       bool
+	ProgressValue         float64
+	IndeterminateProgress bool
+}
+
+type queryActivityProgress struct {
+	Attempted int
+	Total     int
+	Matches   int
+	Failures  int
+}
+
+type sourceStatusHistoryEntry struct {
+	At       time.Time
+	NodeName string
+	Kind     sourceStatusHistoryKind
+	Status   string
 }
 
 func clearRecentOperations(status *widget.Label, state *uiState) {
@@ -1719,8 +1911,22 @@ func newTaskDetail() *widget.Entry {
 	return detail
 }
 
+const (
+	taskTableColumnKind = iota
+	taskTableColumnStatus
+	taskTableColumnCounts
+	taskTableColumnDuration
+	taskTableColumnFailures
+)
+
+const taskSortPreferenceKey = "tasks"
+
+func taskTableHeaders() []string {
+	return []string{"Kind", "Status", "Counts", "Duration", "Failures"}
+}
+
 func newTaskTable(state *uiState) *widget.Table {
-	headers := []string{"Kind", "Status", "Counts", "Duration", "Failures"}
+	headers := taskTableHeaders()
 	var table *widget.Table
 	table = widget.NewTable(
 		func() (int, int) {
@@ -1732,7 +1938,7 @@ func newTaskTable(state *uiState) *widget.Table {
 		func(id widget.TableCellID, obj fyne.CanvasObject) {
 			cell := obj.(*archiveTableCell)
 			if id.Row == 0 {
-				applyTextTableCell(cell, id.Row, headers[id.Col], true, false)
+				applyTextTableCell(cell, id.Row, taskHeaderLabel(state, id.Col, headers[id.Col]), true, false)
 				return
 			}
 			summary := state.operations[id.Row-1]
@@ -1747,7 +1953,10 @@ func newTaskTable(state *uiState) *widget.Table {
 	table.SetColumnWidth(4, 500)
 	applyCompactTableRows(table)
 	table.OnSelected = func(id widget.TableCellID) {
-		if id.Row <= 0 {
+		if id.Row == 0 {
+			if applyTaskSort(state, id.Col) {
+				table.Refresh()
+			}
 			return
 		}
 		state.selectedOperationRow = id.Row - 1
@@ -1755,6 +1964,124 @@ func newTaskTable(state *uiState) *widget.Table {
 		table.Refresh()
 	}
 	return table
+}
+
+func applyTaskSort(state *uiState, col int) bool {
+	if state == nil || !taskColumnSortable(col) {
+		return false
+	}
+	if state.taskSortActive && state.taskSortColumn == col {
+		state.taskSortDescending = !state.taskSortDescending
+	} else {
+		state.taskSortActive = true
+		state.taskSortColumn = col
+		state.taskSortDescending = false
+	}
+	sortTasksByColumn(state, col, state.taskSortDescending)
+	persistTaskSortPreference(state)
+	updateTaskDetail(state)
+	return true
+}
+
+func applySavedTaskSortPreference(state *uiState) {
+	if state == nil {
+		return
+	}
+	pref, ok := state.appConfig.UISortPreferences[taskSortPreferenceKey]
+	if !ok || !taskColumnSortable(pref.Column) {
+		return
+	}
+	state.taskSortActive = true
+	state.taskSortColumn = pref.Column
+	state.taskSortDescending = pref.Descending
+	sortTasksByColumn(state, pref.Column, pref.Descending)
+}
+
+func sortTasksByColumn(state *uiState, col int, descending bool) {
+	if state == nil {
+		return
+	}
+	var selected ops.Summary
+	hadSelected := state.selectedOperationRow >= 0 && state.selectedOperationRow < len(state.operations)
+	if hadSelected {
+		selected = state.operations[state.selectedOperationRow]
+	}
+	sort.SliceStable(state.operations, func(i, j int) bool {
+		less := taskSortLess(state.operations[i], state.operations[j], col)
+		if descending {
+			return taskSortLess(state.operations[j], state.operations[i], col)
+		}
+		return less
+	})
+	if hadSelected {
+		state.selectedOperationRow = taskSummaryIndex(state.operations, selected)
+	}
+}
+
+func persistTaskSortPreference(state *uiState) {
+	if state == nil || state.appConfigPath == "" || !state.taskSortActive || !taskColumnSortable(state.taskSortColumn) {
+		return
+	}
+	if state.appConfig.UISortPreferences == nil {
+		state.appConfig.UISortPreferences = map[string]appconfig.SortPreference{}
+	}
+	state.appConfig.UISortPreferences[taskSortPreferenceKey] = appconfig.SortPreference{
+		Column:     state.taskSortColumn,
+		Descending: state.taskSortDescending,
+	}
+	_ = appconfig.Save(state.appConfigPath, state.appConfig)
+}
+
+func taskColumnSortable(col int) bool {
+	return col >= taskTableColumnKind && col <= taskTableColumnFailures
+}
+
+func taskSortLess(left ops.Summary, right ops.Summary, col int) bool {
+	switch col {
+	case taskTableColumnDuration:
+		if left.DurationMS != right.DurationMS {
+			return left.DurationMS < right.DurationMS
+		}
+	default:
+		leftText := taskSortValue(left, col)
+		rightText := taskSortValue(right, col)
+		if leftText != rightText {
+			return leftText < rightText
+		}
+	}
+	return taskSortTieValue(left) < taskSortTieValue(right)
+}
+
+func taskSortValue(summary ops.Summary, col int) string {
+	return strings.ToLower(strings.TrimSpace(taskCell(summary, col)))
+}
+
+func taskSortTieValue(summary ops.Summary) string {
+	return strings.Join([]string{
+		string(summary.Kind),
+		string(summary.Status),
+		strconv.FormatUint(summary.DurationMS, 10),
+		taskSortValue(summary, taskTableColumnFailures),
+	}, "\x00")
+}
+
+func taskSummaryIndex(summaries []ops.Summary, selected ops.Summary) int {
+	for i, summary := range summaries {
+		if reflect.DeepEqual(summary, selected) {
+			return i
+		}
+	}
+	return -1
+}
+
+func taskHeaderLabel(state *uiState, col int, label string) string {
+	if state == nil || !state.taskSortActive || state.taskSortColumn != col {
+		return label
+	}
+	if state.taskSortDescending {
+		return label + " ▼"
+	}
+	return label + " ▲"
 }
 
 func updateTaskDetail(state *uiState) {
@@ -1829,7 +2156,7 @@ func labeledTable(title string, table *widget.Table) fyne.CanvasObject {
 func labeledTableWithFooter(title string, table *widget.Table, footer fyne.CanvasObject) fyne.CanvasObject {
 	label := widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	label.Wrapping = fyne.TextTruncate
-	return container.NewBorder(label, footer, nil, nil, container.NewStack(table))
+	return container.NewBorder(label, newArchiveFooter(footer), nil, nil, container.NewStack(table))
 }
 
 type summaryPanel struct {
@@ -1919,6 +2246,7 @@ func openFileDialog(w fyne.Window, status *widget.Label, summary summaryPanel, t
 			return
 		}
 		state.elements = result.Elements
+		applySavedElementSortPreference(state)
 		summary.set(result)
 		table.Refresh()
 		status.SetText(fmt.Sprintf("%d elements loaded", result.ElementCount))
@@ -1950,6 +2278,7 @@ func inspectSelectedArchiveInstance(w fyne.Window, status *widget.Label, summary
 				return
 			}
 			state.elements = result.Elements
+			applySavedElementSortPreference(state)
 			summary.set(result)
 			table.Refresh()
 			status.SetText(fmt.Sprintf("%d elements loaded", result.ElementCount))
@@ -1961,7 +2290,10 @@ func newArchiveWorkbench(w fyne.Window, status *widget.Label, tables archiveTabl
 	sidebar := newArchiveSidebar(w, status, tables, state)
 	summary := newArchiveSummaryPane(w, status, tables, state)
 	state.archiveResultSummary = compactWorkbenchLabel()
-	center := container.NewBorder(archiveControls, state.archiveResultSummary, nil, nil, archiveBrowser)
+	selectedDetails := widget.NewAccordion(widget.NewAccordionItem("Selected Archive Details", newArchiveSelectedDetailsPanel(state, status)))
+	selectedDetails.CloseAll()
+	centerFooter := container.NewVBox(selectedDetails, newArchiveFooter(state.archiveResultSummary))
+	center := container.NewBorder(archiveControls, centerFooter, nil, nil, archiveBrowser)
 	centerAndSummary := container.NewHSplit(center, summary)
 	centerAndSummary.SetOffset(0.80)
 	workbench := container.NewHSplit(sidebar, centerAndSummary)
@@ -1991,21 +2323,47 @@ func newArchiveSidebar(w fyne.Window, status *widget.Label, tables archiveTables
 	})
 	state.archiveClearActivityButton.Hide()
 	content := container.NewVBox(
-		workbenchSectionTitle("Albums"),
-		state.archiveAlbumList,
-		widget.NewSeparator(),
-		container.NewBorder(nil, nil, workbenchSectionTitle("Sources"), container.NewHBox(state.archiveSourceMoveUpButton, state.archiveSourceMoveDownButton)),
-		state.archiveSourceList,
-		widget.NewSeparator(),
-		workbenchSectionTitle("Activity"),
-		state.archiveActivityList,
-		state.archiveActivityProgress,
-		state.archiveCancelRetrieveButton,
-		state.archiveClearActivityButton,
+		newArchiveSidebarSection("Albums", nil, state.archiveAlbumList),
+		newArchiveSidebarSection("Sources", container.NewHBox(state.archiveSourceMoveUpButton, state.archiveSourceMoveDownButton), state.archiveSourceList),
+		newArchiveSidebarSection(
+			"Activity",
+			nil,
+			state.archiveActivityList,
+			state.archiveActivityProgress,
+			state.archiveCancelRetrieveButton,
+			state.archiveClearActivityButton,
+		),
 	)
 	scroll := container.NewVScroll(content)
 	scroll.SetMinSize(fyne.NewSize(220, 0))
 	return scroll
+}
+
+func newArchiveFooter(content fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewStack(
+		canvas.NewRectangle(archiveHeaderRowColor),
+		newCompactTableCellContent(content),
+		newTableColumnDividerLayer(),
+		newTableRowDividerLayer(),
+	)
+}
+
+func newArchiveSidebarSection(title string, actions fyne.CanvasObject, body ...fyne.CanvasObject) fyne.CanvasObject {
+	header := container.NewBorder(nil, nil, workbenchSectionTitle(title), actions)
+	headerChrome := container.NewStack(
+		canvas.NewRectangle(archiveHeaderRowColor),
+		newCompactTableCellContent(header),
+		newTableRowDividerLayer(),
+	)
+	bodyChrome := container.NewStack(
+		canvas.NewRectangle(archiveOddRowColor),
+		newCompactTableCellContent(container.NewVBox(body...)),
+		newTableRowDividerLayer(),
+	)
+	return container.NewStack(
+		container.NewVBox(headerChrome, bodyChrome),
+		newTableColumnDividerLayer(),
+	)
 }
 
 func newArchiveSourcePriorityButtons(w fyne.Window, status *widget.Label, state *uiState) (*widget.Button, *widget.Button) {
@@ -2043,22 +2401,37 @@ func newArchiveSourcePriorityButtons(w fyne.Window, status *widget.Label, state 
 
 type archiveSourceListItem struct {
 	*fyne.Container
-	selectionIcon *widget.Icon
-	sourceIcon    *widget.Icon
-	label         *widget.Label
+	background        *canvas.Rectangle
+	selectionIcon     *widget.Icon
+	selectionIconSlot *fyne.Container
+	sourceIcon        *widget.Icon
+	sourceIconSlot    *fyne.Container
+	label             *widget.Label
 }
 
 func newArchiveSourceListItem() *archiveSourceListItem {
 	selectionIcon := widget.NewIcon(theme.NavigateNextIcon())
 	selectionIcon.Hide()
+	selectionIconSlot := newArchiveRailIconSlot(selectionIcon)
 	sourceIcon := widget.NewIcon(theme.StorageIcon())
+	sourceIconSlot := newArchiveRailIconSlot(sourceIcon)
 	label := compactWorkbenchLabel()
-	row := container.NewBorder(nil, nil, container.NewHBox(selectionIcon, sourceIcon), nil, label)
+	row := container.NewBorder(nil, nil, container.NewHBox(selectionIconSlot, sourceIconSlot), nil, label)
+	background := canvas.NewRectangle(archiveOddRowColor)
+	content := container.NewStack(
+		background,
+		newCompactTableCellContent(row),
+		newTableColumnDividerLayer(),
+		newTableRowDividerLayer(),
+	)
 	return &archiveSourceListItem{
-		Container:     row,
-		selectionIcon: selectionIcon,
-		sourceIcon:    sourceIcon,
-		label:         label,
+		Container:         content,
+		background:        background,
+		selectionIcon:     selectionIcon,
+		selectionIconSlot: selectionIconSlot,
+		sourceIcon:        sourceIcon,
+		sourceIconSlot:    sourceIconSlot,
+		label:             label,
 	}
 }
 
@@ -2082,13 +2455,17 @@ func newArchiveSourceList(state *uiState) *widget.List {
 			item.label.SetText(row.Text)
 			item.sourceIcon.SetResource(row.Icon)
 			if row.Selected {
+				item.background.FillColor = archiveSelectedRowColor
 				item.selectionIcon.SetResource(theme.NavigateNextIcon())
 				item.selectionIcon.Show()
 			} else {
+				item.background.FillColor = archiveOddRowColor
 				item.selectionIcon.Hide()
 			}
+			item.background.Refresh()
 		},
 	)
+	applyCompactArchiveRailListRows(list, len(archiveSourceRows(state)))
 	list.OnSelected = func(id widget.ListItemID) {
 		rows := archiveSourceRows(state)
 		if id < 0 || id >= len(rows) {
@@ -2108,27 +2485,85 @@ func newArchiveSourceList(state *uiState) *widget.List {
 	return list
 }
 
+type archiveAlbumListItem struct {
+	*fyne.Container
+	background        *canvas.Rectangle
+	selectionIcon     *widget.Icon
+	selectionIconSlot *fyne.Container
+	albumIcon         *widget.Icon
+	albumIconSlot     *fyne.Container
+	label             *widget.Label
+	count             *widget.Label
+	countSlot         *fyne.Container
+}
+
+func newArchiveAlbumListItem() *archiveAlbumListItem {
+	selectionIcon := widget.NewIcon(theme.NavigateNextIcon())
+	selectionIcon.Hide()
+	selectionIconSlot := newArchiveRailIconSlot(selectionIcon)
+	albumIcon := widget.NewIcon(theme.FolderIcon())
+	albumIconSlot := newArchiveRailIconSlot(albumIcon)
+	label := compactWorkbenchLabel()
+	count := compactWorkbenchLabel()
+	count.Alignment = fyne.TextAlignTrailing
+	countSlot := container.NewGridWrap(fyne.NewSize(compactArchiveAlbumCountSlotWidth, count.MinSize().Height), count)
+	row := container.NewBorder(nil, nil, container.NewHBox(selectionIconSlot, albumIconSlot), countSlot, label)
+	background := canvas.NewRectangle(archiveOddRowColor)
+	content := container.NewStack(
+		background,
+		newCompactTableCellContent(row),
+		newTableColumnDividerLayer(),
+		newTableRowDividerLayer(),
+	)
+	return &archiveAlbumListItem{
+		Container:         content,
+		background:        background,
+		selectionIcon:     selectionIcon,
+		selectionIconSlot: selectionIconSlot,
+		albumIcon:         albumIcon,
+		albumIconSlot:     albumIconSlot,
+		label:             label,
+		count:             count,
+		countSlot:         countSlot,
+	}
+}
+
 func newArchiveAlbumList(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) *widget.List {
 	list := widget.NewList(
 		func() int {
-			return len(archiveAlbumRows(state.studies, time.Now(), state.selectedArchiveAlbum))
+			return len(archiveAlbumRowsForState(state, time.Now()))
 		},
 		func() fyne.CanvasObject {
-			return compactWorkbenchLabel()
+			return newArchiveAlbumListItem()
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			rows := archiveAlbumRows(state.studies, time.Now(), state.selectedArchiveAlbum)
-			label := obj.(*widget.Label)
+			rows := archiveAlbumRowsForState(state, time.Now())
+			item := obj.(*archiveAlbumListItem)
 			if id < 0 || id >= len(rows) {
-				label.SetText("")
+				item.label.SetText("")
+				item.count.SetText("")
+				item.selectionIcon.Hide()
 				return
 			}
-			label.SetText(rows[id].Text)
+			row := rows[id]
+			item.label.SetText(row.Label)
+			item.count.SetText(strconv.Itoa(row.Count))
+			item.albumIcon.SetResource(archiveAlbumIcon(row.ID))
+			if row.Selected {
+				item.background.FillColor = archiveSelectedRowColor
+				item.selectionIcon.SetResource(theme.NavigateNextIcon())
+				item.selectionIcon.Show()
+			} else {
+				item.background.FillColor = archiveOddRowColor
+				item.selectionIcon.Hide()
+			}
+			item.background.Refresh()
 		},
 	)
 	list.HideSeparators = true
+	applyCompactArchiveRailListRows(list, len(archiveAlbumRowsForState(state, time.Now())))
 	list.OnSelected = func(id widget.ListItemID) {
-		rows := archiveAlbumRows(state.studies, time.Now(), state.selectedArchiveAlbum)
+		rows := archiveAlbumRowsForState(state, time.Now())
 		if id < 0 || id >= len(rows) {
 			return
 		}
@@ -2161,21 +2596,65 @@ func newArchiveActivityList(status *widget.Label, state *uiState) *widget.List {
 		},
 		func() fyne.CanvasObject {
 			label := compactWorkbenchLabel()
+			progress := widget.NewProgressBar()
+			progress.Hide()
+			progressSlot := archiveActivityProgressSlot(progress)
+			progressSlot.Hide()
+			infinite := widget.NewProgressBarInfinite()
+			infinite.Hide()
+			infiniteSlot := archiveActivityProgressSlot(infinite)
+			infiniteSlot.Hide()
 			dismiss := newActivityDismissButton(nil)
-			return container.NewHBox(label, dismiss)
+			content := container.NewVBox(
+				container.NewHBox(label, layout.NewSpacer(), dismiss),
+				progressSlot,
+				infiniteSlot,
+			)
+			return container.NewStack(
+				canvas.NewRectangle(archiveOddRowColor),
+				newCompactTableCellContent(content),
+				newTableColumnDividerLayer(),
+				newTableRowDividerLayer(),
+			)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			rows := archiveActivityRows(state)
-			box := obj.(*fyne.Container)
-			label := box.Objects[0].(*widget.Label)
-			dismiss := box.Objects[1].(*widget.Button)
+			stack := obj.(*fyne.Container)
+			box := stack.Objects[1].(*fyne.Container).Objects[0].(*fyne.Container)
+			header := box.Objects[0].(*fyne.Container)
+			label := header.Objects[0].(*widget.Label)
+			dismiss := header.Objects[2].(*widget.Button)
+			progressSlot := box.Objects[1].(*fyne.Container)
+			progress := progressSlot.Objects[0].(*widget.ProgressBar)
+			infiniteSlot := box.Objects[2].(*fyne.Container)
+			infinite := infiniteSlot.Objects[0].(*widget.ProgressBarInfinite)
 			if id < 0 || id >= len(rows) {
 				label.SetText("")
 				dismiss.Hide()
+				progressSlot.Hide()
+				progress.Hide()
+				infiniteSlot.Hide()
+				infinite.Hide()
 				return
 			}
 			row := rows[id]
 			label.SetText(row.Text)
+			if row.ProgressVisible {
+				progress.SetValue(row.ProgressValue)
+				progress.Show()
+				progressSlot.Show()
+			} else {
+				progress.SetValue(0)
+				progress.Hide()
+				progressSlot.Hide()
+			}
+			if row.IndeterminateProgress {
+				infinite.Show()
+				infiniteSlot.Show()
+			} else {
+				infinite.Hide()
+				infiniteSlot.Hide()
+			}
 			if row.Dismissible {
 				rowIndex := id
 				dismiss.OnTapped = func() {
@@ -2189,7 +2668,51 @@ func newArchiveActivityList(status *widget.Label, state *uiState) *widget.List {
 		},
 	)
 	list.HideSeparators = true
+	applyCompactArchiveActivityRows(list, len(archiveActivityRows(state)))
 	return list
+}
+
+const (
+	compactArchiveRailIconSlotSize      float32 = 16
+	compactArchiveAlbumCountSlotWidth   float32 = 28
+	compactArchiveActivityProgressWidth float32 = 180
+	archivePatientStudyMetricsSlotWidth float32 = 68
+	compactArchiveRailListRowHeight     float32 = compactTableRowHeight + 4
+	compactArchiveActivityRowHeight     float32 = compactTableRowHeight + 18
+	compactArchivePatientStudyRowHeight float32 = compactTableRowHeight + 18
+)
+
+func archiveActivityProgressSlot(progress fyne.CanvasObject) *fyne.Container {
+	size := progress.MinSize()
+	if size.Width < compactArchiveActivityProgressWidth {
+		size.Width = compactArchiveActivityProgressWidth
+	}
+	return container.NewGridWrap(size, progress)
+}
+
+func newArchiveRailIconSlot(icon *widget.Icon) *fyne.Container {
+	return container.NewGridWrap(fyne.NewSize(compactArchiveRailIconSlotSize, compactArchiveRailIconSlotSize), icon)
+}
+
+func applyCompactArchiveRailListRows(list *widget.List, count int) {
+	applyListItemHeight(list, count, compactArchiveRailListRowHeight)
+}
+
+func applyCompactArchiveActivityRows(list *widget.List, count int) {
+	applyListItemHeight(list, count, compactArchiveActivityRowHeight)
+}
+
+func applyCompactArchivePatientStudyRows(list *widget.List, count int) {
+	applyListItemHeight(list, count, compactArchivePatientStudyRowHeight)
+}
+
+func applyListItemHeight(list *widget.List, count int, height float32) {
+	if list == nil {
+		return
+	}
+	for id := 0; id < count; id++ {
+		list.SetItemHeight(widget.ListItemID(id), height)
+	}
 }
 
 func newActivityDismissButton(tapped func()) *widget.Button {
@@ -2202,15 +2725,38 @@ func newArchiveSummaryPane(w fyne.Window, status *widget.Label, tables archiveTa
 	state.archiveSummaryTitle = workbenchSectionTitle("Selected Study")
 	state.archiveSummary = compactWorkbenchLabel()
 	state.archiveSummary.Wrapping = fyne.TextWrapWord
+	state.archivePatientStudyList = newArchivePatientStudyList(state, tables)
 	state.archiveEditStudyButton = widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {
 		showStudyMetadataDialog(w, status, tables, state)
 	})
 	state.archiveEditStudyButton.Importance = widget.LowImportance
 	state.archiveEditStudyButton.Disable()
 	header := container.NewBorder(nil, nil, state.archiveSummaryTitle, state.archiveEditStudyButton)
-	scroll := container.NewVScroll(state.archiveSummary)
+	body := container.NewVBox(
+		state.archiveSummary,
+		workbenchSectionTitle("Patient studies"),
+		state.archivePatientStudyList,
+	)
+	scroll := container.NewVScroll(body)
 	scroll.SetMinSize(fyne.NewSize(260, 0))
-	return container.NewBorder(header, nil, nil, nil, scroll)
+	return newArchiveSummaryPaneChrome(header, scroll)
+}
+
+func newArchiveSummaryPaneChrome(header fyne.CanvasObject, body fyne.CanvasObject) fyne.CanvasObject {
+	headerChrome := container.NewStack(
+		canvas.NewRectangle(archiveHeaderRowColor),
+		newCompactTableCellContent(header),
+		newTableRowDividerLayer(),
+	)
+	bodyChrome := container.NewStack(
+		canvas.NewRectangle(archiveOddRowColor),
+		newCompactTableCellContent(body),
+		newTableRowDividerLayer(),
+	)
+	return container.NewStack(
+		container.NewVBox(headerChrome, bodyChrome),
+		newTableColumnDividerLayer(),
+	)
 }
 
 func compactWorkbenchLabel() *widget.Label {
@@ -2228,20 +2774,70 @@ func workbenchCenteredTitle(title string) *widget.Label {
 	return widget.NewLabelWithStyle(title, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 }
 
+func workbenchWindowTitle(title string) fyne.CanvasObject {
+	return workbenchWindowTitleLabel(workbenchCenteredTitle(title))
+}
+
+func workbenchWindowTitleLabel(label *widget.Label) fyne.CanvasObject {
+	return container.NewStack(
+		canvas.NewRectangle(archiveHeaderRowColor),
+		newCompactTableCellContent(container.NewCenter(label)),
+		newTableRowDividerLayer(),
+	)
+}
+
+func workbenchPanel(title string, body fyne.CanvasObject) fyne.CanvasObject {
+	header := container.NewStack(
+		canvas.NewRectangle(archiveHeaderRowColor),
+		newCompactTableCellContent(workbenchSectionTitle(title)),
+		newTableRowDividerLayer(),
+	)
+	content := container.NewStack(
+		canvas.NewRectangle(archiveOddRowColor),
+		newCompactTableCellContent(body),
+		newTableRowDividerLayer(),
+	)
+	return container.NewStack(
+		container.NewVBox(header, content),
+		newTableColumnDividerLayer(),
+	)
+}
+
+func workbenchPanelSlot(title string, body fyne.CanvasObject, minWidth float32) fyne.CanvasObject {
+	panel := workbenchPanel(title, body)
+	size := panel.MinSize()
+	if size.Width < minWidth {
+		size.Width = minWidth
+	}
+	return container.NewGridWrap(size, panel)
+}
+
+func workbenchStrip(content fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewStack(
+		canvas.NewRectangle(archiveHeaderRowColor),
+		newCompactTableCellContent(content),
+		newTableColumnDividerLayer(),
+		newTableRowDividerLayer(),
+	)
+}
+
 func refreshArchiveChrome(state *uiState) {
 	if state == nil {
 		return
 	}
 	if state.archiveAlbumList != nil {
+		applyCompactArchiveRailListRows(state.archiveAlbumList, len(archiveAlbumRowsForState(state, time.Now())))
 		state.archiveAlbumList.Refresh()
 	}
 	if state.archiveSourceList != nil {
+		applyCompactArchiveRailListRows(state.archiveSourceList, len(archiveSourceRows(state)))
 		state.archiveSourceList.Refresh()
 	}
 	if state.archiveActivity != nil {
 		state.archiveActivity.SetText(strings.Join(archiveActivityLines(state), "\n"))
 	}
 	if state.archiveActivityList != nil {
+		applyCompactArchiveActivityRows(state.archiveActivityList, len(archiveActivityRows(state)))
 		state.archiveActivityList.Refresh()
 	}
 	if state.archiveActivityProgress != nil {
@@ -2280,8 +2876,18 @@ func refreshArchiveChrome(state *uiState) {
 	if state.archiveSummaryTitle != nil {
 		state.archiveSummaryTitle.SetText(archiveSummaryTitleText(state))
 	}
+	if state.archivePatientStudyList != nil {
+		applyCompactArchivePatientStudyRows(state.archivePatientStudyList, len(patientStudySummaryRows(state, selectedArchiveStudyIndex(state))))
+		state.archivePatientStudyList.Refresh()
+	}
 	if state.archiveResultSummary != nil {
 		state.archiveResultSummary.SetText(archiveResultSummaryText(state))
+	}
+	if state.archiveAdvancedFilterSync != nil {
+		state.archiveAdvancedFilterSync()
+	}
+	if state.archiveAlbumScopeLabel != nil {
+		state.archiveAlbumScopeLabel.SetText(archiveAlbumScopeControlText(state.selectedArchiveAlbum))
 	}
 	if state.archiveSeriesSummary != nil {
 		state.archiveSeriesSummary.SetText(archiveSeriesSummaryText(state))
@@ -2289,6 +2895,7 @@ func refreshArchiveChrome(state *uiState) {
 	if state.archiveInstancesSummary != nil {
 		state.archiveInstancesSummary.SetText(archiveInstancesSummaryText(state))
 	}
+	refreshArchiveSelectedDetails(state)
 }
 
 func archiveSummaryTitleText(state *uiState) string {
@@ -2327,6 +2934,9 @@ func archiveResultSummaryText(state *uiState) string {
 	if label := activeArchiveAlbumSummaryLabel(state.selectedArchiveAlbum); label != "" {
 		summary += " - Album: " + label
 	}
+	if scope := activeArchiveAlbumScopeSummary(state.selectedArchiveAlbum); scope != "" {
+		summary += " - Scope: " + scope
+	}
 	if label := activeArchiveSourceSummaryLabel(state); label != "" {
 		summary += " - Source: " + label
 	}
@@ -2341,14 +2951,153 @@ func archiveSeriesSummaryText(state *uiState) string {
 	for _, series := range state.series {
 		imageCount += series.InstanceCount
 	}
-	return fmt.Sprintf("%d series, %d images", len(state.series), imageCount)
+	summary := fmt.Sprintf("%d series, %d images", len(state.series), imageCount)
+	if label := selectedSeriesSummaryLabel(state); label != "" {
+		summary += " - Selected: " + label
+	}
+	return summary
 }
 
 func archiveInstancesSummaryText(state *uiState) string {
 	if state == nil {
 		return "0 images"
 	}
-	return fmt.Sprintf("%d images", len(state.instances))
+	summary := fmt.Sprintf("%d images", len(state.instances))
+	if label := selectedInstanceSummaryLabel(state); label != "" {
+		summary += " - Selected: " + label
+	}
+	return summary
+}
+
+func archiveSelectedDetailsText(state *uiState) string {
+	study, studyOK := selectedStudy(state)
+	series, seriesOK := selectedSeries(state)
+	instance, instanceOK := selectedInstance(state)
+	if !studyOK && !seriesOK && !instanceOK {
+		return "No archive row selected"
+	}
+	return strings.Join([]string{
+		"Study UID: " + emptyDash(study.StudyInstanceUID),
+		"Series UID: " + emptyDash(series.SeriesInstanceUID),
+		"SOP Class UID: " + emptyDash(instance.SOPClassUID),
+		"SOP Instance UID: " + emptyDash(instance.SOPInstanceUID),
+		"Stored Path: " + emptyDash(instance.StoredPath),
+	}, "\n")
+}
+
+func selectedArchiveTechnicalValue(state *uiState, field string) string {
+	study, studyOK := selectedStudy(state)
+	series, seriesOK := selectedSeries(state)
+	instance, instanceOK := selectedInstance(state)
+	switch field {
+	case "Study UID":
+		if !studyOK {
+			return ""
+		}
+		return strings.TrimSpace(study.StudyInstanceUID)
+	case "Series UID":
+		if !seriesOK {
+			return ""
+		}
+		return strings.TrimSpace(series.SeriesInstanceUID)
+	case "SOP Class UID":
+		if !instanceOK {
+			return ""
+		}
+		return strings.TrimSpace(instance.SOPClassUID)
+	case "SOP Instance UID":
+		if !instanceOK {
+			return ""
+		}
+		return strings.TrimSpace(instance.SOPInstanceUID)
+	case "Stored Path":
+		if !instanceOK {
+			return ""
+		}
+		return strings.TrimSpace(instance.StoredPath)
+	default:
+		return ""
+	}
+}
+
+func copySelectedArchiveTechnicalValue(state *uiState, status *widget.Label, field string) {
+	value := selectedArchiveTechnicalValue(state, field)
+	if value == "" {
+		if status != nil {
+			status.SetText(field + " is empty")
+		}
+		return
+	}
+	fyne.CurrentApp().Clipboard().SetContent(value)
+	if status != nil {
+		status.SetText("Copied " + field)
+	}
+}
+
+func newArchiveSelectedDetailsPanel(state *uiState, status *widget.Label) fyne.CanvasObject {
+	state.archiveSelectedDetailsLabel = compactWorkbenchLabel()
+	state.archiveSelectedDetailsLabel.SetText(archiveSelectedDetailsText(state))
+	copyButton := func(field string) *widget.Button {
+		return widget.NewButtonWithIcon("Copy "+field, theme.ContentCopyIcon(), func() {
+			copySelectedArchiveTechnicalValue(state, status, field)
+		})
+	}
+	return container.NewBorder(
+		nil,
+		container.NewHBox(
+			copyButton("Study UID"),
+			copyButton("Series UID"),
+			copyButton("SOP Class UID"),
+			copyButton("SOP Instance UID"),
+			copyButton("Stored Path"),
+		),
+		nil,
+		nil,
+		state.archiveSelectedDetailsLabel,
+	)
+}
+
+func refreshArchiveSelectedDetails(state *uiState) {
+	if state == nil || state.archiveSelectedDetailsLabel == nil {
+		return
+	}
+	state.archiveSelectedDetailsLabel.SetText(archiveSelectedDetailsText(state))
+}
+
+func selectedSeriesSummaryLabel(state *uiState) string {
+	if state == nil || state.selectedSeriesRow < 0 || state.selectedSeriesRow >= len(state.series) {
+		return ""
+	}
+	series := state.series[state.selectedSeriesRow]
+	parts := []string{}
+	if value := strings.TrimSpace(series.SeriesNumber); value != "" {
+		parts = append(parts, "#"+value)
+	}
+	if value := strings.TrimSpace(series.SeriesDescription); value != "" {
+		parts = append(parts, value)
+	}
+	if value := strings.TrimSpace(series.Modality); value != "" {
+		parts = append(parts, value)
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(series.SeriesInstanceUID)
+	}
+	return strings.Join(parts, " ")
+}
+
+func selectedInstanceSummaryLabel(state *uiState) string {
+	if state == nil || state.selectedInstanceRow < 0 || state.selectedInstanceRow >= len(state.instances) {
+		return ""
+	}
+	instance := state.instances[state.selectedInstanceRow]
+	parts := []string{}
+	if value := strings.TrimSpace(instance.InstanceNumber); value != "" {
+		parts = append(parts, "#"+value)
+	}
+	if value := strings.TrimSpace(instance.SOPInstanceUID); value != "" {
+		parts = append(parts, value)
+	}
+	return strings.Join(parts, " ")
 }
 
 func archiveAlbumLines(studies []archive.Study, now time.Time) []string {
@@ -2356,9 +3105,11 @@ func archiveAlbumLines(studies []archive.Study, now time.Time) []string {
 		railCountLine("Database", len(studies)),
 		railCountLine("Cases with comments", 0),
 		railCountLine("Interesting Cases", 0),
-		railCountLine("Just Acquired (last hour)", countStudiesImportedSince(studies, now.Add(-time.Hour))),
+		railCountLine("Just Acquired (last hour)", countStudiesAcquiredSince(studies, now.Add(-time.Hour))),
+		railCountLine("Just Added (last hour)", countStudiesImportedSince(studies, now.Add(-time.Hour))),
 		railCountLine("Just Opened", 0),
 		railCountLine("Today", countStudiesImportedToday(studies, now, "")),
+		railCountLine("Today CR", countStudiesImportedToday(studies, now, "CR")),
 		railCountLine("Today CT", countStudiesImportedToday(studies, now, "CT")),
 	}
 }
@@ -2372,6 +3123,37 @@ func activeArchiveAlbumSummaryLabel(id archiveAlbumID) string {
 	}
 }
 
+func activeArchiveAlbumScopeSummary(id archiveAlbumID) string {
+	switch id {
+	case archiveAlbumComments:
+		return "with local comments"
+	case archiveAlbumInteresting:
+		return "status Interesting"
+	case archiveAlbumLastHour:
+		return "acquired in last hour"
+	case archiveAlbumAddedLastHour:
+		return "added in last hour"
+	case archiveAlbumOpened:
+		return "recently opened"
+	case archiveAlbumToday:
+		return "imported today"
+	case archiveAlbumTodayCR:
+		return "imported today, modality CR"
+	case archiveAlbumTodayCT:
+		return "imported today, modality CT"
+	default:
+		return ""
+	}
+}
+
+func archiveAlbumScopeControlText(id archiveAlbumID) string {
+	scope := activeArchiveAlbumScopeSummary(id)
+	if scope == "" {
+		scope = "all studies"
+	}
+	return "Album Scope: " + scope
+}
+
 func archiveAlbumLabel(id archiveAlbumID) string {
 	switch id {
 	case archiveAlbumDatabase:
@@ -2382,15 +3164,26 @@ func archiveAlbumLabel(id archiveAlbumID) string {
 		return "Interesting Cases"
 	case archiveAlbumLastHour:
 		return "Just Acquired (last hour)"
+	case archiveAlbumAddedLastHour:
+		return "Just Added (last hour)"
 	case archiveAlbumOpened:
 		return "Just Opened"
 	case archiveAlbumToday:
 		return "Today"
+	case archiveAlbumTodayCR:
+		return "Today CR"
 	case archiveAlbumTodayCT:
 		return "Today CT"
 	default:
 		return ""
 	}
+}
+
+func archiveAlbumIcon(id archiveAlbumID) fyne.Resource {
+	if id == archiveAlbumDatabase {
+		return theme.StorageIcon()
+	}
+	return theme.FolderIcon()
 }
 
 func activeArchiveSourceSummaryLabel(state *uiState) string {
@@ -2480,26 +3273,34 @@ func archiveActivityRows(state *uiState) []archiveActivityRow {
 	var rows []archiveActivityRow
 	if state.activeRetrieveCancel != nil {
 		rows = append(rows, archiveActivityRow{
-			Text:           retrieveProgressText(state.retrieveActivityNode, state.retrieveActivityProgress),
-			OperationIndex: -1,
+			Text:                  retrieveProgressText(state.retrieveActivityNode, state.retrieveActivityProgress),
+			OperationIndex:        -1,
+			ProgressVisible:       retrieveProgressKnown(state.retrieveActivityProgress),
+			ProgressValue:         retrieveProgressFraction(state.retrieveActivityProgress),
+			IndeterminateProgress: !retrieveProgressKnown(state.retrieveActivityProgress),
 		})
 	}
 	if strings.TrimSpace(state.activeQueryActivityLabel) != "" {
 		rows = append(rows, archiveActivityRow{
-			Text:           "Query " + state.activeQueryActivityLabel,
-			OperationIndex: -1,
+			Text:            queryActivityText(state),
+			OperationIndex:  -1,
+			ProgressVisible: queryProgressKnown(state),
+			ProgressValue:   queryProgressFraction(state),
 		})
 	}
 	if strings.TrimSpace(state.activeSendActivityLabel) != "" {
 		rows = append(rows, archiveActivityRow{
-			Text:           "Send " + state.activeSendActivityLabel,
-			OperationIndex: -1,
+			Text:            sendActivityText(state),
+			OperationIndex:  -1,
+			ProgressVisible: sendProgressKnown(state),
+			ProgressValue:   sendProgressFraction(state),
 		})
 	}
 	if strings.TrimSpace(state.activeImportActivityLabel) != "" {
 		rows = append(rows, archiveActivityRow{
-			Text:           "Import " + state.activeImportActivityLabel,
-			OperationIndex: -1,
+			Text:                  importActivityText(state),
+			OperationIndex:        -1,
+			IndeterminateProgress: true,
 		})
 	}
 	for i, summary := range state.operations {
@@ -2527,6 +3328,60 @@ func archiveActivityRows(state *uiState) []archiveActivityRow {
 	return rows
 }
 
+func queryActivityText(state *uiState) string {
+	if state == nil {
+		return "Query"
+	}
+	text := "Query " + strings.TrimSpace(state.activeQueryActivityLabel)
+	progress := state.activeQueryActivityProgress
+	if !state.activeQueryActivityHasProgress || progress.Total <= 0 {
+		return text
+	}
+	text += fmt.Sprintf(" %d/%d src, %d match", progress.Attempted, progress.Total, progress.Matches)
+	if progress.Failures > 0 {
+		text += fmt.Sprintf(", %d fail", progress.Failures)
+	}
+	return text
+}
+
+func sendActivityText(state *uiState) string {
+	if state == nil {
+		return "Send"
+	}
+	text := "Send " + strings.TrimSpace(state.activeSendActivityLabel)
+	progress := state.activeSendActivityProgress
+	if !state.activeSendActivityHasProgress || progress.Total <= 0 {
+		return text
+	}
+	text += fmt.Sprintf(" %d/%d sent %d", progress.Attempted, progress.Total, progress.Sent)
+	if progress.Failed > 0 {
+		text += fmt.Sprintf(", fail %d", progress.Failed)
+	}
+	if progress.Warnings > 0 {
+		text += fmt.Sprintf(", warn %d", progress.Warnings)
+	}
+	return text
+}
+
+func importActivityText(state *uiState) string {
+	if state == nil {
+		return "Import"
+	}
+	text := "Import " + strings.TrimSpace(state.activeImportActivityLabel)
+	progress := state.activeImportActivityProgress
+	if !state.activeImportActivityHasProgress || progress.ScannedFiles <= 0 {
+		return text
+	}
+	text += fmt.Sprintf(" scan %d, store %d", progress.ScannedFiles, progress.StoredFiles)
+	if progress.Duplicates > 0 {
+		text += fmt.Sprintf(", dup %d", progress.Duplicates)
+	}
+	if progress.InvalidFiles > 0 {
+		text += fmt.Sprintf(", invalid %d", progress.InvalidFiles)
+	}
+	return text
+}
+
 func archiveSummaryText(state *uiState) string {
 	if state == nil {
 		return "No study selected"
@@ -2552,12 +3407,6 @@ func archiveSummaryText(state *uiState) string {
 	fmt.Fprintf(&b, "Images: %d\n", study.InstanceCount)
 	if !study.ImportedAt.IsZero() {
 		fmt.Fprintf(&b, "Added: %s\n", study.ImportedAt.Format("2006-01-02 15:04"))
-	}
-	if lines := patientStudySummaryLines(state, state.selectedStudyRow); len(lines) > 0 {
-		fmt.Fprintf(&b, "\nPatient studies\n")
-		for _, line := range lines {
-			fmt.Fprintf(&b, "%s\n", line)
-		}
 	}
 	if series, ok := selectedSeries(state); ok {
 		fmt.Fprintf(&b, "\nSelected series\n")
@@ -2598,49 +3447,199 @@ func archiveSummarySource(state *uiState) string {
 	return ""
 }
 
+type patientStudySummaryRow struct {
+	StudyIndex int
+	Primary    string
+	Modality   string
+	Secondary  string
+	Images     string
+	Selected   bool
+}
+
+type archivePatientStudyListItem struct {
+	*fyne.Container
+	background    *canvas.Rectangle
+	selectionIcon *widget.Icon
+	primary       *widget.Label
+	modality      *widget.Label
+	secondary     *widget.Label
+	images        *widget.Label
+	metricsSlot   *fyne.Container
+}
+
+func newArchivePatientStudyListItem() *archivePatientStudyListItem {
+	selectionIcon := widget.NewIcon(theme.NavigateNextIcon())
+	selectionIcon.Hide()
+	primary := compactWorkbenchLabel()
+	primary.TextStyle = fyne.TextStyle{Bold: true}
+	modality := compactWorkbenchLabel()
+	modality.Alignment = fyne.TextAlignTrailing
+	modality.TextStyle = fyne.TextStyle{Bold: true}
+	secondary := compactWorkbenchLabel()
+	secondary.TextStyle = fyne.TextStyle{Italic: true}
+	images := compactWorkbenchLabel()
+	images.Alignment = fyne.TextAlignTrailing
+	images.TextStyle = fyne.TextStyle{Italic: true}
+	text := container.NewVBox(primary, secondary)
+	metrics := container.NewVBox(modality, images)
+	metricsSlot := container.NewGridWrap(fyne.NewSize(archivePatientStudyMetricsSlotWidth, metrics.MinSize().Height), metrics)
+	row := container.NewBorder(nil, nil, selectionIcon, metricsSlot, text)
+	background := canvas.NewRectangle(archiveOddRowColor)
+	content := container.NewStack(
+		background,
+		newCompactTableCellContent(row),
+		newTableColumnDividerLayer(),
+		newTableRowDividerLayer(),
+	)
+	return &archivePatientStudyListItem{
+		Container:     content,
+		background:    background,
+		selectionIcon: selectionIcon,
+		primary:       primary,
+		modality:      modality,
+		secondary:     secondary,
+		images:        images,
+		metricsSlot:   metricsSlot,
+	}
+}
+
+func newArchivePatientStudyList(state *uiState, optionalTables ...archiveTables) *widget.List {
+	var tables archiveTables
+	if len(optionalTables) > 0 {
+		tables = optionalTables[0]
+	}
+	list := widget.NewList(
+		func() int {
+			return len(patientStudySummaryRows(state, selectedArchiveStudyIndex(state)))
+		},
+		func() fyne.CanvasObject {
+			return newArchivePatientStudyListItem()
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			item := obj.(*archivePatientStudyListItem)
+			rows := patientStudySummaryRows(state, selectedArchiveStudyIndex(state))
+			if id < 0 || id >= len(rows) {
+				item.primary.SetText("")
+				item.modality.SetText("")
+				item.secondary.SetText("")
+				item.images.SetText("")
+				item.selectionIcon.Hide()
+				return
+			}
+			row := rows[id]
+			item.primary.SetText(row.Primary)
+			item.modality.SetText(row.Modality)
+			item.secondary.SetText(row.Secondary)
+			item.images.SetText(row.Images)
+			if row.Selected {
+				item.background.FillColor = archiveSelectedRowColor
+				item.selectionIcon.SetResource(theme.NavigateNextIcon())
+				item.selectionIcon.Show()
+			} else {
+				item.background.FillColor = archiveOddRowColor
+				item.selectionIcon.Hide()
+			}
+			item.background.Refresh()
+		},
+	)
+	list.HideSeparators = true
+	list.OnSelected = func(id widget.ListItemID) {
+		if selectArchivePatientStudyListRow(state, tables, id) && tables.studies != nil {
+			tables.studies.Refresh()
+		}
+	}
+	applyCompactArchivePatientStudyRows(list, len(patientStudySummaryRows(state, selectedArchiveStudyIndex(state))))
+	return list
+}
+
+func selectArchivePatientStudyListRow(state *uiState, tables archiveTables, id widget.ListItemID) bool {
+	rows := patientStudySummaryRows(state, selectedArchiveStudyIndex(state))
+	if id < 0 || int(id) >= len(rows) {
+		return false
+	}
+	row := rows[id]
+	if row.StudyIndex < 0 || row.StudyIndex >= len(state.studies) {
+		return false
+	}
+	if row.StudyIndex == state.selectedStudyRow && state.selectedSeriesRow < 0 && state.selectedInstanceRow < 0 {
+		return false
+	}
+	state.selectedStudyRow = row.StudyIndex
+	recordOpenedArchiveStudy(state, state.studies[row.StudyIndex])
+	clearArchiveDetails(state, tables)
+	return true
+}
+
+func selectedArchiveStudyIndex(state *uiState) int {
+	if state == nil {
+		return -1
+	}
+	return state.selectedStudyRow
+}
+
 func patientStudySummaryLines(state *uiState, selectedStudyIndex int) []string {
+	rows := patientStudySummaryRows(state, selectedStudyIndex)
+	lines := make([]string, 0, len(rows)*2)
+	for _, row := range rows {
+		prefix := "  "
+		if row.Selected {
+			prefix = "▶ "
+		}
+		lines = append(lines,
+			strings.TrimSpace(fmt.Sprintf("%s%s %s", prefix, row.Primary, row.Modality)),
+			strings.TrimSpace(fmt.Sprintf("%s %s", row.Secondary, row.Images)),
+		)
+	}
+	return lines
+}
+
+func patientStudySummaryRows(state *uiState, selectedStudyIndex int) []patientStudySummaryRow {
 	if state == nil || selectedStudyIndex < 0 || selectedStudyIndex >= len(state.studies) {
 		return nil
 	}
 	selected := state.studies[selectedStudyIndex]
 	selectedKey := archivePatientKey(selected)
-	var lines []string
-	appendStudy := func(study archive.Study, selected bool) {
+	var rows []patientStudySummaryRow
+	appendStudy := func(index int, study archive.Study, selected bool) {
 		description := strings.TrimSpace(study.StudyDescription)
 		if description == "" {
 			description = strings.TrimSpace(study.StudyInstanceUID)
 		}
-		prefix := "  "
-		if selected {
-			prefix = "▶ "
-		}
-		lines = append(lines,
-			prefix+strings.TrimSpace(fmt.Sprintf("%s %s", emptyDash(description), emptyDash(study.Modalities))),
-			fmt.Sprintf("%s %d images", emptyDash(study.StudyDate), study.InstanceCount),
-		)
+		rows = append(rows, patientStudySummaryRow{
+			StudyIndex: index,
+			Primary:    emptyDash(description),
+			Modality:   emptyDash(study.Modalities),
+			Secondary:  emptyDash(study.StudyDate),
+			Images:     fmt.Sprintf("%d images", study.InstanceCount),
+			Selected:   selected,
+		})
 	}
-	appendStudy(selected, true)
+	appendStudy(selectedStudyIndex, selected, true)
 	for index, study := range state.studies {
 		if index == selectedStudyIndex {
 			continue
 		}
 		if archivePatientKey(study) == selectedKey {
-			appendStudy(study, false)
+			appendStudy(index, study, false)
 		}
 	}
-	return lines
+	return rows
 }
 
 type archiveAlbumID string
 
+const maxOpenedArchiveStudyUIDs = 200
+
 const (
-	archiveAlbumDatabase    archiveAlbumID = "database"
-	archiveAlbumComments    archiveAlbumID = "comments"
-	archiveAlbumInteresting archiveAlbumID = "interesting"
-	archiveAlbumLastHour    archiveAlbumID = "last-hour"
-	archiveAlbumOpened      archiveAlbumID = "opened"
-	archiveAlbumToday       archiveAlbumID = "today"
-	archiveAlbumTodayCT     archiveAlbumID = "today-ct"
+	archiveAlbumDatabase      archiveAlbumID = "database"
+	archiveAlbumComments      archiveAlbumID = "comments"
+	archiveAlbumInteresting   archiveAlbumID = "interesting"
+	archiveAlbumLastHour      archiveAlbumID = "last-hour"
+	archiveAlbumAddedLastHour archiveAlbumID = "added-last-hour"
+	archiveAlbumOpened        archiveAlbumID = "opened"
+	archiveAlbumToday         archiveAlbumID = "today"
+	archiveAlbumTodayCR       archiveAlbumID = "today-cr"
+	archiveAlbumTodayCT       archiveAlbumID = "today-ct"
 )
 
 type archiveAlbumRow struct {
@@ -2648,6 +3647,7 @@ type archiveAlbumRow struct {
 	Label      string
 	Count      int
 	Text       string
+	Selected   bool
 	Filterable bool
 }
 
@@ -2656,19 +3656,33 @@ func railCountLine(label string, count int) string {
 }
 
 func archiveAlbumRows(studies []archive.Study, now time.Time, selected archiveAlbumID) []archiveAlbumRow {
+	return archiveAlbumRowsWithOpened(studies, now, selected, nil)
+}
+
+func archiveAlbumRowsForState(state *uiState, now time.Time) []archiveAlbumRow {
+	if state == nil {
+		return archiveAlbumRowsWithOpened(nil, now, "", nil)
+	}
+	return archiveAlbumRowsWithOpened(state.studies, now, state.selectedArchiveAlbum, state.openedArchiveStudyUIDs)
+}
+
+func archiveAlbumRowsWithOpened(studies []archive.Study, now time.Time, selected archiveAlbumID, openedUIDs map[string]bool) []archiveAlbumRow {
 	rows := []archiveAlbumRow{
 		{ID: archiveAlbumDatabase, Label: archiveAlbumLabel(archiveAlbumDatabase), Count: len(studies), Filterable: true},
 		{ID: archiveAlbumComments, Label: archiveAlbumLabel(archiveAlbumComments), Count: countStudiesWithComments(studies), Filterable: true},
 		{ID: archiveAlbumInteresting, Label: archiveAlbumLabel(archiveAlbumInteresting), Count: countStudiesWithStatus(studies, studyStatusPresetInterestingLabel), Filterable: true},
-		{ID: archiveAlbumLastHour, Label: archiveAlbumLabel(archiveAlbumLastHour), Count: countStudiesImportedSince(studies, now.Add(-time.Hour)), Filterable: true},
-		{ID: archiveAlbumOpened, Label: archiveAlbumLabel(archiveAlbumOpened), Count: 0},
+		{ID: archiveAlbumLastHour, Label: archiveAlbumLabel(archiveAlbumLastHour), Count: countStudiesAcquiredSince(studies, now.Add(-time.Hour)), Filterable: true},
+		{ID: archiveAlbumAddedLastHour, Label: archiveAlbumLabel(archiveAlbumAddedLastHour), Count: countStudiesImportedSince(studies, now.Add(-time.Hour)), Filterable: true},
+		{ID: archiveAlbumOpened, Label: archiveAlbumLabel(archiveAlbumOpened), Count: countStudiesByOpenedUIDs(studies, openedUIDs), Filterable: true},
 		{ID: archiveAlbumToday, Label: archiveAlbumLabel(archiveAlbumToday), Count: countStudiesImportedToday(studies, now, ""), Filterable: true},
+		{ID: archiveAlbumTodayCR, Label: archiveAlbumLabel(archiveAlbumTodayCR), Count: countStudiesImportedToday(studies, now, "CR"), Filterable: true},
 		{ID: archiveAlbumTodayCT, Label: archiveAlbumLabel(archiveAlbumTodayCT), Count: countStudiesImportedToday(studies, now, "CT"), Filterable: true},
 	}
 	for i := range rows {
 		prefix := "  "
 		if selected != "" && rows[i].ID == selected {
 			prefix = "▶ "
+			rows[i].Selected = true
 		}
 		rows[i].Text = prefix + railCountLine(rows[i].Label, rows[i].Count)
 	}
@@ -2685,13 +3699,23 @@ func archiveAlbumFilters(id archiveAlbumID, now time.Time) (archive.StudyFilters
 		return archive.StudyFilters{Status: studyStatusPresetInterestingLabel}, true
 	case archiveAlbumLastHour:
 		return archive.StudyFilters{
+			StudyDateTimeFrom: studyDateTimeFilterBound(now.Add(-time.Hour)),
+			StudyDateTimeTo:   studyDateTimeFilterBound(now),
+		}, true
+	case archiveAlbumAddedLastHour:
+		return archive.StudyFilters{
 			ImportedAtFrom: now.Add(-time.Hour).UTC().Format(time.RFC3339Nano),
 		}, true
-	case archiveAlbumToday, archiveAlbumTodayCT:
+	case archiveAlbumOpened:
+		return archive.StudyFilters{}, true
+	case archiveAlbumToday, archiveAlbumTodayCR, archiveAlbumTodayCT:
 		start, end := localDayBounds(now)
 		filters := archive.StudyFilters{
 			ImportedAtFrom: start.UTC().Format(time.RFC3339Nano),
 			ImportedAtTo:   end.UTC().Format(time.RFC3339Nano),
+		}
+		if id == archiveAlbumTodayCR {
+			filters.Modalities = []string{"CR"}
 		}
 		if id == archiveAlbumTodayCT {
 			filters.Modalities = []string{"CT"}
@@ -2709,6 +3733,8 @@ func archiveFiltersWithAlbum(base archive.StudyFilters, id archiveAlbumID, now t
 	}
 	base.ImportedAtFrom = albumFilters.ImportedAtFrom
 	base.ImportedAtTo = albumFilters.ImportedAtTo
+	base.StudyDateTimeFrom = albumFilters.StudyDateTimeFrom
+	base.StudyDateTimeTo = albumFilters.StudyDateTimeTo
 	base.Modalities = albumFilters.Modalities
 	base.Status = albumFilters.Status
 	base.HasComments = albumFilters.HasComments
@@ -2730,6 +3756,69 @@ func countStudiesImportedSince(studies []archive.Study, since time.Time) int {
 		}
 	}
 	return count
+}
+
+func countStudiesAcquiredSince(studies []archive.Study, since time.Time) int {
+	count := 0
+	for _, study := range studies {
+		acquiredAt, ok := studyAcquiredAt(study, since.Location())
+		if ok && !acquiredAt.Before(since) {
+			count++
+		}
+	}
+	return count
+}
+
+func studyAcquiredAt(study archive.Study, location *time.Location) (time.Time, bool) {
+	if location == nil {
+		location = time.Local
+	}
+	date := strings.TrimSpace(study.StudyDate)
+	tm := normalizedDICOMTimeForDateTime(study.StudyTime)
+	if len(date) != 8 || tm == "" {
+		return time.Time{}, false
+	}
+	value, err := time.ParseInLocation("20060102150405", date+tm, location)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return value, true
+}
+
+func normalizedDICOMTimeForDateTime(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.SplitN(value, ".", 2)[0]
+	if len(value) > 6 {
+		value = value[:6]
+	}
+	for len(value) < 6 {
+		value += "0"
+	}
+	return value
+}
+
+func studyDateTimeFilterBound(value time.Time) string {
+	return value.Local().Format("20060102150405")
+}
+
+func countStudiesByOpenedUIDs(studies []archive.Study, openedUIDs map[string]bool) int {
+	return len(filterStudiesByOpenedUIDs(studies, openedUIDs))
+}
+
+func filterStudiesByOpenedUIDs(studies []archive.Study, openedUIDs map[string]bool) []archive.Study {
+	if len(studies) == 0 || len(openedUIDs) == 0 {
+		return nil
+	}
+	filtered := make([]archive.Study, 0, len(studies))
+	for _, study := range studies {
+		if openedUIDs[strings.TrimSpace(study.StudyInstanceUID)] {
+			filtered = append(filtered, study)
+		}
+	}
+	return filtered
 }
 
 func countStudiesWithComments(studies []archive.Study) int {
@@ -2848,7 +3937,9 @@ func importPathAsync(w fyne.Window, status *widget.Label, tables archiveTables, 
 	beginImportActivity(state, pathLabel)
 	started := time.Now()
 	go func() {
-		report, err := state.catalog.ImportPathWithOptions(context.Background(), path, importOptionsFromConfig(state.appConfig))
+		opts := importOptionsFromConfig(state.appConfig)
+		opts.OnProgress = importProgressCallback(state)
+		report, err := state.catalog.ImportPathWithOptions(context.Background(), path, opts)
 		summary := ops.ImportSummary(report, time.Since(started))
 		studies, studyErr := loadStudies(context.Background(), state)
 		fyne.Do(func() {
@@ -2919,7 +4010,7 @@ func newArchiveControlSet(w fyne.Window, status *widget.Label, tables archiveTab
 
 	applyingProgrammaticSearchText := false
 	applyAdvancedFilters := func() {
-		state.studyFilters = archive.StudyFilters{
+		studyFilters := archive.StudyFilters{
 			PatientName:      patientName.Text,
 			PatientID:        patientID.Text,
 			AccessionNumber:  accession.Text,
@@ -2931,6 +4022,12 @@ func newArchiveControlSet(w fyne.Window, status *widget.Label, tables archiveTab
 			Modalities:       splitModalities(modality.Text),
 			SourcePath:       sourcePath.Text,
 		}
+		if state.selectedArchiveAlbum != "" && state.selectedArchiveAlbum != archiveAlbumDatabase {
+			if albumFilters, ok := archiveFiltersWithAlbum(studyFilters, state.selectedArchiveAlbum, time.Now()); ok {
+				studyFilters = albumFilters
+			}
+		}
+		state.studyFilters = studyFilters
 		state.seriesFilters = archive.SeriesFilters{
 			Modality:          seriesModality.Text,
 			SeriesNumber:      seriesNumber.Text,
@@ -3012,6 +4109,7 @@ func newArchiveControlSet(w fyne.Window, status *widget.Label, tables archiveTab
 		seriesDescription.SetText("")
 		state.studyFilters = archive.StudyFilters{}
 		state.seriesFilters = archive.SeriesFilters{}
+		state.selectedArchiveAlbum = archiveAlbumDatabase
 		refreshStudies(w, status, tables, state)
 	})
 	exportButton := widget.NewButtonWithIcon("Export CSV", theme.DocumentSaveIcon(), func() {
@@ -3033,16 +4131,42 @@ func newArchiveControlSet(w fyne.Window, status *widget.Label, tables archiveTab
 		exportImagesJSON(w, status, state)
 	})
 
-	quickSearchBox := container.NewVBox(quickSearch, soundexCheck, searchModeLabel)
+	quickSearchBox := newArchiveToolbarQuickSearchBox(quickSearch, soundexCheck, searchModeLabel)
 	quickSearchCluster := container.NewBorder(
 		nil,
 		nil,
-		labeledControl("Search", quickSearchField),
+		container.NewGridWrap(fyne.NewSize(archiveToolbarQuickSearchFieldSelectorWidth, quickSearchField.MinSize().Height), quickSearchField),
 		container.NewHBox(searchButton),
 		quickSearchBox,
 	)
-	quickRow := container.NewBorder(nil, nil, nil, quickSearchCluster)
+	quickRow := workbenchStrip(quickSearchCluster)
+	albumScope := compactWorkbenchLabel()
+	albumScope.SetText(archiveAlbumScopeControlText(state.selectedArchiveAlbum))
+	state.archiveAlbumScopeLabel = albumScope
+	lastSyncedAlbum := archiveAlbumID("__unsynced__")
+	state.archiveAdvancedFilterSync = func() {
+		if lastSyncedAlbum == state.selectedArchiveAlbum {
+			return
+		}
+		lastSyncedAlbum = state.selectedArchiveAlbum
+		patientName.SetText(state.studyFilters.PatientName)
+		patientID.SetText(state.studyFilters.PatientID)
+		accession.SetText(state.studyFilters.AccessionNumber)
+		studyDescription.SetText(state.studyFilters.StudyDescription)
+		modality.SetText(strings.Join(state.studyFilters.Modalities, ","))
+		studyDateFrom.SetText(state.studyFilters.StudyDateFrom)
+		studyDateTo.SetText(state.studyFilters.StudyDateTo)
+		importedAtFrom.SetText(state.studyFilters.ImportedAtFrom)
+		importedAtTo.SetText(state.studyFilters.ImportedAtTo)
+		sourcePath.SetText(state.studyFilters.SourcePath)
+		seriesModality.SetText(state.seriesFilters.Modality)
+		seriesNumber.SetText(state.seriesFilters.SeriesNumber)
+		seriesDescription.SetText(state.seriesFilters.SeriesDescription)
+		albumScope.SetText(archiveAlbumScopeControlText(state.selectedArchiveAlbum))
+	}
+	state.archiveAdvancedFilterSync()
 	filters := container.NewVBox(
+		workbenchStrip(albumScope),
 		container.NewGridWithColumns(3,
 			labeledEntry("Patient", patientName),
 			labeledEntry("Patient ID", patientID),
@@ -3072,6 +4196,15 @@ func newArchiveControlSet(w fyne.Window, status *widget.Label, tables archiveTab
 		toolbarSearch:   quickRow,
 		archiveControls: container.NewVBox(advancedFilters, exportActions),
 	}
+}
+
+func newArchiveToolbarQuickSearchBox(entry *widget.Entry, soundex *widget.Check, modeLabel *widget.Label) fyne.CanvasObject {
+	modeLabel.Alignment = fyne.TextAlignTrailing
+	return container.NewVBox(
+		container.NewGridWrap(fyne.NewSize(archiveToolbarQuickSearchWidth, entry.MinSize().Height), entry),
+		soundex,
+		container.NewGridWrap(fyne.NewSize(archiveToolbarQuickSearchWidth, modeLabel.MinSize().Height), modeLabel),
+	)
 }
 
 func labeledEntry(label string, entry *widget.Entry) fyne.CanvasObject {
@@ -3259,6 +4392,38 @@ func queryDateTimePresetRangeWithInputs(preset string, onDate string, hours stri
 	default:
 		return "", "", "", "", false
 	}
+}
+
+func stepDICOMDate(value string, deltaDays int) (string, bool) {
+	value = strings.TrimSpace(value)
+	if len(value) != 8 {
+		return "", false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	date, err := time.ParseInLocation("20060102", value, time.Local)
+	if err != nil {
+		return "", false
+	}
+	return date.AddDate(0, 0, deltaDays).Format("20060102"), true
+}
+
+func stepPositiveInteger(value string, delta int, min int) string {
+	if min < 1 {
+		min = 1
+	}
+	current, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || current < min {
+		return strconv.Itoa(min)
+	}
+	current += delta
+	if current < min {
+		current = min
+	}
+	return strconv.Itoa(current)
 }
 
 func queryCriteriaWithQuickSearch(criteria query.Criteria, field string, value string) (query.Criteria, bool) {
@@ -3675,7 +4840,14 @@ func refreshStudies(w fyne.Window, status *widget.Label, tables archiveTables, s
 }
 
 func loadStudies(ctx context.Context, state *uiState) ([]archive.Study, error) {
-	return state.catalog.StudiesWithFilters(ctx, state.studyFilters)
+	studies, err := state.catalog.StudiesWithFilters(ctx, state.studyFilters)
+	if err != nil {
+		return nil, err
+	}
+	if state != nil && state.selectedArchiveAlbum == archiveAlbumOpened {
+		studies = filterStudiesByOpenedUIDs(studies, state.openedArchiveStudyUIDs)
+	}
+	return studies, nil
 }
 
 func setStudies(state *uiState, tables archiveTables, studies []archive.Study) {
@@ -3683,7 +4855,11 @@ func setStudies(state *uiState, tables archiveTables, studies []archive.Study) {
 	state.studies = studies
 	state.collapsedPatientGroups = retainCollapsedPatientGroups(state.collapsedPatientGroups, studies)
 	state.collapsedArchiveStudies = retainCollapsedArchiveStudies(state.collapsedArchiveStudies, studies)
-	state.archiveRows = archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(studies, state.collapsedPatientGroups, state.archiveSeriesByStudy, state.collapsedArchiveStudies)
+	state.collapsedArchiveSeries = retainCollapsedArchiveSeries(state.collapsedArchiveSeries, state.archiveInstancesBySeries)
+	applySavedArchiveSortPreferenceForSelectedUID(state, selectedStudyUID)
+	if state.archiveRows == nil {
+		state.archiveRows = archiveBrowserRowsForState(state)
+	}
 	state.selectedStudyRow = archiveStudyIndexByUID(studies, selectedStudyUID)
 	clearArchiveDetails(state, tables)
 	if tables.studies != nil {
@@ -3734,6 +4910,24 @@ func retainCollapsedArchiveStudies(collapsed map[string]bool, studies []archive.
 	return retained
 }
 
+func retainCollapsedArchiveSeries(collapsed map[string]bool, instancesBySeries map[string][]archive.Instance) map[string]bool {
+	if len(collapsed) == 0 || len(instancesBySeries) == 0 {
+		return nil
+	}
+	retained := map[string]bool{}
+	for seriesUID, isCollapsed := range collapsed {
+		key := strings.TrimSpace(seriesUID)
+		if !isCollapsed || key == "" || len(instancesBySeries[key]) == 0 {
+			continue
+		}
+		retained[key] = true
+	}
+	if len(retained) == 0 {
+		return nil
+	}
+	return retained
+}
+
 func clearArchiveDetails(state *uiState, tables archiveTables) {
 	state.series = nil
 	state.instances = nil
@@ -3753,12 +4947,13 @@ func setSeries(state *uiState, tables archiveTables, series []archive.Series) {
 	state.instances = nil
 	state.selectedSeriesRow = -1
 	state.selectedInstanceRow = -1
+	applySavedSeriesSortPreference(state)
 	if study, ok := selectedStudy(state); ok && strings.TrimSpace(study.StudyInstanceUID) != "" {
 		if state.archiveSeriesByStudy == nil {
 			state.archiveSeriesByStudy = map[string][]archive.Series{}
 		}
 		state.archiveSeriesByStudy[study.StudyInstanceUID] = series
-		state.archiveRows = archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(state.studies, state.collapsedPatientGroups, state.archiveSeriesByStudy, state.collapsedArchiveStudies)
+		state.archiveRows = archiveBrowserRowsForState(state)
 		tables.studies.Refresh()
 	}
 	tables.series.Refresh()
@@ -3769,7 +4964,27 @@ func setSeries(state *uiState, tables archiveTables, series []archive.Series) {
 func setInstances(state *uiState, tables archiveTables, instances []archive.Instance) {
 	state.instances = instances
 	state.selectedInstanceRow = -1
-	tables.instances.Refresh()
+	applySavedInstanceSortPreference(state)
+	if series, ok := selectedSeries(state); ok {
+		seriesUID := strings.TrimSpace(series.SeriesInstanceUID)
+		if seriesUID != "" {
+			if state.archiveInstancesBySeries == nil {
+				state.archiveInstancesBySeries = map[string][]archive.Instance{}
+			}
+			if len(instances) == 0 {
+				delete(state.archiveInstancesBySeries, seriesUID)
+			} else {
+				state.archiveInstancesBySeries[seriesUID] = instances
+			}
+			state.archiveRows = archiveBrowserRowsForState(state)
+			if tables.studies != nil {
+				tables.studies.Refresh()
+			}
+		}
+	}
+	if tables.instances != nil {
+		tables.instances.Refresh()
+	}
 	refreshArchiveChrome(state)
 }
 
@@ -3904,6 +5119,18 @@ func deleteSelectedStudy(ctx context.Context, status *widget.Label, tables archi
 		return 0, err
 	}
 	if state.archiveSeriesByStudy != nil {
+		for _, series := range state.archiveSeriesByStudy[studyUID] {
+			seriesUID := strings.TrimSpace(series.SeriesInstanceUID)
+			if seriesUID == "" {
+				continue
+			}
+			if state.archiveInstancesBySeries != nil {
+				delete(state.archiveInstancesBySeries, seriesUID)
+			}
+			if state.collapsedArchiveSeries != nil {
+				delete(state.collapsedArchiveSeries, seriesUID)
+			}
+		}
 		delete(state.archiveSeriesByStudy, studyUID)
 	}
 	if state.collapsedArchiveStudies != nil {
@@ -3968,13 +5195,44 @@ func queryMoveDestinationOptions(state *uiState) []string {
 	if state != nil && state.receiver != nil {
 		appendOption(state.receiver.AETitle())
 	}
-	if node, ok := selectedQueryNode(state); ok {
+	for _, node := range querySourceNodes(state) {
 		appendOption(node.PreferredMoveDestination)
 	}
 	if state != nil {
 		appendOption(state.queryMoveDestination)
 	}
 	return options
+}
+
+func querySourcePriorityText(sources []nodes.Node) string {
+	if len(sources) == 0 {
+		return "no source selected"
+	}
+	if len(sources) == 1 {
+		return "source " + sources[0].Name
+	}
+	names := make([]string, 0, len(sources))
+	for _, node := range sources {
+		name := strings.TrimSpace(node.Name)
+		if name == "" {
+			name = emptyDash(node.AETitle)
+		}
+		names = append(names, name)
+	}
+	return fmt.Sprintf("%d sources priority: %s", len(sources), strings.Join(names, " -> "))
+}
+
+func querySourceRetrieveMethodText(sources []nodes.Node) string {
+	if len(sources) == 0 {
+		return "Auto C-MOVE/C-GET"
+	}
+	method := sources[0].RetrieveMethodOrDefault()
+	for _, source := range sources[1:] {
+		if source.RetrieveMethodOrDefault() != method {
+			return "mixed retrieve methods"
+		}
+	}
+	return retrieveMethodSummary(sources[0])
 }
 
 func queryDestinationText(state *uiState) string {
@@ -3993,7 +5251,13 @@ func queryDestinationText(state *uiState) string {
 				moveDestination = snapshot.AETitle
 			}
 		}
-		if node, ok := selectedQueryNode(state); ok {
+		if sources := querySourceNodes(state); len(sources) > 1 {
+			source = querySourcePriorityText(sources)
+			method = querySourceRetrieveMethodText(sources)
+			if override := strings.TrimSpace(state.queryMoveDestination); override != "" {
+				moveDestination = override
+			}
+		} else if node, ok := selectedQueryNode(state); ok {
 			source = "source " + node.Name
 			moveDestination = queryMoveDestination(state, node)
 			method = retrieveMethodSummary(node)
@@ -4180,14 +5444,76 @@ func querySelectedDetailsText(state *uiState) string {
 	if level == "" {
 		level = "STUDY"
 	}
-	return strings.Join([]string{
+	lines := []string{
 		"Level: " + level,
 		"Study UID: " + emptyDash(match.StudyInstanceUID),
 		"Series UID: " + emptyDash(match.SeriesInstanceUID),
 		"SOP Class UID: " + emptyDash(match.SOPClassUID),
 		"SOP Instance UID: " + emptyDash(match.SOPInstanceUID),
 		"Source: " + emptyDash(queryCell(match, queryTableColumnSource)),
-	}, "\n")
+	}
+	if localState := queryRowLocalStateText(match.LocalState); localState != "" {
+		lines = append(lines, "Local State: "+localState)
+	}
+	if retrieveStatus := queryRetrieveRowStatus(state, match); retrieveStatus != "" {
+		lines = append(lines, "Retrieve Status: "+retrieveStatus)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func selectedQueryTechnicalValue(state *uiState, field string) string {
+	match, ok := selectedQuery(state)
+	if !ok {
+		return ""
+	}
+	switch field {
+	case "Study UID":
+		return strings.TrimSpace(match.StudyInstanceUID)
+	case "Series UID":
+		return strings.TrimSpace(match.SeriesInstanceUID)
+	case "SOP Class UID":
+		return strings.TrimSpace(match.SOPClassUID)
+	case "SOP Instance UID":
+		return strings.TrimSpace(match.SOPInstanceUID)
+	default:
+		return ""
+	}
+}
+
+func copySelectedQueryTechnicalValue(state *uiState, status *widget.Label, field string) {
+	value := selectedQueryTechnicalValue(state, field)
+	if value == "" {
+		if status != nil {
+			status.SetText(field + " is empty")
+		}
+		return
+	}
+	fyne.CurrentApp().Clipboard().SetContent(value)
+	if status != nil {
+		status.SetText("Copied " + field)
+	}
+}
+
+func newQuerySelectedDetailsPanel(state *uiState, status *widget.Label) fyne.CanvasObject {
+	state.querySelectedDetailsLabel = compactWorkbenchLabel()
+	state.querySelectedDetailsLabel.SetText(querySelectedDetailsText(state))
+	copyButton := func(field string) *widget.Button {
+		return widget.NewButtonWithIcon("Copy "+field, theme.ContentCopyIcon(), func() {
+			copySelectedQueryTechnicalValue(state, status, field)
+		})
+	}
+	return container.NewBorder(
+		nil,
+		container.NewHBox(
+			copyButton("Study UID"),
+			copyButton("Series UID"),
+			copyButton("SOP Class UID"),
+			copyButton("SOP Instance UID"),
+		),
+		nil,
+		nil,
+		state.querySelectedDetailsLabel,
+	)
 }
 
 func refreshQuerySelectedDetails(state *uiState) {
@@ -4199,21 +5525,40 @@ func refreshQuerySelectedDetails(state *uiState) {
 
 type querySourceListCell struct {
 	*fyne.Container
-	check     *widget.Check
-	verifyDot *canvas.Circle
-	queryDot  *canvas.Circle
+	background   *canvas.Rectangle
+	check        *widget.Check
+	nameLabel    *widget.Label
+	addressLabel *widget.Label
+	aeTitleLabel *widget.Label
+	verifyDot    *canvas.Circle
+	queryDot     *canvas.Circle
 }
 
+const querySourceEmptyLabel = "No remote sources configured"
+
 func newQuerySourceListCell() *querySourceListCell {
+	background := canvas.NewRectangle(archiveOddRowColor)
 	verifyDot := newSourceStatusDot()
 	queryDot := newSourceStatusDot()
 	check := widget.NewCheck("", nil)
+	nameLabel := widget.NewLabel("Source")
+	nameLabel.Wrapping = fyne.TextTruncate
+	addressLabel := widget.NewLabel("Address")
+	addressLabel.Wrapping = fyne.TextTruncate
+	aeTitleLabel := widget.NewLabel("AETitle")
+	aeTitleLabel.Wrapping = fyne.TextTruncate
+	columns := newSourceColumnGrid(nameLabel, addressLabel, aeTitleLabel)
 	dots := container.NewHBox(sourceStatusDotBox(verifyDot), sourceStatusDotBox(queryDot))
+	row := container.NewBorder(nil, nil, check, dots, columns)
 	return &querySourceListCell{
-		Container: container.NewBorder(nil, nil, dots, nil, check),
-		check:     check,
-		verifyDot: verifyDot,
-		queryDot:  queryDot,
+		Container:    container.NewStack(background, newCompactTableCellContent(row), newTableColumnDividerLayer(), newTableRowDividerLayer()),
+		background:   background,
+		check:        check,
+		nameLabel:    nameLabel,
+		addressLabel: addressLabel,
+		aeTitleLabel: aeTitleLabel,
+		verifyDot:    verifyDot,
+		queryDot:     queryDot,
 	}
 }
 
@@ -4228,11 +5573,63 @@ func sourceStatusDotBox(dot *canvas.Circle) fyne.CanvasObject {
 	return container.NewGridWrap(fyne.NewSize(10, 10), dot)
 }
 
+func newQuerySourceColumnHeader() fyne.CanvasObject {
+	name := querySourceHeaderLabel("Name")
+	address := querySourceHeaderLabel("Address")
+	aeTitle := querySourceHeaderLabel("AETitle")
+	leftSpacer := container.NewGridWrap(fyne.NewSize(36, 1), canvas.NewRectangle(color.Transparent))
+	rightSpacer := container.NewGridWrap(fyne.NewSize(24, 1), canvas.NewRectangle(color.Transparent))
+	row := container.NewBorder(nil, nil, leftSpacer, rightSpacer, newSourceColumnGrid(name, address, aeTitle))
+	background := canvas.NewRectangle(archiveHeaderRowColor)
+	return container.NewStack(background, newCompactTableCellContent(row), newTableColumnDividerLayer(), newTableRowDividerLayer())
+}
+
+func newSourceColumnGrid(columns ...fyne.CanvasObject) *fyne.Container {
+	cells := make([]fyne.CanvasObject, 0, len(columns))
+	for index, column := range columns {
+		cells = append(cells, newSourceColumnCell(column, index < len(columns)-1))
+	}
+	return container.NewGridWithColumns(len(cells), cells...)
+}
+
+func newSourceColumnCell(content fyne.CanvasObject, divider bool) fyne.CanvasObject {
+	if !divider {
+		return content
+	}
+	return container.NewStack(content, newTableColumnDividerLayer())
+}
+
+func querySourceHeaderLabel(text string) *widget.Label {
+	label := widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	label.Wrapping = fyne.TextTruncate
+	return label
+}
+
+const dicomNodesSourcePanelWidth float32 = 380
+const compactSourceListRowHeight float32 = compactTableRowHeight + 6
+
+func applyCompactSourceListRows(list *widget.List, count int) {
+	if list == nil {
+		return
+	}
+	for id := 0; id < count; id++ {
+		list.SetItemHeight(widget.ListItemID(id), compactSourceListRowHeight)
+	}
+}
+
+func newDicomNodesSourcePanel(header fyne.CanvasObject, body fyne.CanvasObject) *fyne.Container {
+	panel := container.NewBorder(header, nil, nil, nil, body)
+	panel.Resize(fyne.NewSize(dicomNodesSourcePanelWidth, 0))
+	return panel
+}
+
 func configureQuerySourceCell(cell *querySourceListCell, state *uiState, id widget.ListItemID, onChanged func()) {
 	if cell == nil {
 		return
 	}
 	configureQuerySourceCheck(cell.check, state, id, onChanged)
+	applyQuerySourceCellStyle(cell, id, state != nil && id == state.selectedNodeRow)
+	configureQuerySourceLabels(cell, state, id)
 	if state == nil || id < 0 || id >= len(state.nodes) {
 		applySourceStatusDot(cell.verifyDot, sourceStatusIdleColor)
 		applySourceStatusDot(cell.queryDot, sourceStatusIdleColor)
@@ -4241,6 +5638,86 @@ func configureQuerySourceCell(cell *querySourceListCell, state *uiState, id widg
 	node := state.nodes[id]
 	applySourceStatusDot(cell.verifyDot, nodeVerifyStatusDotColor(state, node))
 	applySourceStatusDot(cell.queryDot, querySourceStatusDotColor(state, node))
+}
+
+func applyQuerySourceCellStyle(cell *querySourceListCell, row int, selected bool) {
+	if cell == nil || cell.background == nil {
+		return
+	}
+	if selected {
+		cell.background.FillColor = archiveSelectedRowColor
+	} else if row%2 == 0 {
+		cell.background.FillColor = archiveEvenRowColor
+	} else {
+		cell.background.FillColor = archiveOddRowColor
+	}
+	cell.background.Refresh()
+}
+
+func configureQuerySourceLabels(cell *querySourceListCell, state *uiState, id widget.ListItemID) {
+	if cell == nil {
+		return
+	}
+	if querySourceEmptyRow(state, id) {
+		configureQuerySourcePlaceholderLabels(cell)
+		return
+	}
+	if state == nil || id < 0 || id >= len(state.nodes) {
+		clearQuerySourceLabels(cell)
+		return
+	}
+	configureQuerySourceNodeLabels(cell, state.nodes[id], id == state.selectedNodeRow)
+}
+
+func querySourceEmptyRow(state *uiState, id widget.ListItemID) bool {
+	return id == 0 && (state == nil || len(state.nodes) == 0)
+}
+
+func configureQuerySourcePlaceholderLabels(cell *querySourceListCell) {
+	if cell == nil {
+		return
+	}
+	cell.nameLabel.TextStyle = fyne.TextStyle{Italic: true}
+	cell.addressLabel.TextStyle = fyne.TextStyle{}
+	cell.aeTitleLabel.TextStyle = fyne.TextStyle{}
+	cell.nameLabel.SetText(querySourceEmptyLabel)
+	cell.addressLabel.SetText("")
+	cell.aeTitleLabel.SetText("")
+}
+
+func clearQuerySourceLabels(cell *querySourceListCell) {
+	if cell == nil {
+		return
+	}
+	cell.nameLabel.TextStyle = fyne.TextStyle{}
+	cell.addressLabel.TextStyle = fyne.TextStyle{}
+	cell.aeTitleLabel.TextStyle = fyne.TextStyle{}
+	cell.nameLabel.SetText("")
+	cell.addressLabel.SetText("")
+	cell.aeTitleLabel.SetText("")
+}
+
+func configureQuerySourceNodeLabels(cell *querySourceListCell, node nodes.Node, selected bool) {
+	if cell == nil {
+		return
+	}
+	name := node.Name
+	if selected {
+		name = "▶ " + name
+	}
+	if suffix := querySourceDisabledSuffix(node); suffix != "" {
+		name += suffix
+	}
+	style := fyne.TextStyle{}
+	if !node.Enabled() || !node.QueryEnabled() {
+		style.Italic = true
+	}
+	cell.nameLabel.TextStyle = style
+	cell.addressLabel.TextStyle = style
+	cell.aeTitleLabel.TextStyle = style
+	cell.nameLabel.SetText(name)
+	cell.addressLabel.SetText(fmt.Sprintf("%s:%d", emptyDash(node.Host), node.Port))
+	cell.aeTitleLabel.SetText(emptyDash(node.AETitle))
 }
 
 func applySourceStatusDot(dot *canvas.Circle, fill color.NRGBA) {
@@ -4281,7 +5758,7 @@ func querySourceStatusDotColor(state *uiState, node nodes.Node) color.NRGBA {
 
 func querySourceRows(state *uiState) []string {
 	if state == nil || len(state.nodes) == 0 {
-		return []string{"No remote sources configured"}
+		return []string{querySourceEmptyLabel}
 	}
 	rows := make([]string, 0, len(state.nodes))
 	for index, node := range state.nodes {
@@ -4293,13 +5770,21 @@ func querySourceRows(state *uiState) []string {
 		if !node.Enabled() || !node.QueryEnabled() {
 			check = "[ ]"
 		}
-		rows = append(rows, fmt.Sprintf("%s%s %s%s %s:%d", prefix, check, querySourceMarkers(state, node), node.Name, node.Host, node.Port))
+		rows = append(rows, fmt.Sprintf("%s%s %s%s", prefix, check, querySourceMarkers(state, node), querySourceNodeLabel(node)))
 	}
 	return rows
 }
 
 func querySourceChecked(node nodes.Node) bool {
 	return node.Enabled() && node.QueryEnabled()
+}
+
+func querySourceNodeLabel(node nodes.Node) string {
+	label := fmt.Sprintf("%s %s:%d", node.Name, node.Host, node.Port)
+	if aeTitle := strings.TrimSpace(node.AETitle); aeTitle != "" {
+		label += " " + aeTitle
+	}
+	return label
 }
 
 func querySourceCheckLabel(state *uiState, index int) string {
@@ -4311,7 +5796,7 @@ func querySourceCheckLabel(state *uiState, index int) string {
 	if index == state.selectedNodeRow {
 		prefix = "▶ "
 	}
-	return fmt.Sprintf("%s%s %s:%d%s", prefix, node.Name, node.Host, node.Port, querySourceDisabledSuffix(node))
+	return fmt.Sprintf("%s%s%s", prefix, querySourceNodeLabel(node), querySourceDisabledSuffix(node))
 }
 
 func querySourceDisabledSuffix(node nodes.Node) string {
@@ -4362,7 +5847,7 @@ func autoQuerySourceChecked(entry autoQuerySourceEntry) bool {
 func autoQuerySourceRows(state *uiState) []string {
 	entries := autoQuerySourceEntries(state)
 	if len(entries) == 0 {
-		return []string{"No remote sources configured"}
+		return []string{querySourceEmptyLabel}
 	}
 	rows := make([]string, 0, len(entries))
 	for index, entry := range entries {
@@ -4374,7 +5859,7 @@ func autoQuerySourceRows(state *uiState) []string {
 		if autoQuerySourceChecked(entry) {
 			check = "[x]"
 		}
-		rows = append(rows, fmt.Sprintf("%s%s %s%s %s:%d", prefix, check, querySourceMarkers(state, entry.node), entry.node.Name, entry.node.Host, entry.node.Port))
+		rows = append(rows, fmt.Sprintf("%s%s %s%s", prefix, check, querySourceMarkers(state, entry.node), querySourceNodeLabel(entry.node)))
 	}
 	return rows
 }
@@ -4389,7 +5874,7 @@ func autoQuerySourceCheckLabel(state *uiState, index int) string {
 	if index == state.selectedAutoQuerySourceRow {
 		prefix = "▶ "
 	}
-	return fmt.Sprintf("%s%s %s:%d%s", prefix, node.Name, node.Host, node.Port, querySourceDisabledSuffix(node))
+	return fmt.Sprintf("%s%s%s", prefix, querySourceNodeLabel(node), querySourceDisabledSuffix(node))
 }
 
 func setAutoQuerySourceEnabled(state *uiState, row int, enabled bool) bool {
@@ -4450,7 +5935,7 @@ func configureAutoQuerySourceCheck(check *widget.Check, state *uiState, id widge
 		return
 	}
 	check.Enable()
-	check.Text = autoQuerySourceCheckLabel(state, id)
+	check.Text = ""
 	check.SetChecked(autoQuerySourceChecked(entries[id]))
 	if autoQueryProfileLocked(state) {
 		check.Disable()
@@ -4475,15 +5960,28 @@ func configureAutoQuerySourceCell(cell *querySourceListCell, state *uiState, id 
 		return
 	}
 	configureAutoQuerySourceCheck(cell.check, state, id, onChanged)
+	applyQuerySourceCellStyle(cell, id, state != nil && id == state.selectedAutoQuerySourceRow)
 	entries := autoQuerySourceEntries(state)
+	if autoQuerySourceEmptyRow(entries, id) {
+		configureQuerySourcePlaceholderLabels(cell)
+		applySourceStatusDot(cell.verifyDot, sourceStatusIdleColor)
+		applySourceStatusDot(cell.queryDot, sourceStatusIdleColor)
+		return
+	}
 	if state == nil || id < 0 || id >= len(entries) {
+		clearQuerySourceLabels(cell)
 		applySourceStatusDot(cell.verifyDot, sourceStatusIdleColor)
 		applySourceStatusDot(cell.queryDot, sourceStatusIdleColor)
 		return
 	}
 	node := entries[id].node
+	configureQuerySourceNodeLabels(cell, node, id == state.selectedAutoQuerySourceRow)
 	applySourceStatusDot(cell.verifyDot, nodeVerifyStatusDotColor(state, node))
 	applySourceStatusDot(cell.queryDot, querySourceStatusDotColor(state, node))
+}
+
+func autoQuerySourceEmptyRow(entries []autoQuerySourceEntry, id widget.ListItemID) bool {
+	return id == 0 && len(entries) == 0
 }
 
 func setQuerySourceEnabled(state *uiState, row int, enabled bool) (bool, error) {
@@ -4581,7 +6079,7 @@ func configureQuerySourceCheck(check *widget.Check, state *uiState, id widget.Li
 		return
 	}
 	check.Enable()
-	check.Text = querySourceCheckLabel(state, id)
+	check.Text = ""
 	check.SetChecked(querySourceChecked(state.nodes[id]))
 	check.OnChanged = func(checked bool) {
 		state.selectedNodeRow = id
@@ -4604,6 +6102,13 @@ func nodeVerifyKey(node nodes.Node) string {
 	return fmt.Sprintf("endpoint:%s:%s:%d", strings.TrimSpace(node.Name), strings.TrimSpace(node.Host), node.Port)
 }
 
+func querySourceNodeName(node nodes.Node) string {
+	if name := strings.TrimSpace(node.Name); name != "" {
+		return name
+	}
+	return fmt.Sprintf("%s:%d", emptyDash(node.Host), node.Port)
+}
+
 func recordNodeVerifyStatus(state *uiState, node nodes.Node, status nodeVerifyStatus) {
 	if state == nil {
 		return
@@ -4611,18 +6116,29 @@ func recordNodeVerifyStatus(state *uiState, node nodes.Node, status nodeVerifySt
 	if state.nodeVerifyStatuses == nil {
 		state.nodeVerifyStatuses = map[string]nodeVerifyStatus{}
 	}
-	state.nodeVerifyStatuses[nodeVerifyKey(node)] = status
+	key := nodeVerifyKey(node)
+	state.nodeVerifyStatuses[key] = status
+	if state.nodeVerifyStatusTimes == nil {
+		state.nodeVerifyStatusTimes = map[string]time.Time{}
+	}
+	state.nodeVerifyStatusTimes[key] = time.Now()
+	historyStatus := sourceStatusHistoryOK
+	if status == nodeVerifyFail {
+		historyStatus = sourceStatusHistoryFail
+	}
+	appendSourceStatusHistoryAt(state, node, sourceStatusHistoryKindVerify, historyStatus, state.nodeVerifyStatusTimes[key])
 }
 
 func nodeVerifyStatusMarker(state *uiState, node nodes.Node) string {
 	if state == nil {
 		return ""
 	}
-	switch state.nodeVerifyStatuses[nodeVerifyKey(node)] {
+	key := nodeVerifyKey(node)
+	switch state.nodeVerifyStatuses[key] {
 	case nodeVerifyOK:
-		return "✓ "
+		return sourceStatusMarker("✓", state.nodeVerifyStatusTimes[key])
 	case nodeVerifyFail:
-		return "! "
+		return sourceStatusMarker("!", state.nodeVerifyStatusTimes[key])
 	default:
 		return ""
 	}
@@ -4635,31 +6151,92 @@ func recordQuerySourceStatus(state *uiState, node nodes.Node, status querySource
 	if state.querySourceStatuses == nil {
 		state.querySourceStatuses = map[string]querySourceStatus{}
 	}
-	state.querySourceStatuses[nodeVerifyKey(node)] = status
+	key := nodeVerifyKey(node)
+	state.querySourceStatuses[key] = status
+	if state.querySourceStatusTimes == nil {
+		state.querySourceStatusTimes = map[string]time.Time{}
+	}
+	state.querySourceStatusTimes[key] = time.Now()
+	historyStatus := sourceStatusHistoryOK
+	if status == querySourceFail {
+		historyStatus = sourceStatusHistoryFail
+	}
+	appendSourceStatusHistoryAt(state, node, sourceStatusHistoryKindQuery, historyStatus, state.querySourceStatusTimes[key])
 }
 
 func querySourceStatusMarker(state *uiState, node nodes.Node) string {
 	if state == nil {
 		return ""
 	}
-	switch state.querySourceStatuses[nodeVerifyKey(node)] {
+	key := nodeVerifyKey(node)
+	switch state.querySourceStatuses[key] {
 	case querySourceOK:
-		return "Q✓ "
+		return sourceStatusMarker("Q✓", state.querySourceStatusTimes[key])
 	case querySourceFail:
-		return "Q! "
+		return sourceStatusMarker("Q!", state.querySourceStatusTimes[key])
 	default:
 		return ""
 	}
+}
+
+func sourceStatusMarker(marker string, at time.Time) string {
+	if at.IsZero() {
+		return marker + " "
+	}
+	return marker + " " + at.Local().Format("15:04") + " "
 }
 
 func querySourceMarkers(state *uiState, node nodes.Node) string {
 	return nodeVerifyStatusMarker(state, node) + querySourceStatusMarker(state, node)
 }
 
+func appendSourceStatusHistoryAt(state *uiState, node nodes.Node, kind sourceStatusHistoryKind, status string, at time.Time) {
+	if state == nil {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	entry := sourceStatusHistoryEntry{
+		At:       at,
+		NodeName: emptyDash(querySourceNodeName(node)),
+		Kind:     kind,
+		Status:   status,
+	}
+	state.querySourceHistory = append([]sourceStatusHistoryEntry{entry}, state.querySourceHistory...)
+	if len(state.querySourceHistory) > sourceStatusHistoryLimit {
+		state.querySourceHistory = state.querySourceHistory[:sourceStatusHistoryLimit]
+	}
+	refreshSourceStatusHistory(state)
+}
+
+func sourceStatusHistoryText(state *uiState) string {
+	return strings.Join(sourceStatusHistoryLines(state), "\n")
+}
+
+func sourceStatusHistoryLines(state *uiState) []string {
+	if state == nil || len(state.querySourceHistory) == 0 {
+		return []string{"No source history"}
+	}
+	lines := make([]string, 0, len(state.querySourceHistory))
+	for _, entry := range state.querySourceHistory {
+		lines = append(lines, fmt.Sprintf("%s %s %s %s", entry.At.Local().Format("15:04"), emptyDash(entry.NodeName), entry.Kind, entry.Status))
+	}
+	return lines
+}
+
+func refreshSourceStatusHistory(state *uiState) {
+	if state == nil || state.querySourceHistoryLabel == nil {
+		return
+	}
+	state.querySourceHistoryLabel.SetText(sourceStatusHistoryText(state))
+}
+
 func refreshQuerySourceList(state *uiState) {
 	if state == nil || state.querySourceList == nil {
 		return
 	}
+	applyCompactSourceListRows(state.querySourceList, len(querySourceRows(state)))
 	state.querySourceList.Refresh()
 }
 
@@ -4677,6 +6254,17 @@ func beginQueryActivity(state *uiState, label string) {
 		return
 	}
 	state.activeQueryActivityLabel = strings.TrimSpace(label)
+	state.activeQueryActivityProgress = queryActivityProgress{}
+	state.activeQueryActivityHasProgress = false
+	refreshArchiveChrome(state)
+}
+
+func recordQueryActivityProgress(state *uiState, progress queryActivityProgress) {
+	if state == nil {
+		return
+	}
+	state.activeQueryActivityProgress = progress
+	state.activeQueryActivityHasProgress = true
 	refreshArchiveChrome(state)
 }
 
@@ -4685,6 +6273,8 @@ func clearActiveQueryActivity(state *uiState) {
 		return
 	}
 	state.activeQueryActivityLabel = ""
+	state.activeQueryActivityProgress = queryActivityProgress{}
+	state.activeQueryActivityHasProgress = false
 	refreshArchiveChrome(state)
 }
 
@@ -4693,6 +6283,17 @@ func beginSendActivity(state *uiState, label string) {
 		return
 	}
 	state.activeSendActivityLabel = strings.TrimSpace(label)
+	state.activeSendActivityProgress = send.Progress{}
+	state.activeSendActivityHasProgress = false
+	refreshArchiveChrome(state)
+}
+
+func recordSendActivityProgress(state *uiState, progress send.Progress) {
+	if state == nil {
+		return
+	}
+	state.activeSendActivityProgress = progress
+	state.activeSendActivityHasProgress = true
 	refreshArchiveChrome(state)
 }
 
@@ -4701,6 +6302,8 @@ func clearActiveSendActivity(state *uiState) {
 		return
 	}
 	state.activeSendActivityLabel = ""
+	state.activeSendActivityProgress = send.Progress{}
+	state.activeSendActivityHasProgress = false
 	refreshArchiveChrome(state)
 }
 
@@ -4709,6 +6312,17 @@ func beginImportActivity(state *uiState, label string) {
 		return
 	}
 	state.activeImportActivityLabel = strings.TrimSpace(label)
+	state.activeImportActivityProgress = archive.ImportProgress{}
+	state.activeImportActivityHasProgress = false
+	refreshArchiveChrome(state)
+}
+
+func recordImportActivityProgress(state *uiState, progress archive.ImportProgress) {
+	if state == nil {
+		return
+	}
+	state.activeImportActivityProgress = progress
+	state.activeImportActivityHasProgress = true
 	refreshArchiveChrome(state)
 }
 
@@ -4717,6 +6331,8 @@ func clearActiveImportActivity(state *uiState) {
 		return
 	}
 	state.activeImportActivityLabel = ""
+	state.activeImportActivityProgress = archive.ImportProgress{}
+	state.activeImportActivityHasProgress = false
 	refreshArchiveChrome(state)
 }
 
@@ -4758,11 +6374,80 @@ func retrieveProgressCallback(status *widget.Label, state *uiState, nodeName str
 	}
 }
 
+func sendProgressCallback(state *uiState) func(send.Progress) {
+	return func(update send.Progress) {
+		fyne.Do(func() {
+			recordSendActivityProgress(state, update)
+		})
+	}
+}
+
+func importProgressCallback(state *uiState) func(archive.ImportProgress) {
+	return func(update archive.ImportProgress) {
+		fyne.Do(func() {
+			recordImportActivityProgress(state, update)
+		})
+	}
+}
+
+func queryProgressCallback(state *uiState) queryActivityProgressFunc {
+	return func(update queryActivityProgress) {
+		fyne.Do(func() {
+			recordQueryActivityProgress(state, update)
+		})
+	}
+}
+
 func retrieveProgressFraction(progress retrieve.Progress) float64 {
 	done := int(progress.Completed) + int(progress.Failed) + int(progress.Warnings)
 	total := done + int(progress.Remaining)
 	if total == 0 {
 		return 0
+	}
+	return progressFraction(done, total)
+}
+
+func retrieveProgressKnown(progress retrieve.Progress) bool {
+	done := int(progress.Completed) + int(progress.Failed) + int(progress.Warnings)
+	return done+int(progress.Remaining) > 0
+}
+
+func queryProgressKnown(state *uiState) bool {
+	if state == nil || !state.activeQueryActivityHasProgress {
+		return false
+	}
+	return state.activeQueryActivityProgress.Total > 0
+}
+
+func queryProgressFraction(state *uiState) float64 {
+	if !queryProgressKnown(state) {
+		return 0
+	}
+	progress := state.activeQueryActivityProgress
+	return progressFraction(progress.Attempted, progress.Total)
+}
+
+func sendProgressKnown(state *uiState) bool {
+	if state == nil || !state.activeSendActivityHasProgress {
+		return false
+	}
+	return state.activeSendActivityProgress.Total > 0
+}
+
+func sendProgressFraction(state *uiState) float64 {
+	if !sendProgressKnown(state) {
+		return 0
+	}
+	progress := state.activeSendActivityProgress
+	return progressFraction(progress.Attempted, progress.Total)
+}
+
+func progressFraction(done int, total int) float64 {
+	if total <= 0 || done <= 0 {
+		return 0
+	}
+	if done >= total {
+		return 1
 	}
 	return float64(done) / float64(total)
 }
@@ -4777,7 +6462,7 @@ func retrieveProgressText(nodeName string, progress retrieve.Progress) string {
 	if total == 0 {
 		return fmt.Sprintf("Retrieve %s active", nodeName)
 	}
-	return fmt.Sprintf("Retrieve %s %d/%d done, failed %d, warnings %d", nodeName, done, total, progress.Failed, progress.Warnings)
+	return fmt.Sprintf("Retrieve %s %d/%d done, fail %d, warn %d", nodeName, done, total, progress.Failed, progress.Warnings)
 }
 
 func retrieveMethodName(outcome retrieve.Outcome) string {
@@ -4872,21 +6557,12 @@ func receiverAddressFromParts(host string, port string) (string, error) {
 	return net.JoinHostPort(host, fmt.Sprintf("%d", portValue)), nil
 }
 
-func listenerAddressSummaryLines(hostname string, addresses []string, port string) []string {
-	hostname = strings.TrimSpace(hostname)
-	if hostname == "" {
-		hostname = "-"
-	}
-	lines := []string{"Host Name: " + hostname}
+func listenerAddressSummaryText(addresses []string, port string) string {
 	endpoints := listenerReachableEndpoints(addresses, port)
 	if len(endpoints) == 0 {
-		return append(lines, "Reachable Addresses: -")
+		return "-"
 	}
-	lines = append(lines, "Reachable Addresses:")
-	for _, endpoint := range endpoints {
-		lines = append(lines, "  "+endpoint)
-	}
-	return lines
+	return strings.Join(endpoints, ", ")
 }
 
 func listenerReachableEndpoints(addresses []string, port string) []string {
@@ -4942,7 +6618,7 @@ func newListenerHostSelect(receiverHost *widget.Entry, addresses []string, refre
 
 func listenerSettingsStatusText(aeTitle string, host string, port string, activate bool, running *receive.Snapshot) string {
 	if running != nil {
-		return fmt.Sprintf("Running: %s on %s; stored %d objects", emptyDash(running.AETitle), emptyDash(running.Address), running.Stored)
+		return fmt.Sprintf("Running: %s binding %s; stored %d objects", emptyDash(running.AETitle), emptyDash(running.Address), running.Stored)
 	}
 	address, err := receiverAddressFromParts(host, port)
 	if err != nil {
@@ -4955,7 +6631,150 @@ func listenerSettingsStatusText(aeTitle string, host string, port string, activa
 	if activate {
 		stateText = "Will start on Save"
 	}
-	return fmt.Sprintf("%s: %s on %s", stateText, emptyDash(aeTitle), emptyDash(address))
+	return fmt.Sprintf("%s: %s binding %s", stateText, emptyDash(aeTitle), emptyDash(address))
+}
+
+func newActivateListenerCheck(autoStart bool, running bool) *widget.Check {
+	check := widget.NewCheck("Activate DICOM listener when Go PACS is running", nil)
+	check.SetChecked(autoStart || running)
+	return check
+}
+
+func aeTitleFromHostName(hostname string) string {
+	hostname = strings.TrimSpace(hostname)
+	var builder strings.Builder
+	lastSpace := false
+	for _, r := range strings.ToUpper(hostname) {
+		valid := (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if valid {
+			builder.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if builder.Len() == 0 || lastSpace {
+			continue
+		}
+		builder.WriteRune(' ')
+		lastSpace = true
+	}
+	aeTitle := strings.TrimSpace(builder.String())
+	runes := []rune(aeTitle)
+	if len(runes) > 16 {
+		aeTitle = strings.TrimSpace(string(runes[:16]))
+	}
+	if aeTitle == "" {
+		return netverify.DefaultCallingAETitle
+	}
+	if err := nodes.ValidateAETitle(aeTitle); err != nil {
+		return netverify.DefaultCallingAETitle
+	}
+	return aeTitle
+}
+
+func newUseHostNameForAETitleCheck(localAE *widget.Entry, hostname string, refresh func()) *widget.Check {
+	manualAETitle := ""
+	if localAE != nil {
+		manualAETitle = localAE.Text
+	}
+	check := widget.NewCheck("Use Host Name for AETitle", func(checked bool) {
+		if localAE != nil {
+			if checked {
+				manualAETitle = localAE.Text
+				localAE.SetText(aeTitleFromHostName(hostname))
+				localAE.Disable()
+			} else {
+				localAE.Enable()
+				localAE.SetText(manualAETitle)
+			}
+		}
+		if refresh != nil {
+			refresh()
+		}
+	})
+	return check
+}
+
+func newDisabledCheck(text string, checked bool) *widget.Check {
+	check := widget.NewCheck(text, nil)
+	check.SetChecked(checked)
+	check.Disable()
+	return check
+}
+
+func newDisabledRadioGroup(options []string, selected string) *widget.RadioGroup {
+	radio := widget.NewRadioGroup(options, nil)
+	radio.SetSelected(selected)
+	radio.Disable()
+	return radio
+}
+
+func newDisabledEntryText(text string) *widget.Entry {
+	entry := widget.NewEntry()
+	entry.SetText(text)
+	entry.Disable()
+	return entry
+}
+
+func newListenerAddressSummaryEntry(text string) *widget.Entry {
+	return newDisabledEntryText(text)
+}
+
+func newReceiverPortControls(port string) (*widget.Entry, fyne.CanvasObject) {
+	entry := widget.NewEntry()
+	entry.SetText(port)
+	hint := compactWorkbenchLabel()
+	hint.SetText("(between 1 and 65535)")
+	return entry, container.NewHBox(entry, hint)
+}
+
+func newDICOMTimeoutControls(seconds string) (*widget.Entry, fyne.CanvasObject) {
+	entry := widget.NewEntry()
+	entry.SetText(seconds)
+	return entry, container.NewHBox(entry, widget.NewLabel("seconds"))
+}
+
+func newListenerHostNameControls(hostname string) (*widget.Entry, *widget.Button) {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		hostname = "-"
+	}
+	hostNameEntry := newDisabledEntryText(hostname)
+	editButton := compactToolbarButton("Edit", theme.DocumentCreateIcon(), func() {})
+	editButton.Disable()
+	return hostNameEntry, editButton
+}
+
+func newListenerAddressEditButton() *widget.Button {
+	editButton := compactToolbarButton("Edit", theme.DocumentCreateIcon(), func() {})
+	editButton.Disable()
+	return editButton
+}
+
+func newListenerIncomingPolicyControls() fyne.CanvasObject {
+	scanSeconds := newDisabledEntryText("10")
+	return container.NewVBox(
+		container.NewHBox(widget.NewLabel("Check for new files every"), scanSeconds, widget.NewLabel("seconds")),
+		widget.NewLabel("Incoming files"),
+		newDisabledRadioGroup([]string{
+			"Don't modify",
+			"Decompress compressed images",
+			"Compress non-compressed images with JPEG (See General Preferences)",
+		}, "Don't modify"),
+		widget.NewLabel("If Go PACS is not able to open a file received by the DICOM listener:"),
+		newDisabledRadioGroup([]string{
+			"Delete it",
+			"Move it to the NOT READABLE folder",
+		}, "Move it to the NOT READABLE folder"),
+		newDisabledCheck("Replace existing files with newly received files", false),
+	)
+}
+
+func newListenerMetadataPolicyControls() fyne.CanvasObject {
+	return container.NewVBox(
+		newDisabledCheck("Store Destination AETitle in PrivateInformationCreatorUID (0002,0100)", false),
+		newDisabledCheck("Store Source AETitle in SourceApplicationEntityTitle (0002,0016)", true),
+		newDisabledCheck("Activate the DICOM Listener only if this user session is active (user switching)", false),
+	)
 }
 
 func localReachableIPv4Addresses() []string {
@@ -5010,13 +6829,12 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 	receiverHostValue, receiverPortValue := receiverAddressParts(state.appConfig.ReceiverAddress)
 	receiverHost := widget.NewEntry()
 	receiverHost.SetText(receiverHostValue)
-	receiverPort := widget.NewEntry()
-	receiverPort.SetText(receiverPortValue)
-	activateListener := widget.NewCheck("Activate DICOM listener", nil)
-	activateListener.SetChecked(state.appConfig.ReceiverAutoStart || state.receiver != nil)
+	receiverPort, receiverPortControls := newReceiverPortControls(receiverPortValue)
+	activateListener := newActivateListenerCheck(state.appConfig.ReceiverAutoStart, state.receiver != nil)
 	hostName, _ := os.Hostname()
 	listenerAddresses := localReachableIPv4Addresses()
-	listenerAddressSummary := compactWorkbenchLabel()
+	hostNameEntry, hostNameEditButton := newListenerHostNameControls(hostName)
+	listenerAddressSummary := newListenerAddressSummaryEntry("")
 	listenerStatus := compactWorkbenchLabel()
 	runningSnapshot := func() *receive.Snapshot {
 		if state.receiver == nil {
@@ -5029,7 +6847,7 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 		listenerStatus.SetText(listenerSettingsStatusText(localAE.Text, receiverHost.Text, receiverPort.Text, activateListener.Checked, runningSnapshot()))
 	}
 	updateListenerAddressSummary := func() {
-		listenerAddressSummary.SetText(strings.Join(listenerAddressSummaryLines(hostName, listenerAddresses, receiverPort.Text), "\n"))
+		listenerAddressSummary.SetText(listenerAddressSummaryText(listenerAddresses, receiverPort.Text))
 	}
 	refreshListenerAddressControls := func() {
 		updateListenerAddressSummary()
@@ -5045,6 +6863,7 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 		fyne.CurrentApp().Clipboard().SetContent(strings.Join(endpoints, "\n"))
 		status.SetText("Copied listener addresses")
 	})
+	addressActions := container.NewHBox(newListenerAddressEditButton(), copyAddressesButton)
 	receiverPort.OnChanged = func(_ string) {
 		refreshListenerAddressControls()
 	}
@@ -5059,14 +6878,18 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 	}
 	updateListenerAddressSummary()
 	updateListenerStatus()
+	useHostNameAETitle := newUseHostNameForAETitleCheck(localAE, hostName, updateListenerStatus)
 	additionalAEs := widget.NewEntry()
 	additionalAEs.SetText(strings.Join(state.appConfig.AdditionalAETitles, ", "))
-	preferredReceiveSyntax := widget.NewSelect(receivePreferredSyntaxLabels(), nil)
-	preferredReceiveSyntax.SetSelected(receivePreferredSyntaxLabel(state.appConfig.ReceivePreferredTransferSyntax))
-	dicomCommunicationTimeout := widget.NewEntry()
-	dicomCommunicationTimeout.SetText(strconv.Itoa(timeoutSecondsOrDefault(state.appConfig.DICOMCommunicationTimeoutSeconds, appconfig.DefaultDICOMCommunicationTimeoutSeconds)))
-	dicomConnectionTimeout := widget.NewEntry()
-	dicomConnectionTimeout.SetText(strconv.Itoa(timeoutSecondsOrDefault(state.appConfig.DICOMConnectionTimeoutSeconds, appconfig.DefaultDICOMConnectionTimeoutSeconds)))
+	preferredReceiveSyntax, _, preferredReceiveSyntaxControls := newPreferredReceiveSyntaxControls(state.appConfig.ReceivePreferredTransferSyntax)
+	dicomCommunicationTimeout, dicomCommunicationTimeoutControls := newDICOMTimeoutControls(strconv.Itoa(timeoutSecondsOrDefault(state.appConfig.DICOMCommunicationTimeoutSeconds, appconfig.DefaultDICOMCommunicationTimeoutSeconds)))
+	dicomConnectionTimeout, dicomConnectionTimeoutControls := newDICOMTimeoutControls(strconv.Itoa(timeoutSecondsOrDefault(state.appConfig.DICOMConnectionTimeoutSeconds, appconfig.DefaultDICOMConnectionTimeoutSeconds)))
+	tlsListener := widget.NewCheck("Activate DICOM TLS Listener", nil)
+	tlsListener.Disable()
+	tlsSettingsButton := compactToolbarButton("TLS Settings", theme.SettingsIcon(), func() {})
+	tlsSettingsButton.Disable()
+	incomingPolicy := newListenerIncomingPolicyControls()
+	metadataPolicy := newListenerMetadataPolicyControls()
 	maxFileImportBytes := widget.NewEntry()
 	maxFileImportBytes.SetText(formatOptionalInt64(state.appConfig.MaxFileImportBytes))
 	maxZipEntryBytes := widget.NewEntry()
@@ -5085,17 +6908,21 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 	maxImportDirectoryDepth.SetText(formatOptionalInt(state.appConfig.MaxImportDirectoryDepth))
 
 	form := dialog.NewForm("Settings", "Save", "Cancel", []*widget.FormItem{
-		widget.NewFormItem("AETitle", localAE),
+		widget.NewFormItem("AETitle", container.NewBorder(nil, nil, nil, useHostNameAETitle, localAE)),
 		widget.NewFormItem("Listener", activateListener),
 		widget.NewFormItem("Listener Status", listenerStatus),
-		widget.NewFormItem("Receiver Host", receiverHost),
-		widget.NewFormItem("Use Address", hostSelect),
-		widget.NewFormItem("Receiver Port", receiverPort),
-		widget.NewFormItem("Local Addresses", container.NewBorder(nil, nil, nil, copyAddressesButton, listenerAddressSummary)),
+		widget.NewFormItem("Bind Host", receiverHost),
+		widget.NewFormItem("Use Detected Host", hostSelect),
+		widget.NewFormItem(settingsLabelReceiverPort, receiverPortControls),
+		widget.NewFormItem("Address(es)", container.NewBorder(nil, nil, nil, addressActions, listenerAddressSummary)),
+		widget.NewFormItem("Host Name", container.NewBorder(nil, nil, nil, hostNameEditButton, hostNameEntry)),
 		widget.NewFormItem("AE Aliases", additionalAEs),
-		widget.NewFormItem("Preferred Syntax", preferredReceiveSyntax),
-		widget.NewFormItem(settingsLabelDICOMCommunicationTimeout, dicomCommunicationTimeout),
-		widget.NewFormItem(settingsLabelDICOMConnectionTimeout, dicomConnectionTimeout),
+		widget.NewFormItem("Preferred Syntax", preferredReceiveSyntaxControls),
+		widget.NewFormItem("Metadata Policy", metadataPolicy),
+		widget.NewFormItem(settingsLabelDICOMCommunicationTimeout, dicomCommunicationTimeoutControls),
+		widget.NewFormItem(settingsLabelDICOMConnectionTimeout, dicomConnectionTimeoutControls),
+		widget.NewFormItem("TLS Listener", container.NewHBox(tlsListener, tlsSettingsButton)),
+		widget.NewFormItem("Incoming Files", incomingPolicy),
 		widget.NewFormItem("Max File Import Bytes", maxFileImportBytes),
 		widget.NewFormItem("Max ZIP Entry Bytes", maxZipEntryBytes),
 		widget.NewFormItem("Max ZIP Total Bytes", maxZipTotalBytes),
@@ -5221,7 +7048,7 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 		}
 		status.SetText("Settings saved")
 	}, w)
-	form.Resize(fyne.NewSize(720, 600))
+	form.Resize(fyne.NewSize(840, 680))
 	form.Show()
 }
 
@@ -5281,6 +7108,14 @@ func receivePreferredSyntaxValue(label string) string {
 	default:
 		return receive.PreferredTransferSyntaxAuto
 	}
+}
+
+func newPreferredReceiveSyntaxControls(selected string) (*widget.Select, *widget.Label, fyne.CanvasObject) {
+	selectWidget := widget.NewSelect(receivePreferredSyntaxLabels(), nil)
+	selectWidget.SetSelected(receivePreferredSyntaxLabel(selected))
+	hint := compactWorkbenchLabel()
+	hint.SetText("(used during Q/R Retrieve)")
+	return selectWidget, hint, container.NewHBox(selectWidget, hint)
 }
 
 func sendSyntaxOptions() []string {
@@ -5465,6 +7300,14 @@ func retrieveMethodOptions() []string {
 	return []string{nodes.RetrieveMethodAuto, nodes.RetrieveMethodMove, nodes.RetrieveMethodGet}
 }
 
+func newNodeTLSControls() fyne.CanvasObject {
+	tls := widget.NewCheck("Use TLS", nil)
+	tls.Disable()
+	settings := compactToolbarButton("TLS Settings", theme.SettingsIcon(), func() {})
+	settings.Disable()
+	return container.NewHBox(tls, settings)
+}
+
 func networkNodeActionLabels() []string {
 	return []string{
 		networkActionLabelAll,
@@ -5478,12 +7321,42 @@ func networkNodeActionLabels() []string {
 	}
 }
 
+func networkSecondaryNodeActionButton(icon fyne.Resource, tapped func()) *widget.Button {
+	button := widget.NewButtonWithIcon("", icon, tapped)
+	button.Importance = widget.LowImportance
+	return button
+}
+
 func networkDeleteShortcutHint() string {
 	return "Press Delete key to remove a node"
 }
 
 func networkDeleteShortcutApplies(tabTitle string) bool {
 	return tabTitle == networkTabTitle
+}
+
+func networkVerifyShortcutApplies(tabTitle string) bool {
+	return tabTitle == networkTabTitle
+}
+
+func networkVerifyShortcut() *desktop.CustomShortcut {
+	return &desktop.CustomShortcut{KeyName: fyne.KeyK, Modifier: fyne.KeyModifierShortcutDefault}
+}
+
+func queryShortcutApplies(tabTitle string) bool {
+	return tabTitle == "Query"
+}
+
+func queryRunShortcut() *desktop.CustomShortcut {
+	return &desktop.CustomShortcut{KeyName: fyne.KeyReturn, Modifier: fyne.KeyModifierShortcutDefault}
+}
+
+func queryRetrieveShortcut() *desktop.CustomShortcut {
+	return &desktop.CustomShortcut{KeyName: fyne.KeyR, Modifier: fyne.KeyModifierShortcutDefault}
+}
+
+func queryCancelShortcut() *desktop.CustomShortcut {
+	return &desktop.CustomShortcut{KeyName: fyne.KeyEscape}
 }
 
 func registerNetworkDeleteShortcut(w fyne.Window, tabs *container.AppTabs, status *widget.Label, nodeTable *widget.Table, state *uiState) {
@@ -5497,6 +7370,46 @@ func registerNetworkDeleteShortcut(w fyne.Window, tabs *container.AppTabs, statu
 			return
 		}
 		deleteSelectedNode(w, status, nodeTable, state)
+	})
+}
+
+func registerNetworkVerifyShortcut(w fyne.Window, tabs *container.AppTabs, status *widget.Label, nodeTable *widget.Table, state *uiState) {
+	if w == nil || tabs == nil {
+		return
+	}
+	w.Canvas().AddShortcut(networkVerifyShortcut(), func(fyne.Shortcut) {
+		selected := tabs.Selected()
+		if selected == nil || !networkVerifyShortcutApplies(selected.Text) {
+			return
+		}
+		verifySelectedNode(w, status, nodeTable, state)
+	})
+}
+
+func registerQueryShortcuts(w fyne.Window, tabs *container.AppTabs, status *widget.Label, tables archiveTables, state *uiState) {
+	if w == nil || tabs == nil {
+		return
+	}
+	w.Canvas().AddShortcut(queryRunShortcut(), func(fyne.Shortcut) {
+		selected := tabs.Selected()
+		if selected == nil || !queryShortcutApplies(selected.Text) || state == nil || state.queryRunShortcutAction == nil {
+			return
+		}
+		state.queryRunShortcutAction()
+	})
+	w.Canvas().AddShortcut(queryRetrieveShortcut(), func(fyne.Shortcut) {
+		selected := tabs.Selected()
+		if selected == nil || !queryShortcutApplies(selected.Text) {
+			return
+		}
+		retrieveSelectedQuery(w, status, tables, state)
+	})
+	w.Canvas().AddShortcut(queryCancelShortcut(), func(fyne.Shortcut) {
+		selected := tabs.Selected()
+		if selected == nil || !queryShortcutApplies(selected.Text) {
+			return
+		}
+		cancelActiveRetrieve(status, state)
 	})
 }
 
@@ -5554,7 +7467,7 @@ func importNodesFromJSON(state *uiState, data []byte) error {
 	originalSelection := state.selectedNodeRow
 	state.nodes = append([]nodes.Node(nil), imported...)
 	state.selectedNodeRow = -1
-	refreshNodeTableRows(state)
+	applySavedNodeSortPreference(state)
 	if state.nodeStore != nil {
 		if err := state.nodeStore.Save(state.nodes); err != nil {
 			state.nodes = originalNodes
@@ -5689,10 +7602,10 @@ func newNetworkTab(w fyne.Window, status *widget.Label, nodeTable *widget.Table,
 	addButton := widget.NewButtonWithIcon(networkActionLabelAddNewNode, theme.ContentAddIcon(), func() {
 		showAddNodeDialog(w, status, nodeTable, state)
 	})
-	editButton := widget.NewButtonWithIcon(networkActionLabelEdit, theme.DocumentCreateIcon(), func() {
+	editButton := networkSecondaryNodeActionButton(theme.DocumentCreateIcon(), func() {
 		showEditNodeDialog(w, status, nodeTable, state)
 	})
-	deleteButton := widget.NewButtonWithIcon(networkActionLabelDelete, theme.DeleteIcon(), func() {
+	deleteButton := networkSecondaryNodeActionButton(theme.DeleteIcon(), func() {
 		deleteSelectedNode(w, status, nodeTable, state)
 	})
 	footer := container.NewBorder(
@@ -5716,6 +7629,7 @@ func showAddNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table,
 	sendEnabled.SetChecked(true)
 	sendSyntax := widget.NewSelect(sendSyntaxOptions(), nil)
 	sendSyntax.SetSelected(sendSyntaxAutoLabel)
+	tlsControls := newNodeTLSControls()
 	name := widget.NewEntry()
 	name.SetPlaceHolder("pacs")
 	aeTitle := widget.NewEntry()
@@ -5734,6 +7648,7 @@ func showAddNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table,
 		widget.NewFormItem("Query", queryEnabled),
 		widget.NewFormItem("Retrieve", retrieveMethod),
 		widget.NewFormItem("Send", sendEnabled),
+		widget.NewFormItem("TLS", tlsControls),
 		widget.NewFormItem("Send Syntax", sendSyntax),
 		widget.NewFormItem("Name", name),
 		widget.NewFormItem("Called AE", aeTitle),
@@ -5787,6 +7702,7 @@ func showEditNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table
 	sendEnabled.SetChecked(node.SendEnabled())
 	sendSyntax := widget.NewSelect(sendSyntaxOptions(), nil)
 	sendSyntax.SetSelected(sendSyntaxLabel(node.SendTransferSyntaxOrDefault()))
+	tlsControls := newNodeTLSControls()
 	name := widget.NewEntry()
 	name.SetText(node.Name)
 	aeTitle := widget.NewEntry()
@@ -5805,6 +7721,7 @@ func showEditNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table
 		widget.NewFormItem("Query", queryEnabled),
 		widget.NewFormItem("Retrieve", retrieveMethod),
 		widget.NewFormItem("Send", sendEnabled),
+		widget.NewFormItem("TLS", tlsControls),
 		widget.NewFormItem("Send Syntax", sendSyntax),
 		widget.NewFormItem("Name", name),
 		widget.NewFormItem("Called AE", aeTitle),
@@ -6065,7 +7982,10 @@ func sendSelectedStudy(w fyne.Window, status *widget.Label, state *uiState) {
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
-		outcome, err := send.SendStudy(ctx, state.catalog, node, study.StudyInstanceUID, callingAE)
+		outcome, err := send.SendStudyWithOptions(ctx, state.catalog, node, study.StudyInstanceUID, send.Options{
+			CallingAETitle: callingAE,
+			OnProgress:     sendProgressCallback(state),
+		})
 		fyne.Do(func() {
 			clearActiveSendActivity(state)
 			if err != nil {
@@ -6111,7 +8031,10 @@ func sendSelectedSeries(w fyne.Window, status *widget.Label, state *uiState) {
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
-		outcome, err := send.SendSeries(ctx, state.catalog, node, series.SeriesInstanceUID, callingAE)
+		outcome, err := send.SendSeriesWithOptions(ctx, state.catalog, node, series.SeriesInstanceUID, send.Options{
+			CallingAETitle: callingAE,
+			OnProgress:     sendProgressCallback(state),
+		})
 		fyne.Do(func() {
 			clearActiveSendActivity(state)
 			if err != nil {
@@ -6157,7 +8080,10 @@ func sendSelectedInstance(w fyne.Window, status *widget.Label, state *uiState) {
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
-		outcome, err := send.SendInstance(ctx, state.catalog, node, instance.SOPInstanceUID, callingAE)
+		outcome, err := send.SendInstanceWithOptions(ctx, state.catalog, node, instance.SOPInstanceUID, send.Options{
+			CallingAETitle: callingAE,
+			OnProgress:     sendProgressCallback(state),
+		})
 		fyne.Do(func() {
 			clearActiveSendActivity(state)
 			if err != nil {
@@ -6322,24 +8248,29 @@ const (
 	archiveRowPatient archiveRowKind = iota
 	archiveRowStudy
 	archiveRowSeries
+	archiveRowInstance
 )
 
 type archiveBrowserRow struct {
-	kind              archiveRowKind
-	studyIndex        int
-	seriesIndex       int
-	groupKey          string
-	collapsed         bool
-	studyHasSeries    bool
-	studySeriesLoaded bool
-	series            archive.Series
-	patientName       string
-	patientID         string
-	patientBirthDate  string
-	institutionName   string
-	modalities        string
-	seriesCount       int
-	instanceCount     int
+	kind               archiveRowKind
+	studyIndex         int
+	seriesIndex        int
+	instanceIndex      int
+	groupKey           string
+	collapsed          bool
+	studyHasSeries     bool
+	studySeriesLoaded  bool
+	seriesHasImages    bool
+	seriesImagesLoaded bool
+	series             archive.Series
+	instance           archive.Instance
+	patientName        string
+	patientID          string
+	patientBirthDate   string
+	institutionName    string
+	modalities         string
+	seriesCount        int
+	instanceCount      int
 }
 
 type archivePatientGroup struct {
@@ -6356,10 +8287,22 @@ func archiveBrowserRowsWithCollapse(studies []archive.Study, collapsed map[strin
 }
 
 func archiveBrowserRowsWithInlineSeries(studies []archive.Study, collapsed map[string]bool, seriesByStudy map[string][]archive.Series) []archiveBrowserRow {
-	return archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(studies, collapsed, seriesByStudy, nil)
+	return archiveBrowserRowsWithInlineSeriesAndInstances(studies, collapsed, seriesByStudy, nil)
 }
 
 func archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(studies []archive.Study, collapsed map[string]bool, seriesByStudy map[string][]archive.Series, collapsedStudies map[string]bool) []archiveBrowserRow {
+	return archiveBrowserRowsWithInlineSeriesInstancesAndCollapsedStudies(studies, collapsed, seriesByStudy, nil, collapsedStudies)
+}
+
+func archiveBrowserRowsWithInlineSeriesAndInstances(studies []archive.Study, collapsed map[string]bool, seriesByStudy map[string][]archive.Series, instancesBySeries map[string][]archive.Instance) []archiveBrowserRow {
+	return archiveBrowserRowsWithInlineSeriesInstancesAndCollapsedStudies(studies, collapsed, seriesByStudy, instancesBySeries, nil)
+}
+
+func archiveBrowserRowsWithInlineSeriesInstancesAndCollapsedStudies(studies []archive.Study, collapsed map[string]bool, seriesByStudy map[string][]archive.Series, instancesBySeries map[string][]archive.Instance, collapsedStudies map[string]bool) []archiveBrowserRow {
+	return archiveBrowserRowsWithInlineSeriesInstancesAndCollapsed(studies, collapsed, seriesByStudy, instancesBySeries, collapsedStudies, nil)
+}
+
+func archiveBrowserRowsWithInlineSeriesInstancesAndCollapsed(studies []archive.Study, collapsed map[string]bool, seriesByStudy map[string][]archive.Series, instancesBySeries map[string][]archive.Instance, collapsedStudies map[string]bool, collapsedSeries map[string]bool) []archiveBrowserRow {
 	groupIndex := map[string]int{}
 	var groups []archivePatientGroup
 	for index, study := range studies {
@@ -6414,16 +8357,41 @@ func archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(studies []archive.Stu
 				continue
 			}
 			for seriesIndex, series := range seriesRows {
+				seriesUID := strings.TrimSpace(series.SeriesInstanceUID)
+				instanceRows := instancesBySeries[seriesUID]
+				seriesImagesCollapsed := collapsedSeries[seriesUID]
 				rows = append(rows, archiveBrowserRow{
-					kind:        archiveRowSeries,
-					studyIndex:  studyIndex,
-					seriesIndex: seriesIndex,
-					series:      series,
+					kind:               archiveRowSeries,
+					studyIndex:         studyIndex,
+					seriesIndex:        seriesIndex,
+					seriesHasImages:    len(instanceRows) > 0,
+					seriesImagesLoaded: len(instanceRows) > 0 && !seriesImagesCollapsed,
+					series:             series,
 				})
+				if seriesImagesCollapsed {
+					continue
+				}
+				for instanceIndex, instance := range instanceRows {
+					rows = append(rows, archiveBrowserRow{
+						kind:          archiveRowInstance,
+						studyIndex:    studyIndex,
+						seriesIndex:   seriesIndex,
+						instanceIndex: instanceIndex,
+						series:        series,
+						instance:      instance,
+					})
+				}
 			}
 		}
 	}
 	return rows
+}
+
+func archiveBrowserRowsForState(state *uiState) []archiveBrowserRow {
+	if state == nil {
+		return nil
+	}
+	return archiveBrowserRowsWithInlineSeriesInstancesAndCollapsed(state.studies, state.collapsedPatientGroups, state.archiveSeriesByStudy, state.archiveInstancesBySeries, state.collapsedArchiveStudies, state.collapsedArchiveSeries)
 }
 
 func archivePatientKey(study archive.Study) string {
@@ -6457,10 +8425,37 @@ func mergeModalities(existing string, next string) string {
 }
 
 func archiveBrowserCell(row archiveBrowserRow, studies []archive.Study, col int) string {
+	if row.kind == archiveRowInstance {
+		switch col {
+		case archiveStudyTableColumnPatient:
+			return "          " + archiveInlineInstanceLabel(row.instance)
+		case archiveStudyTableColumnModality:
+			return row.instance.Modality
+		case archiveStudyTableColumnDescription:
+			return row.instance.SOPClassUID
+		case archiveStudyTableColumnInstances:
+			return "1"
+		case archiveStudyTableColumnSeries:
+			return row.instance.InstanceNumber
+		case archiveStudyTableColumnStudyUID:
+			return row.instance.SOPInstanceUID
+		default:
+			return ""
+		}
+	}
+
 	if row.kind == archiveRowSeries {
 		switch col {
 		case archiveStudyTableColumnPatient:
-			return "      " + archiveInlineSeriesLabel(row.series)
+			prefix := "      "
+			if row.seriesHasImages {
+				if row.seriesImagesLoaded {
+					prefix = "      ▾ "
+				} else {
+					prefix = "      ▸ "
+				}
+			}
+			return prefix + archiveInlineSeriesLabel(row.series)
 		case archiveStudyTableColumnModality:
 			return row.series.Modality
 		case archiveStudyTableColumnDescription:
@@ -6541,6 +8536,16 @@ func archiveInlineSeriesLabel(series archive.Series) string {
 	return "Series"
 }
 
+func archiveInlineInstanceLabel(instance archive.Instance) string {
+	if number := strings.TrimSpace(instance.InstanceNumber); number != "" {
+		return "• Image " + number
+	}
+	if modality := strings.TrimSpace(instance.Modality); modality != "" {
+		return "• " + modality + " Image"
+	}
+	return "• Image"
+}
+
 func toggleArchivePatientGroup(state *uiState, row archiveBrowserRow) bool {
 	if state == nil || row.kind != archiveRowPatient || strings.TrimSpace(row.groupKey) == "" {
 		return false
@@ -6549,7 +8554,7 @@ func toggleArchivePatientGroup(state *uiState, row archiveBrowserRow) bool {
 		state.collapsedPatientGroups = map[string]bool{}
 	}
 	state.collapsedPatientGroups[row.groupKey] = !row.collapsed
-	state.archiveRows = archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(state.studies, state.collapsedPatientGroups, state.archiveSeriesByStudy, state.collapsedArchiveStudies)
+	state.archiveRows = archiveBrowserRowsForState(state)
 	state.selectedStudyRow = -1
 	return true
 }
@@ -6570,7 +8575,35 @@ func toggleArchiveStudySeries(state *uiState, row archiveBrowserRow) bool {
 		state.collapsedArchiveStudies = map[string]bool{}
 	}
 	state.collapsedArchiveStudies[studyUID] = !state.collapsedArchiveStudies[studyUID]
-	state.archiveRows = archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(state.studies, state.collapsedPatientGroups, state.archiveSeriesByStudy, state.collapsedArchiveStudies)
+	state.archiveRows = archiveBrowserRowsForState(state)
+	return true
+}
+
+func toggleArchiveSeriesImages(state *uiState, row archiveBrowserRow) bool {
+	if state == nil || row.kind != archiveRowSeries {
+		return false
+	}
+	seriesUID := strings.TrimSpace(row.series.SeriesInstanceUID)
+	if seriesUID == "" {
+		if row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
+			return false
+		}
+		studyUID := strings.TrimSpace(state.studies[row.studyIndex].StudyInstanceUID)
+		seriesRows := state.archiveSeriesByStudy[studyUID]
+		if row.seriesIndex < 0 || row.seriesIndex >= len(seriesRows) {
+			return false
+		}
+		seriesUID = strings.TrimSpace(seriesRows[row.seriesIndex].SeriesInstanceUID)
+	}
+	if seriesUID == "" || len(state.archiveInstancesBySeries[seriesUID]) == 0 {
+		return false
+	}
+	if state.collapsedArchiveSeries == nil {
+		state.collapsedArchiveSeries = map[string]bool{}
+	}
+	state.collapsedArchiveSeries[seriesUID] = !state.collapsedArchiveSeries[seriesUID]
+	state.selectedInstanceRow = -1
+	state.archiveRows = archiveBrowserRowsForState(state)
 	return true
 }
 
@@ -6585,8 +8618,77 @@ func selectedStudy(state *uiState) (archive.Study, bool) {
 	return state.studies[row], true
 }
 
+func recordOpenedArchiveStudy(state *uiState, study archive.Study) {
+	if state == nil {
+		return
+	}
+	uid := strings.TrimSpace(study.StudyInstanceUID)
+	if uid == "" {
+		return
+	}
+	if state.openedArchiveStudyUIDs == nil {
+		state.openedArchiveStudyUIDs = map[string]bool{}
+	}
+	state.openedArchiveStudyUIDs[uid] = true
+	state.appConfig.OpenedArchiveStudyUIDs = prependOpenedArchiveStudyUID(state.appConfig.OpenedArchiveStudyUIDs, uid)
+	if state.appConfigPath != "" {
+		_ = appconfig.Save(state.appConfigPath, state.appConfig)
+	}
+	if state.archiveAlbumList != nil {
+		state.archiveAlbumList.Refresh()
+	}
+}
+
+func prependOpenedArchiveStudyUID(values []string, uid string) []string {
+	uid = strings.TrimSpace(uid)
+	if uid == "" {
+		return normalizeOpenedArchiveStudyUIDs(values)
+	}
+	out := []string{uid}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || value == uid {
+			continue
+		}
+		out = append(out, value)
+		if len(out) >= maxOpenedArchiveStudyUIDs {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeOpenedArchiveStudyUIDs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+		if len(out) >= maxOpenedArchiveStudyUIDs {
+			break
+		}
+	}
+	return out
+}
+
+func openedArchiveStudyUIDMap(values []string) map[string]bool {
+	values = normalizeOpenedArchiveStudyUIDs(values)
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		out[value] = true
+	}
+	return out
+}
+
 func selectedSeries(state *uiState) (archive.Series, bool) {
-	if len(state.series) == 0 {
+	if state == nil || len(state.series) == 0 {
 		return archive.Series{}, false
 	}
 	row := state.selectedSeriesRow
@@ -6597,7 +8699,7 @@ func selectedSeries(state *uiState) (archive.Series, bool) {
 }
 
 func selectedInstance(state *uiState) (archive.Instance, bool) {
-	if len(state.instances) == 0 {
+	if state == nil || len(state.instances) == 0 {
 		return archive.Instance{}, false
 	}
 	row := state.selectedInstanceRow
@@ -6743,9 +8845,25 @@ func selectedMatchingNode(state *uiState, match func(nodes.Node) bool) (nodes.No
 	return nodes.Node{}, false
 }
 
+const (
+	elementTableColumnSource = iota
+	elementTableColumnTag
+	elementTableColumnVR
+	elementTableColumnKeyword
+	elementTableColumnLength
+	elementTableColumnValue
+)
+
+const elementSortPreferenceKey = "inspectorElements"
+
+func elementTableHeaders() []string {
+	return []string{"Source", "Tag", "VR", "Keyword", "Length", "Value"}
+}
+
 func newElementTable(state *uiState) *widget.Table {
-	headers := []string{"Source", "Tag", "VR", "Keyword", "Length", "Value"}
-	table := widget.NewTable(
+	headers := elementTableHeaders()
+	var table *widget.Table
+	table = widget.NewTable(
 		func() (int, int) {
 			return len(state.elements) + 1, len(headers)
 		},
@@ -6755,13 +8873,20 @@ func newElementTable(state *uiState) *widget.Table {
 		func(id widget.TableCellID, obj fyne.CanvasObject) {
 			cell := obj.(*archiveTableCell)
 			if id.Row == 0 {
-				applyTextTableCell(cell, id.Row, headers[id.Col], true, false)
+				applyTextTableCell(cell, id.Row, elementHeaderLabel(state, id.Col, headers[id.Col]), true, false)
 				return
 			}
 			elem := state.elements[id.Row-1]
 			applyTextTableCell(cell, id.Row, tableCell(elem, id.Col), false, false)
 		},
 	)
+	table.OnSelected = func(id widget.TableCellID) {
+		if id.Row == 0 {
+			if applyElementSort(state, id.Col) {
+				table.Refresh()
+			}
+		}
+	}
 	table.SetColumnWidth(0, 72)
 	table.SetColumnWidth(1, 105)
 	table.SetColumnWidth(2, 52)
@@ -6772,13 +8897,95 @@ func newElementTable(state *uiState) *widget.Table {
 	return table
 }
 
+func applyElementSort(state *uiState, col int) bool {
+	if state == nil || !elementColumnSortable(col) {
+		return false
+	}
+	if state.elementSortActive && state.elementSortColumn == col {
+		state.elementSortDescending = !state.elementSortDescending
+	} else {
+		state.elementSortActive = true
+		state.elementSortColumn = col
+		state.elementSortDescending = false
+	}
+	sortElementsByColumn(state, col, state.elementSortDescending)
+	persistElementSortPreference(state)
+	return true
+}
+
+func applySavedElementSortPreference(state *uiState) {
+	if state == nil {
+		return
+	}
+	pref, ok := state.appConfig.UISortPreferences[elementSortPreferenceKey]
+	if !ok || !elementColumnSortable(pref.Column) {
+		return
+	}
+	state.elementSortActive = true
+	state.elementSortColumn = pref.Column
+	state.elementSortDescending = pref.Descending
+	sortElementsByColumn(state, pref.Column, pref.Descending)
+}
+
+func sortElementsByColumn(state *uiState, col int, descending bool) {
+	if state == nil {
+		return
+	}
+	sort.SliceStable(state.elements, func(i, j int) bool {
+		left := elementSortValue(state.elements[i], col)
+		right := elementSortValue(state.elements[j], col)
+		if left == right {
+			left = strings.ToLower(strings.TrimSpace(state.elements[i].Tag))
+			right = strings.ToLower(strings.TrimSpace(state.elements[j].Tag))
+		}
+		if descending {
+			return left > right
+		}
+		return left < right
+	})
+}
+
+func persistElementSortPreference(state *uiState) {
+	if state == nil || state.appConfigPath == "" || !state.elementSortActive || !elementColumnSortable(state.elementSortColumn) {
+		return
+	}
+	if state.appConfig.UISortPreferences == nil {
+		state.appConfig.UISortPreferences = map[string]appconfig.SortPreference{}
+	}
+	state.appConfig.UISortPreferences[elementSortPreferenceKey] = appconfig.SortPreference{
+		Column:     state.elementSortColumn,
+		Descending: state.elementSortDescending,
+	}
+	_ = appconfig.Save(state.appConfigPath, state.appConfig)
+}
+
+func elementColumnSortable(col int) bool {
+	return col >= elementTableColumnSource && col <= elementTableColumnValue
+}
+
+func elementSortValue(element dicominspect.ElementSummary, col int) string {
+	return strings.ToLower(strings.TrimSpace(tableCell(element, col)))
+}
+
+func elementHeaderLabel(state *uiState, col int, label string) string {
+	if state == nil || !state.elementSortActive || state.elementSortColumn != col {
+		return label
+	}
+	if state.elementSortDescending {
+		return label + " ▼"
+	}
+	return label + " ▲"
+}
+
 var (
 	archiveHeaderRowColor       = color.NRGBA{R: 40, G: 40, B: 40, A: 255}
 	archivePatientRowColor      = color.NRGBA{R: 48, G: 48, B: 48, A: 255}
 	archiveOddRowColor          = color.NRGBA{R: 28, G: 28, B: 28, A: 255}
 	archiveEvenRowColor         = color.NRGBA{R: 34, G: 34, B: 34, A: 255}
 	archiveSeriesRowColor       = color.NRGBA{R: 24, G: 24, B: 24, A: 255}
+	archiveInstanceRowColor     = color.NRGBA{R: 18, G: 18, B: 18, A: 255}
 	archiveSelectedRowColor     = color.NRGBA{R: 45, G: 85, B: 128, A: 255}
+	nodeDisabledRowColor        = color.NRGBA{R: 22, G: 22, B: 22, A: 255}
 	tableColumnDividerColor     = color.NRGBA{R: 62, G: 62, B: 62, A: 255}
 	queryRetrieveActionRowColor = color.NRGBA{R: 34, G: 58, B: 38, A: 255}
 )
@@ -6816,8 +9023,30 @@ func (rightDividerLayout) MinSize([]fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(tableColumnDividerWidth, 1)
 }
 
+type bottomDividerLayout struct{}
+
+func (bottomDividerLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) == 0 {
+		return
+	}
+	y := size.Height - tableColumnDividerWidth
+	if y < 0 {
+		y = 0
+	}
+	objects[0].Move(fyne.NewPos(0, y))
+	objects[0].Resize(fyne.NewSize(size.Width, tableColumnDividerWidth))
+}
+
+func (bottomDividerLayout) MinSize([]fyne.CanvasObject) fyne.Size {
+	return fyne.NewSize(1, tableColumnDividerWidth)
+}
+
 func newTableColumnDividerLayer() *fyne.Container {
 	return container.New(rightDividerLayout{}, canvas.NewRectangle(tableColumnDividerColor))
+}
+
+func newTableRowDividerLayer() *fyne.Container {
+	return container.New(bottomDividerLayout{}, canvas.NewRectangle(tableColumnDividerColor))
 }
 
 func newCompactTableCellContent(content fyne.CanvasObject) *fyne.Container {
@@ -6830,6 +9059,7 @@ func newCompactTableCellContent(content fyne.CanvasObject) *fyne.Container {
 type archiveTableCell struct {
 	*fyne.Container
 	background   *canvas.Rectangle
+	statusChip   *canvas.Rectangle
 	label        *widget.Label
 	statusDot    *canvas.Circle
 	statusDotBox *fyne.Container
@@ -6837,6 +9067,8 @@ type archiveTableCell struct {
 
 func newArchiveTableCell() *archiveTableCell {
 	background := canvas.NewRectangle(archiveOddRowColor)
+	statusChip := canvas.NewRectangle(color.NRGBA{})
+	statusChip.Hide()
 	label := widget.NewLabel("wide table cell value")
 	label.Wrapping = fyne.TextTruncate
 	statusDot := newSourceStatusDot()
@@ -6844,8 +9076,9 @@ func newArchiveTableCell() *archiveTableCell {
 	statusDotBox.Hide()
 	labelRow := container.NewBorder(nil, nil, statusDotBox, nil, label)
 	return &archiveTableCell{
-		Container:    container.NewStack(background, newCompactTableCellContent(labelRow), newTableColumnDividerLayer()),
+		Container:    container.NewStack(background, statusChip, newCompactTableCellContent(labelRow), newTableColumnDividerLayer(), newTableRowDividerLayer()),
 		background:   background,
+		statusChip:   statusChip,
 		label:        label,
 		statusDot:    statusDot,
 		statusDotBox: statusDotBox,
@@ -6874,7 +9107,7 @@ func newQueryTableCell() *queryTableCell {
 	statusDotBox.Hide()
 	labelRow := container.NewBorder(nil, nil, statusDotBox, nil, label)
 	return &queryTableCell{
-		Container:      container.NewStack(background, newCompactTableCellContent(labelRow), container.NewCenter(retrieveButton), newTableColumnDividerLayer()),
+		Container:      container.NewStack(background, newCompactTableCellContent(labelRow), container.NewCenter(retrieveButton), newTableColumnDividerLayer(), newTableRowDividerLayer()),
 		background:     background,
 		label:          label,
 		retrieveButton: retrieveButton,
@@ -6898,14 +9131,24 @@ func applyArchiveTableCellWithColumn(cell *archiveTableCell, tableRow int, table
 		return
 	}
 	cell.statusDotBox.Hide()
+	cell.statusChip.Hide()
+	cell.statusChip.FillColor = color.NRGBA{}
 	cell.label.SetText(text)
-	cell.label.TextStyle = fyne.TextStyle{Bold: header || row.kind == archiveRowPatient}
+	cell.label.TextStyle = fyne.TextStyle{
+		Bold:   header || row.kind == archiveRowPatient,
+		Italic: row.kind == archiveRowInstance,
+	}
 	cell.background.FillColor = archiveTableFillColor(tableRow, row, header, selected)
 	if !header && tableCol == archiveStudyTableColumnStatus {
 		if fill, ok := studyStatusDotColor(text); ok {
 			cell.statusDot.FillColor = fill
 			cell.statusDot.Refresh()
 			cell.statusDotBox.Show()
+		}
+		if fill, ok := studyStatusChipColor(text); ok && !selected {
+			cell.statusChip.FillColor = fill
+			cell.statusChip.Show()
+			cell.statusChip.Refresh()
 		}
 	}
 	cell.background.Refresh()
@@ -6928,6 +9171,13 @@ func archiveBrowserRowSelected(row archiveBrowserRow, state *uiState) bool {
 			row.seriesIndex >= 0 &&
 			row.studyIndex == state.selectedStudyRow &&
 			row.seriesIndex == state.selectedSeriesRow
+	case archiveRowInstance:
+		return row.studyIndex >= 0 &&
+			row.seriesIndex >= 0 &&
+			row.instanceIndex >= 0 &&
+			row.studyIndex == state.selectedStudyRow &&
+			row.seriesIndex == state.selectedSeriesRow &&
+			row.instanceIndex == state.selectedInstanceRow
 	default:
 		return false
 	}
@@ -6945,6 +9195,9 @@ func archiveTableFillColor(tableRow int, row archiveBrowserRow, header bool, sel
 	}
 	if row.kind == archiveRowSeries {
 		return archiveSeriesRowColor
+	}
+	if row.kind == archiveRowInstance {
+		return archiveInstanceRowColor
 	}
 	if tableRow%2 == 0 {
 		return archiveEvenRowColor
@@ -7075,6 +9328,8 @@ func newStudyTable(state *uiState) *widget.Table {
 	return table
 }
 
+const archiveSortPreferenceKey = "archiveStudies"
+
 func applyArchiveSort(state *uiState, col int) bool {
 	if state == nil || !archiveColumnSortable(col) {
 		return false
@@ -7087,7 +9342,35 @@ func applyArchiveSort(state *uiState, col int) bool {
 		state.archiveSortColumn = col
 		state.archiveSortDescending = false
 	}
-	descending := state.archiveSortDescending
+	sortArchiveStudiesByColumn(state, col, state.archiveSortDescending)
+	persistArchiveSortPreference(state)
+	refreshArchiveRowsAfterStudySort(state, selectedStudyUID)
+	return true
+}
+
+func applySavedArchiveSortPreference(state *uiState) {
+	applySavedArchiveSortPreferenceForSelectedUID(state, selectedArchiveStudyUID(state))
+}
+
+func applySavedArchiveSortPreferenceForSelectedUID(state *uiState, selectedStudyUID string) {
+	if state == nil {
+		return
+	}
+	pref, ok := state.appConfig.UISortPreferences[archiveSortPreferenceKey]
+	if !ok || !archiveColumnSortable(pref.Column) {
+		return
+	}
+	state.archiveSortActive = true
+	state.archiveSortColumn = pref.Column
+	state.archiveSortDescending = pref.Descending
+	sortArchiveStudiesByColumn(state, pref.Column, pref.Descending)
+	refreshArchiveRowsAfterStudySort(state, selectedStudyUID)
+}
+
+func sortArchiveStudiesByColumn(state *uiState, col int, descending bool) {
+	if state == nil {
+		return
+	}
 	sort.SliceStable(state.studies, func(i, j int) bool {
 		left := archiveSortValue(state.studies[i], col)
 		right := archiveSortValue(state.studies[j], col)
@@ -7100,13 +9383,32 @@ func applyArchiveSort(state *uiState, col int) bool {
 		}
 		return left < right
 	})
-	state.archiveRows = archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(state.studies, state.collapsedPatientGroups, state.archiveSeriesByStudy, state.collapsedArchiveStudies)
+}
+
+func refreshArchiveRowsAfterStudySort(state *uiState, selectedStudyUID string) {
+	if state == nil {
+		return
+	}
+	state.archiveRows = archiveBrowserRowsForState(state)
 	state.selectedStudyRow = archiveStudyIndexByUID(state.studies, selectedStudyUID)
 	state.selectedSeriesRow = -1
 	state.selectedInstanceRow = -1
 	state.series = nil
 	state.instances = nil
-	return true
+}
+
+func persistArchiveSortPreference(state *uiState) {
+	if state == nil || state.appConfigPath == "" || !state.archiveSortActive || !archiveColumnSortable(state.archiveSortColumn) {
+		return
+	}
+	if state.appConfig.UISortPreferences == nil {
+		state.appConfig.UISortPreferences = map[string]appconfig.SortPreference{}
+	}
+	state.appConfig.UISortPreferences[archiveSortPreferenceKey] = appconfig.SortPreference{
+		Column:     state.archiveSortColumn,
+		Descending: state.archiveSortDescending,
+	}
+	_ = appconfig.Save(state.appConfigPath, state.appConfig)
 }
 
 func selectedArchiveStudyUID(state *uiState) string {
@@ -7195,6 +9497,8 @@ const (
 	seriesTableColumnUID
 )
 
+const seriesSortPreferenceKey = "archiveSeries"
+
 func seriesTableHeaders() []string {
 	return []string{"Series #", "Modality", "Description", "Instances", "Series UID"}
 }
@@ -7210,7 +9514,31 @@ func applySeriesSort(state *uiState, col int) bool {
 		state.seriesSortColumn = col
 		state.seriesSortDescending = false
 	}
-	descending := state.seriesSortDescending
+	sortSeriesByColumn(state, col, state.seriesSortDescending)
+	persistSeriesSortPreference(state)
+	resetSeriesDetailSelectionAfterSort(state)
+	refreshArchiveRowsAfterSeriesSort(state)
+	return true
+}
+
+func applySavedSeriesSortPreference(state *uiState) {
+	if state == nil {
+		return
+	}
+	pref, ok := state.appConfig.UISortPreferences[seriesSortPreferenceKey]
+	if !ok || !seriesColumnSortable(pref.Column) {
+		return
+	}
+	state.seriesSortActive = true
+	state.seriesSortColumn = pref.Column
+	state.seriesSortDescending = pref.Descending
+	sortSeriesByColumn(state, pref.Column, pref.Descending)
+}
+
+func sortSeriesByColumn(state *uiState, col int, descending bool) {
+	if state == nil {
+		return
+	}
 	sort.SliceStable(state.series, func(i, j int) bool {
 		left := seriesSortValue(state.series[i], col)
 		right := seriesSortValue(state.series[j], col)
@@ -7223,11 +9551,29 @@ func applySeriesSort(state *uiState, col int) bool {
 		}
 		return left < right
 	})
+}
+
+func resetSeriesDetailSelectionAfterSort(state *uiState) {
+	if state == nil {
+		return
+	}
 	state.selectedSeriesRow = -1
 	state.selectedInstanceRow = -1
 	state.instances = nil
-	refreshArchiveRowsAfterSeriesSort(state)
-	return true
+}
+
+func persistSeriesSortPreference(state *uiState) {
+	if state == nil || state.appConfigPath == "" || !state.seriesSortActive || !seriesColumnSortable(state.seriesSortColumn) {
+		return
+	}
+	if state.appConfig.UISortPreferences == nil {
+		state.appConfig.UISortPreferences = map[string]appconfig.SortPreference{}
+	}
+	state.appConfig.UISortPreferences[seriesSortPreferenceKey] = appconfig.SortPreference{
+		Column:     state.seriesSortColumn,
+		Descending: state.seriesSortDescending,
+	}
+	_ = appconfig.Save(state.appConfigPath, state.appConfig)
 }
 
 func refreshArchiveRowsAfterSeriesSort(state *uiState) {
@@ -7241,7 +9587,7 @@ func refreshArchiveRowsAfterSeriesSort(state *uiState) {
 		}
 	}
 	if state.archiveRows != nil {
-		state.archiveRows = archiveBrowserRowsWithInlineSeriesAndCollapsedStudies(state.studies, state.collapsedPatientGroups, state.archiveSeriesByStudy, state.collapsedArchiveStudies)
+		state.archiveRows = archiveBrowserRowsForState(state)
 	}
 }
 
@@ -7308,6 +9654,8 @@ const (
 	instanceTableColumnSOPUID
 )
 
+const instanceSortPreferenceKey = "archiveInstances"
+
 func instanceTableHeaders() []string {
 	return []string{"Instance #", "Modality", "SOP Class", "Transfer Syntax", "Source", "SOP UID"}
 }
@@ -7323,7 +9671,31 @@ func applyInstanceSort(state *uiState, col int) bool {
 		state.instanceSortColumn = col
 		state.instanceSortDescending = false
 	}
-	descending := state.instanceSortDescending
+	sortInstancesByColumn(state, col, state.instanceSortDescending)
+	persistInstanceSortPreference(state)
+	resetInstanceSelectionAfterSort(state)
+	refreshInlineInstancesAfterSort(state)
+	return true
+}
+
+func applySavedInstanceSortPreference(state *uiState) {
+	if state == nil {
+		return
+	}
+	pref, ok := state.appConfig.UISortPreferences[instanceSortPreferenceKey]
+	if !ok || !instanceColumnSortable(pref.Column) {
+		return
+	}
+	state.instanceSortActive = true
+	state.instanceSortColumn = pref.Column
+	state.instanceSortDescending = pref.Descending
+	sortInstancesByColumn(state, pref.Column, pref.Descending)
+}
+
+func sortInstancesByColumn(state *uiState, col int, descending bool) {
+	if state == nil {
+		return
+	}
 	sort.SliceStable(state.instances, func(i, j int) bool {
 		left := instanceSortValue(state.instances[i], col)
 		right := instanceSortValue(state.instances[j], col)
@@ -7336,8 +9708,43 @@ func applyInstanceSort(state *uiState, col int) bool {
 		}
 		return left < right
 	})
+}
+
+func resetInstanceSelectionAfterSort(state *uiState) {
+	if state == nil {
+		return
+	}
 	state.selectedInstanceRow = -1
-	return true
+}
+
+func refreshInlineInstancesAfterSort(state *uiState) {
+	if state == nil {
+		return
+	}
+	if series, ok := selectedSeries(state); ok {
+		seriesUID := strings.TrimSpace(series.SeriesInstanceUID)
+		if seriesUID != "" {
+			if state.archiveInstancesBySeries == nil {
+				state.archiveInstancesBySeries = map[string][]archive.Instance{}
+			}
+			state.archiveInstancesBySeries[seriesUID] = state.instances
+			state.archiveRows = archiveBrowserRowsForState(state)
+		}
+	}
+}
+
+func persistInstanceSortPreference(state *uiState) {
+	if state == nil || state.appConfigPath == "" || !state.instanceSortActive || !instanceColumnSortable(state.instanceSortColumn) {
+		return
+	}
+	if state.appConfig.UISortPreferences == nil {
+		state.appConfig.UISortPreferences = map[string]appconfig.SortPreference{}
+	}
+	state.appConfig.UISortPreferences[instanceSortPreferenceKey] = appconfig.SortPreference{
+		Column:     state.instanceSortColumn,
+		Descending: state.instanceSortDescending,
+	}
+	_ = appconfig.Save(state.appConfigPath, state.appConfig)
 }
 
 func instanceColumnSortable(col int) bool {
@@ -7416,15 +9823,29 @@ func wireArchiveTables(w fyne.Window, status *widget.Label, tables archiveTables
 				return
 			}
 			state.selectedStudyRow = row.studyIndex
+			recordOpenedArchiveStudy(state, state.studies[row.studyIndex])
 			state.series = seriesRows
 			state.selectedSeriesRow = row.seriesIndex
-			state.instances = nil
+			series := seriesRows[row.seriesIndex]
+			seriesUID := strings.TrimSpace(series.SeriesInstanceUID)
+			state.instances = state.archiveInstancesBySeries[seriesUID]
 			state.selectedInstanceRow = -1
+			if toggleArchiveSeriesImages(state, row) {
+				tables.studies.Refresh()
+				tables.series.Refresh()
+				tables.instances.Refresh()
+				refreshArchiveChrome(state)
+				if state.collapsedArchiveSeries[seriesUID] {
+					status.SetText("Collapsed images for " + series.SeriesInstanceUID)
+					return
+				}
+				status.SetText("Expanded images for " + series.SeriesInstanceUID)
+				return
+			}
 			tables.studies.Refresh()
 			tables.series.Refresh()
 			tables.instances.Refresh()
 			refreshArchiveChrome(state)
-			series := seriesRows[row.seriesIndex]
 			status.SetText("Loading instances for " + series.SeriesInstanceUID)
 			go func(selectedStudyRow int, selectedSeriesRow int, seriesUID string) {
 				instances, err := state.catalog.InstancesForSeries(context.Background(), seriesUID)
@@ -7447,11 +9868,39 @@ func wireArchiveTables(w fyne.Window, status *widget.Label, tables archiveTables
 			}(row.studyIndex, row.seriesIndex, series.SeriesInstanceUID)
 			return
 		}
+		if row.kind == archiveRowInstance {
+			if row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
+				return
+			}
+			study := state.studies[row.studyIndex]
+			seriesRows := state.archiveSeriesByStudy[study.StudyInstanceUID]
+			if row.seriesIndex < 0 || row.seriesIndex >= len(seriesRows) {
+				return
+			}
+			series := seriesRows[row.seriesIndex]
+			instanceRows := state.archiveInstancesBySeries[strings.TrimSpace(series.SeriesInstanceUID)]
+			if row.instanceIndex < 0 || row.instanceIndex >= len(instanceRows) {
+				return
+			}
+			state.selectedStudyRow = row.studyIndex
+			recordOpenedArchiveStudy(state, study)
+			state.series = seriesRows
+			state.selectedSeriesRow = row.seriesIndex
+			state.instances = instanceRows
+			state.selectedInstanceRow = row.instanceIndex
+			tables.studies.Refresh()
+			tables.series.Refresh()
+			tables.instances.Refresh()
+			refreshArchiveChrome(state)
+			status.SetText("Selected image " + emptyDash(instanceRows[row.instanceIndex].SOPInstanceUID))
+			return
+		}
 		if row.kind != archiveRowStudy || row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
 			return
 		}
 		state.selectedStudyRow = row.studyIndex
 		study := state.studies[row.studyIndex]
+		recordOpenedArchiveStudy(state, study)
 		if toggleArchiveStudySeries(state, row) {
 			tables.studies.Refresh()
 			refreshArchiveChrome(state)
@@ -7560,7 +10009,7 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 	profileNames := autoQueryProfileNames(state)
 	profileSelect := widget.NewSelect(profileNames, nil)
 	profileSelect.SetSelected(selectedAutoQueryProfileName(state))
-	titleLabel := workbenchCenteredTitle(autoQueryWindowTitle(profileSelect.Selected))
+	titleLabel := workbenchSectionTitle(autoQueryWindowTitle(profileSelect.Selected))
 	previousButton := autoQueryEnabledIconButton(theme.NavigateBackIcon(), func() {
 		selectRelativeAutoQueryProfile(profileSelect, -1)
 	})
@@ -7684,7 +10133,6 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 	})
 	quickSearchField.SetSelected(savedCriteria.SearchField)
 	quickSearch := widget.NewEntry()
-	quickSearch.SetPlaceHolder(savedCriteria.SearchField)
 	quickSearch.SetText(savedCriteria.SearchText)
 	quickSearch.OnChanged = func(search string) {
 		if state != nil {
@@ -7692,11 +10140,12 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 		}
 	}
 	quickSearchField.OnChanged = func(field string) {
-		quickSearch.SetPlaceHolder(field)
+		configureQueryQuickSearchPlaceholder(quickSearch, field)
 		if state != nil {
 			state.autoQuerySearchField = field
 		}
 	}
+	autoQuerySearchStrip := newQueryQuickSearchFieldStrip(quickSearchField, quickSearch)
 
 	datePreset := newQueryDatePresetRadioGrid(func(preset string) {
 		if state != nil {
@@ -7752,8 +10201,7 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 	})
 	sourceMoveDown.Importance = widget.LowImportance
 	sourceHeader := newDicomNodesHeader(container.NewHBox(sourceMoveUp, sourceMoveDown))
-	sourcePanel := container.NewBorder(sourceHeader, nil, nil, nil, sourceList)
-	sourcePanel.Resize(fyne.NewSize(360, 0))
+	sourcePanel := newDicomNodesSourcePanel(sourceHeader, container.NewVBox(newQuerySourceColumnHeader(), sourceList))
 
 	destinationSelect := newQueryMoveDestinationEntry(state)
 	refreshCadence := widget.NewSelect(autoQueryRefreshModeOptions, nil)
@@ -7857,7 +10305,7 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 		}
 		criteria := autoQueryCriteriaForState(state)
 		quickSearchField.SetSelected(criteria.SearchField)
-		quickSearch.SetPlaceHolder(criteria.SearchField)
+		configureQueryQuickSearchPlaceholder(quickSearch, criteria.SearchField)
 		quickSearch.SetText(criteria.SearchText)
 		datePreset.SetSelected(criteria.DatePreset)
 		for _, check := range modalityChecks {
@@ -7915,6 +10363,7 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 
 	resultSummary := widget.NewLabel(autoQueryResultSummaryText(state))
 	resultSummary.Wrapping = fyne.TextTruncate
+	resultSummary.Alignment = fyne.TextAlignTrailing
 	state.autoQueryResultSummaryLabel = resultSummary
 
 	profileBar := container.NewBorder(
@@ -7924,27 +10373,26 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 		container.NewHBox(addButton, renameButton, removeButton, lockButton),
 		profileSelect,
 	)
-	searchBar := container.NewBorder(
-		nil,
-		nil,
-		labeledControl("Search", quickSearchField),
-		nil,
-		autoQuerySearchBar,
-	)
-	filters := container.NewGridWithColumns(3,
+	titleBar := newAutoQueryTitleBar(titleLabel, profileBar)
+	searchBar := workbenchStrip(autoQuerySearchBar)
+	filters := container.NewHBox(
 		sourcePanel,
-		container.NewVBox(workbenchSectionTitle("Date"), datePreset.CanvasObject()),
-		container.NewVBox(workbenchSectionTitle("Modalities"), queryModalityGrid(modalityChecks)),
+		workbenchPanelSlot("Date", datePreset.CanvasObject(), queryDateFilterPanelMinWidth),
+		workbenchPanelSlot("Modalities", queryModalityGrid(modalityChecks), queryModalityFilterPanelMinWidth),
 	)
+	refreshCluster := workbenchStrip(container.NewVBox(
+		container.NewHBox(labeledControl("Refresh", queryRefreshCadenceSlot(refreshCadence)), queryRefreshCountdownSlot(countdown), refreshButton),
+		container.NewHBox(layout.NewSpacer(), queryAutoRetrieveSlot(autoRetrieve), queryAutoRetrieveSettingsSlot(settingsButton)),
+	))
 	actions := container.NewBorder(
 		nil,
 		nil,
-		container.NewHBox(labeledControl("Retrieve to", destinationSelect), queryButton, patientButton, retrieveButton, verifyButton),
-		container.NewHBox(labeledControl("Refresh", refreshCadence), countdown, refreshButton),
-		container.NewHBox(autoRetrieve, settingsButton),
+		newQueryPrimaryActionStrip(labeledControl("Retrieve to", destinationSelect), queryButton, patientButton, retrieveButton, verifyButton),
+		refreshCluster,
+		nil,
 	)
-	top := container.NewVBox(titleLabel, profileBar, searchBar, filters, actions)
-	return container.NewBorder(top, resultSummary, nil, nil, container.NewStack(queryTable))
+	top := container.NewVBox(titleBar, autoQuerySearchStrip, searchBar, filters, actions)
+	return container.NewBorder(top, newAutoQueryFooter(resultSummary), nil, nil, container.NewStack(queryTable))
 }
 
 func autoQueryWindowTitle(profile string) string {
@@ -8025,15 +10473,87 @@ func disabledAutoQueryAction(text string, icon fyne.Resource) *widget.Button {
 	return button
 }
 
+func newQueryManualDateInputs(onDate *widget.Entry, lastHours *widget.Entry, applyPreset func()) fyne.CanvasObject {
+	return container.NewGridWithColumns(2,
+		labeledControl("On Date", newSteppedEntry(onDate, func(delta int) bool {
+			next, ok := stepDICOMDate(onDate.Text, delta)
+			if !ok {
+				return false
+			}
+			onDate.SetText(next)
+			return true
+		}, applyPreset)),
+		labeledControl("Last Hours", newSteppedEntry(lastHours, func(delta int) bool {
+			lastHours.SetText(stepPositiveInteger(lastHours.Text, delta, 1))
+			return true
+		}, applyPreset)),
+	)
+}
+
+func newSteppedEntry(entry *widget.Entry, step func(int) bool, apply func()) fyne.CanvasObject {
+	if entry == nil {
+		entry = widget.NewEntry()
+	}
+	stepAndApply := func(delta int) {
+		if step != nil && !step(delta) {
+			return
+		}
+		if apply != nil {
+			apply()
+		}
+	}
+	down := widget.NewButtonWithIcon("", theme.ContentRemoveIcon(), func() {
+		stepAndApply(-1)
+	})
+	down.Importance = widget.LowImportance
+	up := widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
+		stepAndApply(1)
+	})
+	up.Importance = widget.LowImportance
+	return container.NewBorder(nil, nil, nil, container.NewHBox(down, up), entry)
+}
+
 func autoQueryResultSummaryText(state *uiState) string {
 	count := 0
 	if state != nil {
 		count = len(state.queries)
 	}
+	source := autoQueryResultSourceSummaryText(state)
 	if count == 1 {
-		return "1 study found"
+		return "1 study found\n" + source
 	}
-	return fmt.Sprintf("%d studies found", count)
+	return fmt.Sprintf("%d studies found\n%s", count, source)
+}
+
+func autoQueryResultSourceSummaryText(state *uiState) string {
+	if sourceLabels := queryResultSourceLabels(state); len(sourceLabels) > 1 {
+		return fmt.Sprintf("%d sources: %s", len(sourceLabels), strings.Join(sourceLabels, ", "))
+	} else if len(sourceLabels) == 1 {
+		return sourceLabels[0]
+	}
+	sources := autoQuerySourceNodes(state)
+	switch len(sources) {
+	case 0:
+		return "no source selected"
+	case 1:
+		return queryNodeSourceSummaryLabel(sources[0])
+	default:
+		labels := make([]string, 0, len(sources))
+		for _, source := range sources {
+			labels = append(labels, queryNodeShortSourceLabel(source))
+		}
+		return fmt.Sprintf("%d sources: %s", len(labels), strings.Join(labels, ", "))
+	}
+}
+
+func queryNodeShortSourceLabel(node nodes.Node) string {
+	if name := strings.TrimSpace(node.Name); name != "" {
+		return name
+	}
+	if host := strings.TrimSpace(node.Host); host != "" && node.Port != 0 {
+		return fmt.Sprintf("%s:%d", host, node.Port)
+	}
+	return emptyDash(node.Name)
 }
 
 func refreshAutoQueryResultSummary(state *uiState) {
@@ -8227,6 +10747,7 @@ func newAutoQuerySourceList(w fyne.Window, status *widget.Label, state *uiState)
 		},
 	)
 	list.HideSeparators = true
+	applyCompactSourceListRows(list, len(autoQuerySourceRows(state)))
 	list.OnSelected = func(id widget.ListItemID) {
 		entries := autoQuerySourceEntries(state)
 		if state == nil || id < 0 || id >= len(entries) {
@@ -8267,7 +10788,8 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 	onDate := widget.NewEntry()
 	onDate.SetText(time.Now().Format("20060102"))
 	onDate.SetPlaceHolder("20260604")
-	datePreset := newQueryDatePresetRadioGrid(func(preset string) {
+	var datePreset *queryDatePresetRadioGrid
+	datePreset = newQueryDatePresetRadioGrid(func(preset string) {
 		if queryDatePresetPreservesManualRange(preset) {
 			return
 		}
@@ -8288,6 +10810,14 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 	onDate.OnSubmitted = func(_ string) {
 		if datePreset.Selected() == queryDatePresetOn {
 			datePreset.SetSelected(queryDatePresetOn)
+		}
+	}
+	applyManualDateInput := func() {
+		switch datePreset.Selected() {
+		case queryDatePresetOn:
+			datePreset.SetSelected(queryDatePresetOn)
+		case queryDatePresetLastNHours:
+			datePreset.SetSelected(queryDatePresetLastNHours)
 		}
 	}
 	datePreset.SetSelected(queryDatePresetAny)
@@ -8354,7 +10884,16 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 		}
 		rememberLastStudyQuery(state, criteria)
 		runStudyQuery(w, status, queryTable, state, criteria)
+		scheduleQueryRefresh(w, status, queryTable, state, refreshMode.Selected)
 	})
+	runButton.Importance = widget.LowImportance
+	if state != nil {
+		state.queryRunShortcutAction = func() {
+			if runButton.OnTapped != nil {
+				runButton.OnTapped()
+			}
+		}
+	}
 	runPatientButton := widget.NewButtonWithIcon(queryActionLabelPatient, theme.MediaPlayIcon(), func() {
 		max, err := parseOptionalMaxResults(maxResults.Text)
 		if err != nil {
@@ -8374,7 +10913,9 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 		}
 		rememberLastPatientQuery(state, criteria)
 		runPatientQuery(w, status, queryTable, state, criteria)
+		scheduleQueryRefresh(w, status, queryTable, state, refreshMode.Selected)
 	})
+	runPatientButton.Importance = widget.LowImportance
 	runSeriesButton := widget.NewButtonWithIcon(queryActionLabelSeries, theme.MediaPlayIcon(), func() {
 		max, err := parseOptionalMaxResults(maxResults.Text)
 		if err != nil {
@@ -8400,7 +10941,9 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 		}
 		rememberLastSeriesQuery(state, criteria)
 		runSeriesQuery(w, status, queryTable, state, criteria)
+		scheduleQueryRefresh(w, status, queryTable, state, refreshMode.Selected)
 	})
+	runSeriesButton.Importance = widget.LowImportance
 	runImageButton := widget.NewButtonWithIcon(queryActionLabelImages, theme.MediaPlayIcon(), func() {
 		max, err := parseOptionalMaxResults(maxResults.Text)
 		if err != nil {
@@ -8428,34 +10971,46 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 		}
 		rememberLastImageQuery(state, criteria)
 		runImageQuery(w, status, queryTable, state, criteria)
+		scheduleQueryRefresh(w, status, queryTable, state, refreshMode.Selected)
 	})
+	runImageButton.Importance = widget.LowImportance
 	refreshButton := newQueryRefreshButton(func() {
 		refreshLastQuery(w, status, queryTable, state)
+		scheduleQueryRefresh(w, status, queryTable, state, refreshMode.Selected)
 	})
 	retrieveButton = widget.NewButtonWithIcon(queryActionLabelRetrieve, theme.DownloadIcon(), func() {
 		retrieveSelectedQuery(w, status, tables, state)
 	})
+	retrieveButton.Importance = widget.LowImportance
 	syncQueryRetrieveButton(retrieveButton, state)
 	verifyButton := widget.NewButtonWithIcon(queryActionLabelVerify, theme.ConfirmIcon(), func() {
 		verifySelectedNode(w, status, nodeTable, state)
 	})
+	verifyButton.Importance = widget.LowImportance
 	submitStudyQuery := func() {
 		if runButton != nil && runButton.OnTapped != nil {
 			runButton.OnTapped()
 		}
 	}
-	querySearchBar := newQuerySearchBar(quickSearch, submitStudyQuery)
+	querySearchBar := workbenchStrip(newQuerySearchBar(quickSearch, submitStudyQuery))
 	destinationSelect := newQueryMoveDestinationEntry(state)
 	state.queryMoveDestinationSelect = destinationSelect
 	state.queryDestinationLabel = widget.NewLabel(queryDestinationText(state))
 	state.queryDestinationLabel.Wrapping = fyne.TextTruncate
 	state.queryResultSummaryLabel = widget.NewLabel(queryResultSummaryText(state))
 	state.queryResultSummaryLabel.Wrapping = fyne.TextTruncate
-	state.querySelectedDetailsLabel = compactWorkbenchLabel()
-	state.querySelectedDetailsLabel.SetText(querySelectedDetailsText(state))
-	selectedDetails := widget.NewAccordion(widget.NewAccordionItem("Selected Result Details", state.querySelectedDetailsLabel))
+	state.queryResultSummaryLabel.Alignment = fyne.TextAlignTrailing
+	state.queryCountdownLabel = widget.NewLabel(queryCountdownText(refreshMode.Selected, time.Time{}, queryRefreshAvailable(state), time.Now()))
+	refreshMode.OnChanged = func(mode string) {
+		scheduleQueryRefresh(w, status, queryTable, state, mode)
+	}
+	selectedDetails := widget.NewAccordion(widget.NewAccordionItem("Selected Result Details", newQuerySelectedDetailsPanel(state, status)))
 	selectedDetails.CloseAll()
 	sourceList := newQuerySourceList(state)
+	state.querySourceHistoryLabel = compactWorkbenchLabel()
+	state.querySourceHistoryLabel.SetText(sourceStatusHistoryText(state))
+	sourceHistory := widget.NewAccordion(widget.NewAccordionItem("Source Status History", state.querySourceHistoryLabel))
+	sourceHistory.CloseAll()
 	refreshSources := func() {
 		refreshArchiveChrome(state)
 		refreshQueryDestination(state)
@@ -8478,12 +11033,13 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 	moveUpButton := widget.NewButtonWithIcon("", theme.MoveUpIcon(), func() {
 		moveSource(-1)
 	})
+	moveUpButton.Importance = widget.LowImportance
 	moveDownButton := widget.NewButtonWithIcon("", theme.MoveDownIcon(), func() {
 		moveSource(1)
 	})
+	moveDownButton.Importance = widget.LowImportance
 	sourceHeader := newDicomNodesHeader(container.NewHBox(moveUpButton, moveDownButton))
-	sourcePanel := container.NewBorder(sourceHeader, nil, nil, nil, sourceList)
-	sourcePanel.Resize(fyne.NewSize(250, 0))
+	sourcePanel := newDicomNodesSourcePanel(sourceHeader, container.NewVBox(newQuerySourceColumnHeader(), sourceList, sourceHistory))
 	advancedCriteria := newQueryAdvancedCriteria(queryAdvancedCriteriaEntries{
 		patientName:      patientName,
 		patientID:        patientID,
@@ -8504,40 +11060,89 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 		imagesButton:     runImageButton,
 	})
 
+	refreshCluster := workbenchStrip(container.NewVBox(
+		container.NewHBox(labeledControl("Refresh", queryRefreshCadenceSlot(refreshMode)), queryRefreshCountdownSlot(state.queryCountdownLabel), refreshButton),
+		container.NewHBox(layout.NewSpacer(), queryAutoRetrieveSlot(autoRetrieve), queryAutoRetrieveSettingsSlot(autoRetrieveSettings)),
+	))
 	criteria := container.NewVBox(
-		container.NewCenter(workbenchCenteredTitle(queryWorkspaceTitle)),
+		workbenchWindowTitle(queryWorkspaceTitle),
 		quickSearchStrip,
 		querySearchBar,
-		container.NewGridWithColumns(2,
-			labeledEntry("On Date", onDate),
-			labeledEntry("Last Hours", lastHours),
-		),
+		newQueryManualDateInputs(onDate, lastHours, applyManualDateInput),
 		newQueryDateModalityPanel(datePreset.CanvasObject(), queryModalityGrid(modalityChecks)),
 		advancedCriteria,
 		container.NewBorder(
 			nil,
 			nil,
-			container.NewHBox(labeledControl("Refresh", refreshMode), labeledControl("Retrieve to", destinationSelect), autoRetrieve, autoRetrieveSettings),
-			container.NewHBox(refreshButton, runButton, runPatientButton, retrieveButton, verifyButton),
+			newQueryPrimaryActionStrip(labeledControl("Retrieve to", destinationSelect), runButton, runPatientButton, retrieveButton, verifyButton),
+			refreshCluster,
 			state.queryDestinationLabel,
 		),
 	)
-	footer := container.NewBorder(
-		nil,
-		nil,
-		keepOnTop,
-		nil,
-		container.NewHBox(layout.NewSpacer(), state.queryResultSummaryLabel),
-	)
+	footer := newQueryFooter(keepOnTop, state.queryResultSummaryLabel)
 	results := container.NewBorder(nil, selectedDetails, nil, nil, container.NewStack(queryTable))
 	return container.NewBorder(criteria, footer, sourcePanel, nil, results)
 }
 
 func newQueryDateModalityPanel(datePanel fyne.CanvasObject, modalityPanel fyne.CanvasObject) fyne.CanvasObject {
-	return container.NewGridWithColumns(2,
-		container.NewVBox(workbenchSectionTitle("Date"), datePanel),
-		container.NewVBox(workbenchSectionTitle("Modalities"), modalityPanel),
+	return container.NewHBox(
+		workbenchPanelSlot("Date", datePanel, queryDateFilterPanelMinWidth),
+		workbenchPanelSlot("Modalities", modalityPanel, queryModalityFilterPanelMinWidth),
 	)
+}
+
+func newQueryPrimaryActionStrip(objects ...fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewStack(
+		canvas.NewRectangle(archiveHeaderRowColor),
+		newCompactTableCellContent(container.NewHBox(queryPrimaryActionStripObjects(objects)...)),
+		newTableColumnDividerLayer(),
+		newTableRowDividerLayer(),
+	)
+}
+
+func queryPrimaryActionStripObjects(objects []fyne.CanvasObject) []fyne.CanvasObject {
+	out := make([]fyne.CanvasObject, 0, len(objects))
+	for _, object := range objects {
+		if _, ok := object.(*widget.Button); ok {
+			size := object.MinSize()
+			if size.Width < queryPrimaryActionButtonMinWidth {
+				size.Width = queryPrimaryActionButtonMinWidth
+			}
+			object = container.NewGridWrap(size, object)
+		}
+		out = append(out, object)
+	}
+	return out
+}
+
+func newQueryFooter(keepOnTop fyne.CanvasObject, summary fyne.CanvasObject) fyne.CanvasObject {
+	return workbenchStrip(container.NewBorder(
+		nil,
+		nil,
+		keepOnTop,
+		summary,
+		nil,
+	))
+}
+
+func newAutoQueryTitleBar(title fyne.CanvasObject, profileControls fyne.CanvasObject) fyne.CanvasObject {
+	return workbenchStrip(container.NewBorder(
+		nil,
+		nil,
+		title,
+		profileControls,
+		nil,
+	))
+}
+
+func newAutoQueryFooter(summary fyne.CanvasObject) fyne.CanvasObject {
+	return workbenchStrip(container.NewBorder(
+		nil,
+		nil,
+		nil,
+		summary,
+		nil,
+	))
 }
 
 const queryAdvancedCriteriaTitle = "Advanced Criteria"
@@ -8613,6 +11218,7 @@ func newQuerySourceList(state *uiState) *widget.List {
 		},
 	)
 	list.HideSeparators = true
+	applyCompactSourceListRows(list, len(querySourceRows(state)))
 	list.OnSelected = func(id widget.ListItemID) {
 		if state == nil || id < 0 || id >= len(state.nodes) {
 			list.Unselect(id)
@@ -8675,6 +11281,98 @@ func queryRefreshAvailable(state *uiState) bool {
 	return state != nil && state.lastQuery.kind != ""
 }
 
+func queryRefreshInterval(mode string) time.Duration {
+	return autoQueryRefreshInterval(mode)
+}
+
+func queryCountdownText(mode string, next time.Time, hasQuery bool, now time.Time) string {
+	if queryRefreshInterval(mode) <= 0 {
+		return autoQueryCountdownDormant
+	}
+	if !hasQuery {
+		return "Next: waiting for Query"
+	}
+	if next.IsZero() {
+		return autoQueryCountdownDormant
+	}
+	remaining := next.Sub(now)
+	if remaining <= 0 {
+		return "Next: now"
+	}
+	remaining = remaining.Round(time.Second)
+	if remaining < time.Second {
+		remaining = time.Second
+	}
+	if remaining >= time.Hour {
+		hours := int(remaining / time.Hour)
+		minutes := int((remaining % time.Hour) / time.Minute)
+		return fmt.Sprintf("Next: %dh %02dm", hours, minutes)
+	}
+	minutes := int(remaining / time.Minute)
+	seconds := int((remaining % time.Minute) / time.Second)
+	return fmt.Sprintf("Next: %dm %02ds", minutes, seconds)
+}
+
+func refreshQueryCountdown(state *uiState, mode string, now time.Time) {
+	if state == nil || state.queryCountdownLabel == nil {
+		return
+	}
+	state.queryCountdownLabel.SetText(queryCountdownText(mode, state.queryNextRefresh, queryRefreshAvailable(state), now))
+}
+
+func stopQueryRefresh(state *uiState) {
+	if state == nil {
+		return
+	}
+	if state.queryRefreshCancel != nil {
+		state.queryRefreshCancel()
+		state.queryRefreshCancel = nil
+	}
+	state.queryNextRefresh = time.Time{}
+}
+
+func scheduleQueryRefresh(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState, mode string) {
+	scheduleQueryRefreshAt(w, status, table, state, mode, time.Now())
+}
+
+func scheduleQueryRefreshAt(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState, mode string, now time.Time) {
+	if state == nil {
+		return
+	}
+	stopQueryRefresh(state)
+	interval := queryRefreshInterval(mode)
+	if interval <= 0 || !queryRefreshAvailable(state) {
+		refreshQueryCountdown(state, mode, now)
+		return
+	}
+	state.queryNextRefresh = now.Add(interval)
+	refreshQueryCountdown(state, mode, now)
+	ctx, cancel := context.WithCancel(context.Background())
+	state.queryRefreshCancel = cancel
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case tick := <-ticker.C:
+				fyne.Do(func() {
+					refreshQueryCountdown(state, mode, tick)
+				})
+			case <-timer.C:
+				fyne.Do(func() {
+					refreshLastQuery(w, status, table, state)
+					scheduleQueryRefresh(w, status, table, state, mode)
+				})
+				return
+			}
+		}
+	}()
+}
+
 func refreshLastQuery(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState) {
 	if !queryRefreshAvailable(state) {
 		status.SetText("No query to refresh")
@@ -8696,6 +11394,7 @@ func refreshLastQuery(w fyne.Window, status *widget.Label, table *widget.Table, 
 
 type queryMatchesHandler func()
 type queryAcrossSourceFunc func(context.Context, nodes.Node) (query.Result, error)
+type queryActivityProgressFunc func(queryActivityProgress)
 
 type querySourceFailures struct {
 	successes  int
@@ -8712,26 +11411,44 @@ func (err *querySourceFailures) failed(node nodes.Node) bool {
 }
 
 func runQueryAcrossSources(ctx context.Context, sources []nodes.Node, run queryAcrossSourceFunc) (query.Result, error) {
+	return runQueryAcrossSourcesWithProgress(ctx, sources, run, nil)
+}
+
+func runQueryAcrossSourcesWithProgress(ctx context.Context, sources []nodes.Node, run queryAcrossSourceFunc, onProgress queryActivityProgressFunc) (query.Result, error) {
 	var merged query.Result
 	var failures []string
 	failedKeys := map[string]bool{}
 	successes := 0
-	for _, source := range sources {
+	for i, source := range sources {
 		result, err := run(ctx, source)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %s", emptyDash(source.Name), err.Error()))
 			failedKeys[nodeVerifyKey(source)] = true
+			reportQueryActivityProgress(onProgress, i+1, len(sources), len(merged.Matches), len(failures))
 			continue
 		}
 		successes++
 		merged.Matches = append(merged.Matches, annotateQueryMatches(result.Matches, source)...)
 		merged.FinalStatus = result.FinalStatus
 		merged.Duration += result.Duration
+		reportQueryActivityProgress(onProgress, i+1, len(sources), len(merged.Matches), len(failures))
 	}
 	if len(failures) > 0 {
 		return merged, &querySourceFailures{successes: successes, failures: failures, failedKeys: failedKeys}
 	}
 	return merged, nil
+}
+
+func reportQueryActivityProgress(onProgress queryActivityProgressFunc, attempted int, total int, matches int, failures int) {
+	if onProgress == nil {
+		return
+	}
+	onProgress(queryActivityProgress{
+		Attempted: attempted,
+		Total:     total,
+		Matches:   matches,
+		Failures:  failures,
+	})
 }
 
 func querySourcesLabel(sources []nodes.Node) string {
@@ -8769,6 +11486,7 @@ func setQueryMatches(ctx context.Context, status *widget.Label, table *widget.Ta
 	}
 	state.queries = enriched
 	clearSelectedQuery(state)
+	applySavedQuerySortPreference(state)
 	state.collapsedQueryGroups = retainCollapsedQueryGroups(state.collapsedQueryGroups, enriched)
 	if table != nil {
 		table.Refresh()
@@ -9100,9 +11818,9 @@ func runPatientQueryWithSources(w fyne.Window, status *widget.Label, table *widg
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
-		result, err := runQueryAcrossSources(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
+		result, err := runQueryAcrossSourcesWithProgress(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
 			return query.PatientRootFind(ctx, node, criteria, callingAE)
-		})
+		}, queryProgressCallback(state))
 		fyne.Do(func() {
 			clearActiveQueryActivity(state)
 			recordQuerySourceStatuses(state, sources, err)
@@ -9141,9 +11859,9 @@ func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
-		result, err := runQueryAcrossSources(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
+		result, err := runQueryAcrossSourcesWithProgress(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
 			return query.StudyRootFind(ctx, node, criteria, callingAE)
-		})
+		}, queryProgressCallback(state))
 		fyne.Do(func() {
 			clearActiveQueryActivity(state)
 			recordQuerySourceStatuses(state, sources, err)
@@ -9179,9 +11897,9 @@ func runSeriesQuery(w fyne.Window, status *widget.Label, table *widget.Table, st
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
-		result, err := runQueryAcrossSources(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
+		result, err := runQueryAcrossSourcesWithProgress(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
 			return query.StudyRootSeriesFind(ctx, node, criteria, callingAE)
-		})
+		}, queryProgressCallback(state))
 		fyne.Do(func() {
 			clearActiveQueryActivity(state)
 			recordQuerySourceStatuses(state, sources, err)
@@ -9214,9 +11932,9 @@ func runImageQuery(w fyne.Window, status *widget.Label, table *widget.Table, sta
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
-		result, err := runQueryAcrossSources(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
+		result, err := runQueryAcrossSourcesWithProgress(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
 			return query.StudyRootImageFind(ctx, node, criteria, callingAE)
-		})
+		}, queryProgressCallback(state))
 		fyne.Do(func() {
 			clearActiveQueryActivity(state)
 			recordQuerySourceStatuses(state, sources, err)
@@ -9256,7 +11974,6 @@ func selectedQuery(state *uiState) (query.Match, bool) {
 const (
 	queryTableColumnPatient = iota
 	queryRetrieveColumn
-	queryTableColumnLocalState
 	queryTableColumnModality
 	queryTableColumnImages
 	queryTableColumnStudyDate
@@ -9266,6 +11983,7 @@ const (
 	queryTableColumnDOB
 	queryTableColumnLocalComments
 	queryTableColumnServerComments
+	queryTableColumnLocalState
 	queryTableColumnAccession
 	queryTableColumnReferrer
 	queryTableColumnInstitution
@@ -9388,7 +12106,7 @@ func newQueryTable(state *uiState, onRetrieve func(), onSelectionChanged ...func
 	)
 	clearSelectedQuery(state)
 	table.OnSelected = selectQueryCell
-	widths := []float32{260, 70, 65, 85, 80, 100, 85, 240, 120, 95, 180, 180, 120, 180, 180, 110, 85, 90, 220, 80}
+	widths := []float32{340, 54, 85, 70, 95, 85, 250, 120, 110, 180, 180, 70, 120, 180, 180, 110, 85, 90, 220, 80}
 	for col, width := range widths {
 		table.SetColumnWidth(col, width)
 	}
@@ -9768,6 +12486,17 @@ func toggleQueryGroupRow(state *uiState, row queryTableRow) bool {
 	return true
 }
 
+func queryGroupCountSuffix(count int, singular string, plural string) string {
+	if count <= 0 {
+		return ""
+	}
+	label := plural
+	if count == 1 {
+		label = singular
+	}
+	return fmt.Sprintf(" (%d %s)", count, label)
+}
+
 func queryRowCell(row queryTableRow, col int) string {
 	if row.kind == queryTableRowPatientGroup && col == queryTableColumnPatient {
 		label := strings.TrimSpace(row.match.PatientName)
@@ -9777,6 +12506,7 @@ func queryRowCell(row queryTableRow, col int) string {
 		if label == "" {
 			label = "PATIENT"
 		}
+		label += queryGroupCountSuffix(row.childCount, "match", "matches")
 		if row.expanded {
 			return "▾ " + label
 		}
@@ -9793,6 +12523,7 @@ func queryRowCell(row queryTableRow, col int) string {
 		if label == "" {
 			label = "STUDY"
 		}
+		label += queryGroupCountSuffix(row.childCount, "item", "items")
 		indent := strings.Repeat("    ", row.depth)
 		if row.expanded {
 			return indent + "▾ " + label
@@ -9835,6 +12566,8 @@ func queryRowLocalStateCell(state *uiState, row queryTableRow) (string, string) 
 	return queryCell(row.match, queryTableColumnLocalState), row.match.LocalState
 }
 
+const querySortPreferenceKey = "queryResults"
+
 func applyQuerySort(state *uiState, col int) bool {
 	if state == nil || !queryColumnSortable(col) {
 		return false
@@ -9846,7 +12579,31 @@ func applyQuerySort(state *uiState, col int) bool {
 		state.querySortColumn = col
 		state.querySortDescending = false
 	}
-	descending := state.querySortDescending
+	sortQueriesByColumn(state, col, state.querySortDescending)
+	persistQuerySortPreference(state)
+	clearSelectedQuery(state)
+	return true
+}
+
+func applySavedQuerySortPreference(state *uiState) {
+	if state == nil {
+		return
+	}
+	pref, ok := state.appConfig.UISortPreferences[querySortPreferenceKey]
+	if !ok || !queryColumnSortable(pref.Column) {
+		return
+	}
+	state.querySortActive = true
+	state.querySortColumn = pref.Column
+	state.querySortDescending = pref.Descending
+	sortQueriesByColumn(state, pref.Column, pref.Descending)
+	clearSelectedQuery(state)
+}
+
+func sortQueriesByColumn(state *uiState, col int, descending bool) {
+	if state == nil {
+		return
+	}
 	sort.SliceStable(state.queries, func(i, j int) bool {
 		left := querySortValue(state.queries[i], col)
 		right := querySortValue(state.queries[j], col)
@@ -9859,8 +12616,20 @@ func applyQuerySort(state *uiState, col int) bool {
 		}
 		return left < right
 	})
-	clearSelectedQuery(state)
-	return true
+}
+
+func persistQuerySortPreference(state *uiState) {
+	if state == nil || state.appConfigPath == "" || !state.querySortActive || !queryColumnSortable(state.querySortColumn) {
+		return
+	}
+	if state.appConfig.UISortPreferences == nil {
+		state.appConfig.UISortPreferences = map[string]appconfig.SortPreference{}
+	}
+	state.appConfig.UISortPreferences[querySortPreferenceKey] = appconfig.SortPreference{
+		Column:     state.querySortColumn,
+		Descending: state.querySortDescending,
+	}
+	_ = appconfig.Save(state.appConfigPath, state.appConfig)
 }
 
 func queryColumnSortable(col int) bool {
@@ -9913,7 +12682,7 @@ func queryUIDAvailable(uid string) bool {
 }
 
 func queryTableHeaders() []string {
-	return []string{"Patient", "Retrieve", "Local", "Modality", "Images", "Study Date", "Time", "Description", "Patient ID", "DOB", "Local Comments", "Server Comments", "Accession", "Referrer", "Institution", "Study Status", "Series #", "Instance #", "Source", "Status"}
+	return []string{"Patient Name", "", "Modality", "# im", "Date", "Time", "Description", "Patient ID", "Date of Birth", "Local Comments", "Server Comments", "Local", "Accession", "Referrer", "Institution", "Study Status", "Series #", "Instance #", "Source", "Status"}
 }
 
 func applyQueryTableCell(cell *queryTableCell, tableRow int, tableCol int, text string, header bool, selected bool, retrieveAction bool, status uint16, localState string) {
@@ -9933,6 +12702,9 @@ func applyQueryTableCell(cell *queryTableCell, tableRow int, tableCol int, text 
 		cell.background.FillColor = archiveHeaderRowColor
 		cell.background.Refresh()
 		return
+	}
+	if queryPatientCellIsDisclosure(text, tableCol) {
+		cell.label.TextStyle = fyne.TextStyle{Bold: true}
 	}
 	if retrieveAction {
 		cell.label.SetText("")
@@ -9964,7 +12736,18 @@ func applyQueryTableCell(cell *queryTableCell, tableRow int, tableCol int, text 
 	} else {
 		cell.background.FillColor = archiveOddRowColor
 	}
+	if queryPatientCellIsDisclosure(text, tableCol) {
+		cell.background.FillColor = archivePatientRowColor
+	}
 	cell.background.Refresh()
+}
+
+func queryPatientCellIsDisclosure(text string, tableCol int) bool {
+	if tableCol != queryTableColumnPatient {
+		return false
+	}
+	text = strings.TrimLeft(strings.TrimSpace(text), " ")
+	return strings.HasPrefix(text, "▾ ") || strings.HasPrefix(text, "▸ ")
 }
 
 func queryLocalStateAvailable(localState string) bool {
@@ -10040,6 +12823,26 @@ func setNodeRetrieveMethod(state *uiState, row int, method string) (bool, error)
 	return saveNodeAt(state, row, next)
 }
 
+func setNodeSendSyntax(state *uiState, row int, label string) (bool, error) {
+	if state == nil || row < 0 || row >= len(state.nodes) {
+		return false, nil
+	}
+	next := state.nodes[row]
+	next.SendTransferSyntax = sendSyntaxValue(label)
+	return saveNodeAt(state, row, next)
+}
+
+func setNodeDropdownValue(state *uiState, row int, col int, value string) (bool, error) {
+	switch col {
+	case nodeTableColumnRetrieve:
+		return setNodeRetrieveMethod(state, row, value)
+	case nodeTableColumnSendSyntax:
+		return setNodeSendSyntax(state, row, value)
+	default:
+		return false, nil
+	}
+}
+
 func saveNodeAt(state *uiState, row int, next nodes.Node) (bool, error) {
 	if state == nil || row < 0 || row >= len(state.nodes) {
 		return false, nil
@@ -10090,7 +12893,7 @@ func newNodeTableCell() *nodeTableCell {
 	retrieveSelect := widget.NewSelect(retrieveMethodOptions(), nil)
 	retrieveSelect.Hide()
 	return &nodeTableCell{
-		Container:      container.NewStack(background, newCompactTableCellContent(label), container.NewCenter(check), newCompactTableCellContent(retrieveSelect), newTableColumnDividerLayer()),
+		Container:      container.NewStack(background, newCompactTableCellContent(label), container.NewCenter(check), newCompactTableCellContent(retrieveSelect), newTableColumnDividerLayer(), newTableRowDividerLayer()),
 		background:     background,
 		label:          label,
 		check:          check,
@@ -10140,19 +12943,19 @@ func newNodeTable(status *widget.Label, state *uiState) *widget.Table {
 		func(id widget.TableCellID, obj fyne.CanvasObject) {
 			cell := obj.(*nodeTableCell)
 			if id.Row == 0 {
-				applyNodeTableCell(cell, id.Row, id.Col, nodeHeaderLabel(state, id.Col, headers[id.Col]), true, false, false, false, false, "")
+				applyNodeTableCell(cell, id.Row, id.Col, nodeHeaderLabel(state, id.Col, headers[id.Col]), true, false, false, false, false, false, "")
 				return
 			}
 			nodeIndex, ok := nodeTableNodeIndex(state, id.Row-1)
 			if !ok {
-				applyNodeTableCell(cell, id.Row, id.Col, "", false, false, false, false, false, "")
+				applyNodeTableCell(cell, id.Row, id.Col, "", false, false, false, false, false, false, "")
 				return
 			}
 			node := state.nodes[nodeIndex]
 			selected := nodeIndex == state.selectedNodeRow
 			checkbox, checked := nodeOperationalCheckboxState(node, id.Col)
-			retrieveDropdown, retrieveValue := nodeRetrieveMethodDropdownState(node, id.Col)
-			applyNodeTableCell(cell, id.Row, id.Col, nodeCell(node, id.Col), false, selected, checkbox, checked, retrieveDropdown, retrieveValue)
+			dropdown, dropdownValue := nodeDropdownState(node, id.Col)
+			applyNodeTableCell(cell, id.Row, id.Col, nodeCell(node, id.Col), false, selected, !node.Enabled(), checkbox, checked, dropdown, dropdownValue)
 			if checkbox {
 				cellID := id
 				cell.check.OnChanged = func(checked bool) {
@@ -10165,15 +12968,15 @@ func newNodeTable(status *widget.Label, state *uiState) *widget.Table {
 					refreshAfterNodeChange(row, changed, err)
 				}
 			}
-			if retrieveDropdown {
+			if dropdown {
 				cellID := id
-				cell.retrieveSelect.OnChanged = func(method string) {
+				cell.retrieveSelect.OnChanged = func(value string) {
 					row, ok := nodeTableNodeIndex(state, cellID.Row-1)
 					if !ok {
 						return
 					}
 					state.selectedNodeRow = row
-					changed, err := setNodeRetrieveMethod(state, row, method)
+					changed, err := setNodeDropdownValue(state, row, cellID.Col, value)
 					refreshAfterNodeChange(row, changed, err)
 				}
 			}
@@ -10181,7 +12984,7 @@ func newNodeTable(status *widget.Label, state *uiState) *widget.Table {
 	)
 	state.selectedNodeRow = -1
 	table.OnSelected = selectNodeCell
-	widths := []float32{70, 70, 90, 70, 70, 140, 110, 190, 70, 150, 120, 360}
+	widths := []float32{70, 190, 120, 70, 70, 90, 70, 70, 160, 180, 150, 360}
 	for col, width := range widths {
 		table.SetColumnWidth(col, width)
 	}
@@ -10191,18 +12994,20 @@ func newNodeTable(status *widget.Label, state *uiState) *widget.Table {
 
 const (
 	nodeTableColumnEnabled = iota
+	nodeTableColumnHost
+	nodeTableColumnAETitle
+	nodeTableColumnPort
 	nodeTableColumnQuery
 	nodeTableColumnRetrieve
 	nodeTableColumnSend
 	nodeTableColumnTLS
 	nodeTableColumnName
-	nodeTableColumnAETitle
-	nodeTableColumnHost
-	nodeTableColumnPort
-	nodeTableColumnMoveDestination
 	nodeTableColumnSendSyntax
+	nodeTableColumnMoveDestination
 	nodeTableColumnNotes
 )
+
+const nodeSortPreferenceKey = "networkNodes"
 
 func applyNodeSort(state *uiState, col int) bool {
 	if state == nil || !nodeColumnSortable(col) {
@@ -10218,8 +13023,24 @@ func applyNodeSort(state *uiState, col int) bool {
 	descending := state.nodeSortDescending
 	state.nodeTableRows = makeNodeTableRows(len(state.nodes))
 	sortNodeTableRows(state, col, descending)
+	persistNodeSortPreference(state)
 	state.selectedNodeRow = -1
 	return true
+}
+
+func applySavedNodeSortPreference(state *uiState) {
+	if state == nil {
+		return
+	}
+	pref, ok := state.appConfig.UISortPreferences[nodeSortPreferenceKey]
+	if !ok || !nodeColumnSortable(pref.Column) {
+		refreshNodeTableRows(state)
+		return
+	}
+	state.nodeSortActive = true
+	state.nodeSortColumn = pref.Column
+	state.nodeSortDescending = pref.Descending
+	refreshNodeTableRows(state)
 }
 
 func refreshNodeTableRows(state *uiState) {
@@ -10251,6 +13072,20 @@ func ensureNodeTableRows(state *uiState) []int {
 		refreshNodeTableRows(state)
 	}
 	return state.nodeTableRows
+}
+
+func persistNodeSortPreference(state *uiState) {
+	if state == nil || state.appConfigPath == "" || !state.nodeSortActive || !nodeColumnSortable(state.nodeSortColumn) {
+		return
+	}
+	if state.appConfig.UISortPreferences == nil {
+		state.appConfig.UISortPreferences = map[string]appconfig.SortPreference{}
+	}
+	state.appConfig.UISortPreferences[nodeSortPreferenceKey] = appconfig.SortPreference{
+		Column:     state.nodeSortColumn,
+		Descending: state.nodeSortDescending,
+	}
+	_ = appconfig.Save(state.appConfigPath, state.appConfig)
 }
 
 func nodeTableRowsValid(state *uiState) bool {
@@ -10301,7 +13136,7 @@ func sortNodeTableRows(state *uiState, col int, descending bool) {
 
 func nodeColumnSortable(col int) bool {
 	switch col {
-	case nodeTableColumnEnabled, nodeTableColumnQuery, nodeTableColumnRetrieve, nodeTableColumnSend:
+	case nodeTableColumnEnabled, nodeTableColumnQuery, nodeTableColumnRetrieve, nodeTableColumnSend, nodeTableColumnTLS:
 		return false
 	default:
 		return col >= 0 && col < len(nodeTableHeaders())
@@ -10342,24 +13177,31 @@ func nodeOperationalCheckboxState(node nodes.Node, col int) (bool, bool) {
 	}
 }
 
-func nodeRetrieveMethodDropdownState(node nodes.Node, col int) (bool, string) {
-	if col != nodeTableColumnRetrieve {
+func nodeDropdownState(node nodes.Node, col int) (bool, string) {
+	switch col {
+	case nodeTableColumnTLS:
+		return true, "No"
+	case nodeTableColumnRetrieve:
+		return true, node.RetrieveMethodOrDefault()
+	case nodeTableColumnSendSyntax:
+		return true, sendSyntaxLabel(node.SendTransferSyntaxOrDefault())
+	default:
 		return false, ""
 	}
-	return true, node.RetrieveMethodOrDefault()
 }
 
-func applyNodeTableCell(cell *nodeTableCell, tableRow int, tableCol int, text string, header bool, selected bool, checkbox bool, checked bool, retrieveDropdown bool, retrieveValue string) {
+func applyNodeTableCell(cell *nodeTableCell, tableRow int, tableCol int, text string, header bool, selected bool, disabled bool, checkbox bool, checked bool, retrieveDropdown bool, retrieveValue string) {
 	if cell == nil {
 		return
 	}
 	cell.check.OnChanged = nil
 	cell.check.Hide()
 	cell.retrieveSelect.OnChanged = nil
+	cell.retrieveSelect.Enable()
 	cell.retrieveSelect.Hide()
 	cell.label.Show()
 	cell.label.SetText(text)
-	cell.label.TextStyle = fyne.TextStyle{}
+	cell.label.TextStyle = fyne.TextStyle{Italic: disabled}
 	cell.label.Alignment = fyne.TextAlignLeading
 	cell.label.Wrapping = fyne.TextTruncate
 	if header {
@@ -10377,11 +13219,25 @@ func applyNodeTableCell(cell *nodeTableCell, tableRow int, tableCol int, text st
 	if retrieveDropdown {
 		cell.label.SetText("")
 		cell.label.Hide()
+		switch tableCol {
+		case nodeTableColumnTLS:
+			cell.retrieveSelect.SetOptions([]string{"No"})
+			cell.retrieveSelect.Disable()
+		case nodeTableColumnSendSyntax:
+			cell.retrieveSelect.SetOptions(sendSyntaxOptions())
+		default:
+			cell.retrieveSelect.SetOptions(retrieveMethodOptions())
+		}
 		cell.retrieveSelect.SetSelected(retrieveValue)
 		cell.retrieveSelect.Show()
 	}
 	if selected {
 		cell.background.FillColor = archiveSelectedRowColor
+		cell.background.Refresh()
+		return
+	}
+	if disabled {
+		cell.background.FillColor = nodeDisabledRowColor
 		cell.background.Refresh()
 		return
 	}
@@ -10394,7 +13250,7 @@ func applyNodeTableCell(cell *nodeTableCell, tableRow int, tableCol int, text st
 }
 
 func nodeTableHeaders() []string {
-	return []string{"Enabled", "Query", "Retrieve", "Send", "TLS", "Name", "Called AE", "Host", "Port", "Move Destination", "Send Syntax", "Notes"}
+	return []string{"⊙", "Address", "AETitle", "Port", "Q...", "Retrieve", "Send", "TLS", "Name", "Send Transfer Syntax", "Move Destination", "Notes"}
 }
 
 func nodeCheckCell(enabled bool) string {
@@ -10423,7 +13279,7 @@ func nodeCell(node nodes.Node, col int) string {
 	case nodeTableColumnSend:
 		return nodeCheckCell(node.SendEnabled())
 	case nodeTableColumnTLS:
-		return nodeCheckCell(false)
+		return nodeMenuCell("No")
 	case nodeTableColumnName:
 		return node.Name
 	case nodeTableColumnAETitle:
@@ -10590,6 +13446,28 @@ func studyStatusDotColor(status string) (color.NRGBA, bool) {
 		return studyStatusProblemColor, true
 	default:
 		return studyStatusCustomColor, true
+	}
+}
+
+func studyStatusChipColor(status string) (color.NRGBA, bool) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return color.NRGBA{}, false
+	}
+	normalized := strings.ToLower(status)
+	switch {
+	case strings.Contains(normalized, strings.ToLower(studyStatusPresetReviewedLabel)):
+		return studyStatusReviewedChipColor, true
+	case strings.Contains(normalized, strings.ToLower(studyStatusPresetInterestingLabel)):
+		return studyStatusInterestingChipColor, true
+	case strings.Contains(normalized, strings.ToLower(studyStatusPresetFollowUpLabel)):
+		return studyStatusFollowUpChipColor, true
+	case strings.Contains(normalized, strings.ToLower(studyStatusPresetTeachingLabel)):
+		return studyStatusTeachingChipColor, true
+	case strings.Contains(normalized, strings.ToLower(studyStatusPresetProblemLabel)):
+		return studyStatusProblemChipColor, true
+	default:
+		return studyStatusCustomChipColor, true
 	}
 }
 

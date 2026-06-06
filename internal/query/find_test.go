@@ -216,7 +216,7 @@ func TestStudyRootFindAgainstLocalSCP(t *testing.T) {
 	}
 }
 
-func TestStudyRootStudyIdentifierIncludesClinicalSearchFields(t *testing.T) {
+func TestStudyRootStudyIdentifierIncludesExtendedSearchFields(t *testing.T) {
 	identifier, err := studyRootStudyIdentifier(Criteria{
 		PatientBirthDate:       "19700102",
 		ReferringPhysicianName: "REFER^DOC",
@@ -297,7 +297,7 @@ func TestStudyRootStudyIdentifierRejectsUnknownCustomDICOMField(t *testing.T) {
 	}
 }
 
-func TestPatientRootPatientIdentifierIncludesClinicalSearchFields(t *testing.T) {
+func TestPatientRootPatientIdentifierIncludesExtendedSearchFields(t *testing.T) {
 	identifier, err := patientRootPatientIdentifier(PatientCriteria{
 		PatientName:      "FIND^*",
 		PatientID:        "P001",
@@ -330,7 +330,7 @@ func TestPatientRootPatientIdentifierIncludesClinicalSearchFields(t *testing.T) 
 	}
 }
 
-func TestStudyMatchFromIdentifierIncludesClinicalDisplayFields(t *testing.T) {
+func TestStudyMatchFromIdentifierIncludesWorkstationDisplayFields(t *testing.T) {
 	identifier := object.FromElements([]core.Element{
 		stringElement(tagPatientName, core.VRPN, "DISPLAY^PATIENT"),
 		stringElement(tagPatientBirthDate, core.VRDA, "19700102"),
@@ -367,7 +367,7 @@ func TestStudyMatchFromIdentifierIncludesClinicalDisplayFields(t *testing.T) {
 	}
 }
 
-func TestPatientMatchFromIdentifierIncludesClinicalDisplayFields(t *testing.T) {
+func TestPatientMatchFromIdentifierIncludesWorkstationDisplayFields(t *testing.T) {
 	identifier := patientMatch("DISPLAY^PATIENT", "P001", "19700102", "remote comment")
 
 	match := patientMatchFromIdentifier(identifier, dimse.StatusPending)

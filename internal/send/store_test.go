@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ThalesMMS/Go-PACS/internal/archive"
+	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/net/ul"
 	"github.com/ThalesMMS/dicom-go/object"
 	"github.com/ThalesMMS/dicom-go/transfer"
-	"github.com/ThalesMMS/Go-PACS/internal/archive"
-	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 )
 
 const (
@@ -116,6 +116,62 @@ func TestSendStudyWithNoInstancesIsNoOp(t *testing.T) {
 	}
 	if outcome.Attempted != 0 || outcome.Sent != 0 || outcome.Warnings != 0 || outcome.Failed != 0 || len(outcome.Failures) != 0 || outcome.Duration != 0 {
 		t.Fatalf("Outcome = %#v, want zero value", outcome)
+	}
+}
+
+func TestSendFilesWithOptionsReportsProgressAfterEachFile(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tempDir := t.TempDir()
+	first := filepath.Join(tempDir, "send-1.dcm")
+	second := filepath.Join(tempDir, "send-2.dcm")
+	if err := os.WriteFile(first, testStoragePart10FileWithUIDs(t, testStudyInstanceUID, testSeriesInstanceUID, testSOPInstanceUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, testStoragePart10FileWithUIDs(t, testStudyInstanceUID, testSeriesInstanceUID, testOtherSOPInstanceUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := ul.Listen(ul.ListenOptions{Address: "127.0.0.1:0", Context: ctx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	done := make(chan error, 1)
+	go serveCStoreRequests(t, ctx, listener, done, []string{testSOPInstanceUID, testOtherSOPInstanceUID})
+
+	node := nodes.Node{
+		Name:    "storescp",
+		AETitle: "STORESCP",
+		Host:    "127.0.0.1",
+		Port:    uint16(listener.Addr().(*net.TCPAddr).Port),
+	}
+	var updates []Progress
+	outcome, err := SendFilesWithOptions(ctx, node, []string{first, second}, Options{
+		CallingAETitle: "STORESCU",
+		OnProgress: func(update Progress) {
+			updates = append(updates, update)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Attempted != 2 || outcome.Sent != 2 || outcome.Failed != 0 {
+		t.Fatalf("outcome = %#v, want two successful sends", outcome)
+	}
+	if len(updates) != 2 {
+		t.Fatalf("progress updates = %d, want 2", len(updates))
+	}
+	if updates[0].Attempted != 1 || updates[0].Sent != 1 || updates[0].Total != 2 || updates[0].Path != first {
+		t.Fatalf("first progress update = %#v", updates[0])
+	}
+	if updates[1].Attempted != 2 || updates[1].Sent != 2 || updates[1].Total != 2 || updates[1].Path != second {
+		t.Fatalf("second progress update = %#v", updates[1])
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("server error = %v", err)
 	}
 }
 
@@ -302,6 +358,11 @@ func TestSendInstanceStoresOnlySelectedImageAgainstLocalSCP(t *testing.T) {
 
 func serveSingleCStore(t *testing.T, ctx context.Context, listener *ul.Listener, done chan<- error) {
 	t.Helper()
+	serveCStoreRequests(t, ctx, listener, done, []string{testSOPInstanceUID})
+}
+
+func serveCStoreRequests(t *testing.T, ctx context.Context, listener *ul.Listener, done chan<- error, sopInstanceUIDs []string) {
+	t.Helper()
 	assoc, err := listener.AcceptAssociation(ul.AcceptOptions{
 		AETitle:                   "STORESCP",
 		Context:                   ctx,
@@ -319,40 +380,42 @@ func serveSingleCStore(t *testing.T, ctx context.Context, listener *ul.Listener,
 		done <- err
 		return
 	}
-	req, err := dimse.ReceiveCStoreRequest(assoc, pc.ID)
-	if err != nil {
-		done <- err
-		return
-	}
-	if req.MessageID != 1 {
-		done <- errors.New("server received wrong C-STORE message ID")
-		return
-	}
-	if req.AffectedSOPClassUID != testCTImageStorageSOPClassUID {
-		done <- errors.New("server received wrong SOP Class UID")
-		return
-	}
-	if req.AffectedSOPInstanceUID != testSOPInstanceUID {
-		done <- errors.New("server received wrong SOP Instance UID")
-		return
-	}
-	dataset, err := dimse.ReceiveDataSet(assoc, pc.ID, transfer.ExplicitVRLittleEndian)
-	if err != nil {
-		done <- err
-		return
-	}
-	if got, ok := dataset.GetUID(core.NewTag(0x0008, 0x0018)); !ok || got != testSOPInstanceUID {
-		done <- errors.New("server received dataset with wrong SOP Instance UID")
-		return
-	}
-	if err := dimse.SendCStoreResponse(assoc, pc.ID, dimse.CStoreResponse{
-		AffectedSOPClassUID:       req.AffectedSOPClassUID,
-		MessageIDBeingRespondedTo: req.MessageID,
-		AffectedSOPInstanceUID:    req.AffectedSOPInstanceUID,
-		Status:                    dimse.StatusSuccess,
-	}); err != nil {
-		done <- err
-		return
+	for i, sopInstanceUID := range sopInstanceUIDs {
+		req, err := dimse.ReceiveCStoreRequest(assoc, pc.ID)
+		if err != nil {
+			done <- err
+			return
+		}
+		if req.MessageID != uint16(i+1) {
+			done <- errors.New("server received wrong C-STORE message ID")
+			return
+		}
+		if req.AffectedSOPClassUID != testCTImageStorageSOPClassUID {
+			done <- errors.New("server received wrong SOP Class UID")
+			return
+		}
+		if req.AffectedSOPInstanceUID != sopInstanceUID {
+			done <- errors.New("server received wrong SOP Instance UID")
+			return
+		}
+		dataset, err := dimse.ReceiveDataSet(assoc, pc.ID, transfer.ExplicitVRLittleEndian)
+		if err != nil {
+			done <- err
+			return
+		}
+		if got, ok := dataset.GetUID(core.NewTag(0x0008, 0x0018)); !ok || got != sopInstanceUID {
+			done <- errors.New("server received dataset with wrong SOP Instance UID")
+			return
+		}
+		if err := dimse.SendCStoreResponse(assoc, pc.ID, dimse.CStoreResponse{
+			AffectedSOPClassUID:       req.AffectedSOPClassUID,
+			MessageIDBeingRespondedTo: req.MessageID,
+			AffectedSOPInstanceUID:    req.AffectedSOPInstanceUID,
+			Status:                    dimse.StatusSuccess,
+		}); err != nil {
+			done <- err
+			return
+		}
 	}
 	pdu, err := assoc.ReadPDU()
 	if err != nil {

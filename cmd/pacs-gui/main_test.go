@@ -29,6 +29,7 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/query"
 	"github.com/ThalesMMS/Go-PACS/internal/receive"
 	"github.com/ThalesMMS/Go-PACS/internal/retrieve"
+	"github.com/ThalesMMS/Go-PACS/internal/send"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/object"
@@ -346,6 +347,28 @@ func TestArchiveActivityRowsShowsActiveQueryBeforeHistory(t *testing.T) {
 	}
 }
 
+func TestArchiveActivityRowsShowsActiveQueryProgressCounts(t *testing.T) {
+	state := &uiState{}
+
+	beginQueryActivity(state, "Study C-FIND 3 sources")
+	recordQueryActivityProgress(state, queryActivityProgress{
+		Attempted: 2,
+		Total:     3,
+		Matches:   14,
+		Failures:  1,
+	})
+	rows := archiveActivityRows(state)
+
+	if len(rows) != 1 {
+		t.Fatalf("rows = %#v, want active query only", rows)
+	}
+	for _, want := range []string{"Query Study C-FIND 3 sources", "2/3 src", "14 match", "1 fail"} {
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("active query progress row missing %q in %q", want, rows[0].Text)
+		}
+	}
+}
+
 func TestArchiveActivityRowsShowsActiveSendBeforeHistory(t *testing.T) {
 	state := &uiState{
 		activeSendActivityLabel: "Study C-STORE remote-a",
@@ -367,6 +390,28 @@ func TestArchiveActivityRowsShowsActiveSendBeforeHistory(t *testing.T) {
 	}
 }
 
+func TestArchiveActivityRowsShowsActiveSendProgressCounts(t *testing.T) {
+	state := &uiState{}
+
+	beginSendActivity(state, "Study C-STORE remote-a")
+	recordSendActivityProgress(state, send.Progress{
+		Attempted: 3,
+		Sent:      2,
+		Failed:    1,
+		Total:     5,
+	})
+	rows := archiveActivityRows(state)
+
+	if len(rows) != 1 {
+		t.Fatalf("rows = %#v, want active send only", rows)
+	}
+	for _, want := range []string{"Send Study C-STORE remote-a", "3/5", "sent 2", "fail 1"} {
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("active send progress row missing %q in %q", want, rows[0].Text)
+		}
+	}
+}
+
 func TestArchiveActivityRowsShowsActiveImportBeforeHistory(t *testing.T) {
 	state := &uiState{
 		activeImportActivityLabel: "folder-a",
@@ -385,6 +430,263 @@ func TestArchiveActivityRowsShowsActiveImportBeforeHistory(t *testing.T) {
 	}
 	if !rows[1].Dismissible || rows[1].OperationIndex != 0 || !strings.Contains(rows[1].Text, "send_store success") {
 		t.Fatalf("history row = %#v", rows[1])
+	}
+}
+
+func TestArchiveActivityRowsShowsActiveImportProgressCounts(t *testing.T) {
+	state := &uiState{}
+
+	beginImportActivity(state, "folder-a")
+	recordImportActivityProgress(state, archive.ImportProgress{
+		ScannedFiles: 4,
+		StoredFiles:  2,
+		Duplicates:   1,
+		InvalidFiles: 1,
+	})
+	rows := archiveActivityRows(state)
+
+	if len(rows) != 1 {
+		t.Fatalf("rows = %#v, want active import only", rows)
+	}
+	for _, want := range []string{"Import folder-a", "scan 4", "store 2", "dup 1", "invalid 1"} {
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("active import progress row missing %q in %q", want, rows[0].Text)
+		}
+	}
+}
+
+func TestArchiveActivityRowsUseCompactProgressWording(t *testing.T) {
+	state := &uiState{}
+
+	beginQueryActivity(state, "Study C-FIND 3 sources")
+	recordQueryActivityProgress(state, queryActivityProgress{Attempted: 2, Total: 3, Matches: 14, Failures: 1})
+	queryRow := archiveActivityRows(state)[0].Text
+	for _, want := range []string{"2/3 src", "14 match", "1 fail"} {
+		if !strings.Contains(queryRow, want) {
+			t.Fatalf("compact query activity row missing %q in %q", want, queryRow)
+		}
+	}
+	for _, reject := range []string{"sources,", "matches", "failed"} {
+		if strings.Contains(queryRow, reject) {
+			t.Fatalf("compact query activity row should not contain %q in %q", reject, queryRow)
+		}
+	}
+
+	clearActiveQueryActivity(state)
+	beginSendActivity(state, "Study C-STORE remote-a")
+	recordSendActivityProgress(state, send.Progress{Attempted: 3, Sent: 2, Failed: 1, Warnings: 1, Total: 5})
+	sendRow := archiveActivityRows(state)[0].Text
+	for _, want := range []string{"3/5 sent 2", "fail 1", "warn 1"} {
+		if !strings.Contains(sendRow, want) {
+			t.Fatalf("compact send activity row missing %q in %q", want, sendRow)
+		}
+	}
+
+	clearActiveSendActivity(state)
+	beginImportActivity(state, "folder-a")
+	recordImportActivityProgress(state, archive.ImportProgress{ScannedFiles: 4, StoredFiles: 2, Duplicates: 1, InvalidFiles: 1})
+	importRow := archiveActivityRows(state)[0].Text
+	for _, want := range []string{"scan 4", "store 2", "dup 1", "invalid 1"} {
+		if !strings.Contains(importRow, want) {
+			t.Fatalf("compact import activity row missing %q in %q", want, importRow)
+		}
+	}
+	for _, reject := range []string{"scanned", "stored", "duplicates"} {
+		if strings.Contains(importRow, reject) {
+			t.Fatalf("compact import activity row should not contain %q in %q", reject, importRow)
+		}
+	}
+}
+
+func TestArchiveActivityListShowsDeterminateProgressForActiveSend(t *testing.T) {
+	state := &uiState{}
+
+	beginSendActivity(state, "Study C-STORE remote-a")
+	recordSendActivityProgress(state, send.Progress{
+		Attempted: 3,
+		Sent:      2,
+		Failed:    1,
+		Total:     5,
+	})
+	list := newArchiveActivityList(widget.NewLabel(""), state)
+	item := list.CreateItem()
+
+	list.UpdateItem(0, item)
+
+	progress := findProgressBar(item)
+	if progress == nil {
+		t.Fatal("active send Activity row should render a determinate progress bar")
+	}
+	if !progress.Visible() {
+		t.Fatal("active send Activity progress bar should be visible")
+	}
+	if progress.Value != 0.6 {
+		t.Fatalf("active send Activity progress = %v, want 0.6", progress.Value)
+	}
+	if infinite := findProgressBarInfinite(item); infinite != nil && infinite.Visible() {
+		t.Fatal("active send Activity row should not show indeterminate progress")
+	}
+	if !containsCanvasRectangleColor(item, archiveOddRowColor) {
+		t.Fatal("active send Activity row should use dark row background")
+	}
+	if got := countCanvasRectanglesWithColor(item, tableColumnDividerColor); got < 2 {
+		t.Fatalf("active send Activity row dividers = %d, want right and bottom divider", got)
+	}
+}
+
+func TestArchiveActivityListShowsIndeterminateProgressForActiveImport(t *testing.T) {
+	state := &uiState{}
+
+	beginImportActivity(state, "folder-a")
+	recordImportActivityProgress(state, archive.ImportProgress{ScannedFiles: 4, StoredFiles: 2})
+	list := newArchiveActivityList(widget.NewLabel(""), state)
+	item := list.CreateItem()
+
+	list.UpdateItem(0, item)
+
+	if progress := findProgressBar(item); progress != nil && progress.Visible() {
+		t.Fatal("active import Activity row should not show determinate progress without a known total")
+	}
+	infinite := findProgressBarInfinite(item)
+	if infinite == nil {
+		t.Fatal("active import Activity row should render an indeterminate progress bar")
+	}
+	if !infinite.Visible() {
+		t.Fatal("active import Activity progress bar should be visible")
+	}
+}
+
+func TestArchiveActivityListUsesStableProgressSlots(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	beginSendActivity(state, "Study C-STORE remote-a")
+	recordSendActivityProgress(state, send.Progress{Attempted: 1, Total: 2})
+	list := newArchiveActivityList(widget.NewLabel(""), state)
+	item := list.CreateItem()
+
+	list.UpdateItem(0, item)
+
+	stack := item.(*fyne.Container)
+	box := stack.Objects[1].(*fyne.Container).Objects[0].(*fyne.Container)
+	if _, ok := box.Objects[1].(*fyne.Container); !ok {
+		t.Fatalf("activity determinate progress object = %T, want stable slot container", box.Objects[1])
+	}
+	if _, ok := box.Objects[2].(*fyne.Container); !ok {
+		t.Fatalf("activity indeterminate progress object = %T, want stable slot container", box.Objects[2])
+	}
+	if got := box.Objects[1].MinSize().Width; got < compactArchiveActivityProgressWidth {
+		t.Fatalf("activity progress slot width = %.1f, want at least %.1f", got, compactArchiveActivityProgressWidth)
+	}
+}
+
+func TestArchiveActivityRowDismissControlUsesTrailingSpacer(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{
+		operations: []operations.Summary{
+			{Kind: operations.KindImport, Status: operations.StatusSuccess},
+		},
+	}
+	list := newArchiveActivityList(widget.NewLabel(""), state)
+	item := list.CreateItem()
+
+	list.UpdateItem(0, item)
+
+	stack := item.(*fyne.Container)
+	box := stack.Objects[1].(*fyne.Container).Objects[0].(*fyne.Container)
+	header := box.Objects[0].(*fyne.Container)
+	if len(header.Objects) != 3 {
+		t.Fatalf("activity row header objects = %d, want label, spacer, dismiss button", len(header.Objects))
+	}
+	if _, ok := header.Objects[1].(*layout.Spacer); !ok {
+		t.Fatalf("activity row middle object = %T, want spacer before dismiss button", header.Objects[1])
+	}
+	dismiss, ok := header.Objects[2].(*widget.Button)
+	if !ok {
+		t.Fatalf("activity row trailing object = %T, want dismiss button", header.Objects[2])
+	}
+	if !dismiss.Visible() || dismiss.OnTapped == nil {
+		t.Fatal("activity row trailing dismiss button should remain visible and actionable for history rows")
+	}
+}
+
+func TestArchiveRailListsUseCompactRowHeights(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{
+		nodes: []nodes.Node{
+			{Name: "HOROS", Host: "127.0.0.1", Port: 4007},
+		},
+	}
+
+	albumList := newArchiveAlbumList(nil, widget.NewLabel(""), archiveTables{}, state)
+	sourceList := newArchiveSourceList(state)
+
+	tests := []struct {
+		name string
+		list *widget.List
+		rows int
+		want float32
+	}{
+		{name: "albums", list: albumList, rows: len(archiveAlbumRowsForState(state, time.Now())), want: compactArchiveRailListRowHeight},
+		{name: "sources", list: sourceList, rows: len(archiveSourceRows(state)), want: compactArchiveRailListRowHeight},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for id := 0; id < tt.rows; id++ {
+				height, ok := listItemHeight(tt.list, id)
+				if !ok {
+					t.Fatalf("%s row %d should have an explicit compact height", tt.name, id)
+				}
+				if height != tt.want {
+					t.Fatalf("%s row %d height = %.0f, want %.0f", tt.name, id, height, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveRailItemsUseCompactIconSlots(t *testing.T) {
+	album := newArchiveAlbumListItem()
+	source := newArchiveSourceListItem()
+
+	tests := []struct {
+		name string
+		slot *fyne.Container
+	}{
+		{name: "album selection", slot: album.selectionIconSlot},
+		{name: "album icon", slot: album.albumIconSlot},
+		{name: "source selection", slot: source.selectionIconSlot},
+		{name: "source icon", slot: source.sourceIconSlot},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.slot == nil {
+				t.Fatal("rail icon slot should be wired")
+			}
+			size := tt.slot.MinSize()
+			if size.Width != compactArchiveRailIconSlotSize || size.Height != compactArchiveRailIconSlotSize {
+				t.Fatalf("rail icon slot size = %.0fx%.0f, want %.0fx%.0f", size.Width, size.Height, compactArchiveRailIconSlotSize, compactArchiveRailIconSlotSize)
+			}
+		})
+	}
+}
+
+func TestArchiveActivityListUsesCompactRowHeights(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	beginSendActivity(state, "Study C-STORE remote-a")
+	recordSendActivityProgress(state, send.Progress{Attempted: 1, Total: 2})
+
+	list := newArchiveActivityList(widget.NewLabel(""), state)
+
+	for id := range archiveActivityRows(state) {
+		height, ok := listItemHeight(list, id)
+		if !ok {
+			t.Fatalf("activity row %d should have an explicit compact height", id)
+		}
+		if height != compactArchiveActivityRowHeight {
+			t.Fatalf("activity row %d height = %.0f, want %.0f", id, height, compactArchiveActivityRowHeight)
+		}
 	}
 }
 
@@ -532,7 +834,7 @@ func TestRetrieveProgressFractionAndText(t *testing.T) {
 		t.Fatalf("fraction = %v, want 0.8", got)
 	}
 	text := retrieveProgressText("remote-a", progress)
-	for _, want := range []string{"remote-a", "8/10", "failed 1", "warnings 4"} {
+	for _, want := range []string{"remote-a", "8/10", "fail 1", "warn 4"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("progress text missing %q in %q", want, text)
 		}
@@ -635,6 +937,35 @@ func TestQueryDestinationTextShowsNodeRetrieveMethodPreference(t *testing.T) {
 	}
 }
 
+func TestQueryDestinationTextSummarizesActiveSourcePriority(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{
+			LocalAETitle:    "GOPACS",
+			ReceiverAddress: "0.0.0.0:11113",
+		},
+		nodes: []nodes.Node{
+			{Name: "RADIANT"},
+			{Name: "HOROSMINI", RetrieveMethod: nodes.RetrieveMethodGet},
+			{Name: "OFFLINE", QueryDisabled: true},
+		},
+	}
+
+	text := queryDestinationText(state)
+
+	for _, want := range []string{
+		"Retrieve to: GOPACS",
+		"2 sources priority: RADIANT -> HOROSMINI",
+		"mixed retrieve methods",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("destination text missing %q in %q", want, text)
+		}
+	}
+	if strings.Contains(text, "OFFLINE") {
+		t.Fatalf("destination text included disabled source: %q", text)
+	}
+}
+
 func TestQueryDestinationTextUsesMoveDestinationOverride(t *testing.T) {
 	state := &uiState{
 		appConfig: appconfig.Config{
@@ -667,6 +998,25 @@ func TestQueryMoveDestinationOptionsIncludeLocalPreferredAndOverride(t *testing.
 
 	options := queryMoveDestinationOptions(state)
 	want := []string{"GOPACS", "GOPACS_STORE", "GOPACS_ALT"}
+
+	if strings.Join(options, "|") != strings.Join(want, "|") {
+		t.Fatalf("destination options = %#v, want %#v", options, want)
+	}
+}
+
+func TestQueryMoveDestinationOptionsIncludeActiveSourcePreferredDestinations(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{LocalAETitle: "GOPACS"},
+		nodes: []nodes.Node{
+			{Name: "RADIANT", PreferredMoveDestination: "GOPACS_STORE"},
+			{Name: "HOROSMINI", PreferredMoveDestination: "HOROS_STORE"},
+			{Name: "OFFLINE", PreferredMoveDestination: "OFF_STORE", QueryDisabled: true},
+		},
+		queryMoveDestination: "GOPACS_ALT",
+	}
+
+	options := queryMoveDestinationOptions(state)
+	want := []string{"GOPACS", "GOPACS_STORE", "HOROS_STORE", "GOPACS_ALT"}
 
 	if strings.Join(options, "|") != strings.Join(want, "|") {
 		t.Fatalf("destination options = %#v, want %#v", options, want)
@@ -902,6 +1252,74 @@ func TestQuerySelectedDetailsTextShowsTechnicalIdentifiers(t *testing.T) {
 	}
 }
 
+func TestQuerySelectedDetailsTextShowsLocalAndRetrieveState(t *testing.T) {
+	match := query.Match{
+		QueryRetrieveLevel: "SERIES",
+		StudyInstanceUID:   "1.2.study",
+		SeriesInstanceUID:  "1.2.series",
+		LocalState:         queryLocalStatePresent,
+	}
+	state := &uiState{
+		queries:          []query.Match{match},
+		selectedQueryRow: 0,
+		queryRetrieveRows: map[string]string{
+			queryRetrieveStatusKey(match): "retrieved series 1.2.series from RADIANT (C-MOVE final=0x0000 stored 42 failed 0)",
+		},
+	}
+
+	text := querySelectedDetailsText(state)
+
+	for _, want := range []string{
+		"Local State: Duplicate",
+		"Retrieve Status: retrieved series 1.2.series from RADIANT (C-MOVE final=0x0000 stored 42 failed 0)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("selected details missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func TestArchiveSelectedDetailsTextShowsTechnicalIdentifiers(t *testing.T) {
+	state := &uiState{
+		studies: []archive.Study{{
+			StudyInstanceUID: "1.2.study",
+			PatientName:      "DOE^JANE",
+		}},
+		selectedStudyRow: 0,
+		series: []archive.Series{{
+			SeriesInstanceUID: "1.2.series",
+			SeriesNumber:      "4",
+		}},
+		selectedSeriesRow: 0,
+		instances: []archive.Instance{{
+			SOPClassUID:    "1.2.840.10008.5.1.4.1.1.2",
+			SOPInstanceUID: "1.2.sop",
+			StoredPath:     "/archive/study/image.dcm",
+		}},
+		selectedInstanceRow: 0,
+	}
+
+	text := archiveSelectedDetailsText(state)
+
+	for _, want := range []string{
+		"Study UID: 1.2.study",
+		"Series UID: 1.2.series",
+		"SOP Class UID: 1.2.840.10008.5.1.4.1.1.2",
+		"SOP Instance UID: 1.2.sop",
+		"Stored Path: /archive/study/image.dcm",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("archive selected details missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func TestArchiveSelectedDetailsTextHandlesNilState(t *testing.T) {
+	if got := archiveSelectedDetailsText(nil); got != "No archive row selected" {
+		t.Fatalf("nil selected details = %q, want empty-selection placeholder", got)
+	}
+}
+
 func TestRefreshQueryResultSummaryUpdatesLabel(t *testing.T) {
 	label := widget.NewLabel("")
 	state := &uiState{
@@ -933,7 +1351,7 @@ func TestQueryModalityCriteriaTextFallsBackToManualEntry(t *testing.T) {
 	}
 }
 
-func TestQueryModalityColumnsMatchTwoColumnGrid(t *testing.T) {
+func TestQueryModalityColumnsMatchReferenceTwoColumnGrid(t *testing.T) {
 	columns := queryModalityColumns()
 	if len(columns) != 2 {
 		t.Fatalf("modality columns = %d, want 2", len(columns))
@@ -1021,7 +1439,7 @@ func TestQueryDatePresetOptionsIncludeFixedLastHourShortcuts(t *testing.T) {
 	}
 }
 
-func TestQueryDatePresetColumnsMatchThreeColumnRadioGrid(t *testing.T) {
+func TestQueryDatePresetColumnsMatchReferenceRadioGrid(t *testing.T) {
 	columns := queryDatePresetColumns()
 	if len(columns) != 3 {
 		t.Fatalf("preset columns = %d, want 3", len(columns))
@@ -1170,6 +1588,85 @@ func TestQueryDateTimePresetRangeWithOnDateRejectsEmptyDate(t *testing.T) {
 	}
 }
 
+func TestStepDICOMDate(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		delta int
+		want  string
+	}{
+		{name: "next day", value: "20260604", delta: 1, want: "20260605"},
+		{name: "previous day", value: "20260604", delta: -1, want: "20260603"},
+		{name: "month rollover", value: "20260228", delta: 1, want: "20260301"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := stepDICOMDate(tt.value, tt.delta)
+			if !ok {
+				t.Fatal("stepDICOMDate should accept a valid DICOM DA")
+			}
+			if got != tt.want {
+				t.Fatalf("stepDICOMDate(%q, %d) = %q, want %q", tt.value, tt.delta, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStepDICOMDateRejectsInvalidDate(t *testing.T) {
+	if got, ok := stepDICOMDate("2026-06-04", 1); ok || got != "" {
+		t.Fatalf("invalid DICOM DA step = %q/%v, want rejected", got, ok)
+	}
+}
+
+func TestStepPositiveInteger(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		delta int
+		want  string
+	}{
+		{name: "increment", value: "6", delta: 1, want: "7"},
+		{name: "decrement", value: "6", delta: -1, want: "5"},
+		{name: "minimum", value: "1", delta: -1, want: "1"},
+		{name: "invalid starts at minimum", value: "abc", delta: 1, want: "1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stepPositiveInteger(tt.value, tt.delta, 1); got != tt.want {
+				t.Fatalf("stepPositiveInteger(%q, %d) = %q, want %q", tt.value, tt.delta, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQueryManualDateInputsExposeStepperButtons(t *testing.T) {
+	onDate := widget.NewEntry()
+	onDate.SetText("20260604")
+	lastHours := widget.NewEntry()
+	lastHours.SetText("6")
+	applied := 0
+	controls := newQueryManualDateInputs(onDate, lastHours, func() {
+		applied++
+	})
+	removeButtons := findButtonsWithIcon(controls, theme.ContentRemoveIcon())
+	addButtons := findButtonsWithIcon(controls, theme.ContentAddIcon())
+	if len(removeButtons) != 2 || len(addButtons) != 2 {
+		t.Fatalf("manual date controls should expose two decrement and two increment buttons, got %d/%d", len(removeButtons), len(addButtons))
+	}
+
+	addButtons[0].OnTapped()
+	if onDate.Text != "20260605" {
+		t.Fatalf("On Date after increment = %q, want 20260605", onDate.Text)
+	}
+	removeButtons[1].OnTapped()
+	if lastHours.Text != "5" {
+		t.Fatalf("Last Hours after decrement = %q, want 5", lastHours.Text)
+	}
+	if applied != 2 {
+		t.Fatalf("apply callback count = %d, want 2", applied)
+	}
+}
+
 func TestQueryDateTimePresetRangeWithLastHours(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -1273,7 +1770,7 @@ func TestQueryDateTimePresetRangeWithLastHoursRejectsInvalidHours(t *testing.T) 
 	}
 }
 
-func TestQueryActionButtonLabelsMatchPrimaryActionBar(t *testing.T) {
+func TestQueryActionButtonLabelsMatchWorkbenchActionBar(t *testing.T) {
 	labels := queryActionButtonLabels()
 	want := []string{"Query", "Query Patient", "Retrieve", "Verify"}
 
@@ -1303,7 +1800,61 @@ func TestQueryTabExposesDedicatedWorkspaceTitle(t *testing.T) {
 	}
 }
 
-func TestQueryTabExposesQuickSearchFieldStrip(t *testing.T) {
+func TestQueryWorkspaceTitleUsesWindowHeaderChrome(t *testing.T) {
+	title := workbenchWindowTitle(queryWorkspaceTitle)
+
+	label := findLabelContaining(title, queryWorkspaceTitle)
+	if label == nil {
+		t.Fatal("Query workspace title chrome should include the title label")
+	}
+	if !label.TextStyle.Bold || label.Alignment != fyne.TextAlignCenter {
+		t.Fatalf("Query workspace title style = %#v alignment = %v, want bold centered", label.TextStyle, label.Alignment)
+	}
+	if !containsCanvasRectangleColor(title, archiveHeaderRowColor) {
+		t.Fatal("Query workspace title should use the workstation header background")
+	}
+	if got := countCanvasRectanglesWithColor(title, tableColumnDividerColor); got < 1 {
+		t.Fatalf("Query workspace title divider rectangles = %d, want bottom divider", got)
+	}
+}
+
+func TestWorkbenchWindowTitleLabelPreservesMutableTitleInHeaderChrome(t *testing.T) {
+	label := workbenchCenteredTitle("DICOM Auto Query/Retrieve : Default Instance")
+
+	title := workbenchWindowTitleLabel(label)
+	label.SetText("DICOM Auto Query/Retrieve : Night CT")
+
+	if findLabelContaining(title, "Night CT") != label {
+		t.Fatal("window title chrome should preserve the mutable title label")
+	}
+	if !label.TextStyle.Bold || label.Alignment != fyne.TextAlignCenter {
+		t.Fatalf("window title label style = %#v alignment = %v, want bold centered", label.TextStyle, label.Alignment)
+	}
+	if !containsCanvasRectangleColor(title, archiveHeaderRowColor) {
+		t.Fatal("window title label chrome should use the workstation header background")
+	}
+	if got := countCanvasRectanglesWithColor(title, tableColumnDividerColor); got < 1 {
+		t.Fatalf("window title label divider rectangles = %d, want bottom divider", got)
+	}
+}
+
+func TestAutoQueryTitleAndProfileControlsShareHeaderChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectHeaderChromeWithTextAndSelect(
+		tab,
+		"DICOM Auto Query/Retrieve : Default Instance",
+		autoQueryProfileDefault,
+	) {
+		t.Fatal("Auto Q/R title and profile controls should share one dark header bar")
+	}
+}
+
+func TestQueryTabExposesReferenceQuickSearchFieldStrip(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
 	status := widget.NewLabel("")
@@ -1325,6 +1876,86 @@ func TestQueryTabExposesQuickSearchFieldStrip(t *testing.T) {
 	}
 }
 
+func TestQueryQuickSearchFieldStripUsesHorizontalScroll(t *testing.T) {
+	fynetest.NewApp()
+	selectWidget := widget.NewSelect(queryQuickSearchOptions, nil)
+	selectWidget.SetSelected(queryQuickSearchPatientName)
+
+	strip := newQueryQuickSearchFieldStrip(selectWidget, widget.NewEntry())
+
+	if findHorizontalScroll(strip) == nil {
+		t.Fatal("Query quick-search field strip should be horizontally scrollable to preserve all reference segments")
+	}
+	if findButtonWithText(strip, queryQuickSearchCustomDICOMField) == nil {
+		t.Fatalf("scrollable Query quick-search strip should still expose %q", queryQuickSearchCustomDICOMField)
+	}
+}
+
+func TestQueryQuickSearchFieldStripUsesSegmentedWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	selectWidget := widget.NewSelect(queryQuickSearchOptions, nil)
+	selectWidget.SetSelected(queryQuickSearchPatientName)
+
+	strip := newQueryQuickSearchFieldStrip(selectWidget, widget.NewEntry())
+	scroll := findHorizontalScroll(strip)
+	if scroll == nil {
+		t.Fatal("Query quick-search field strip should be horizontally scrollable")
+	}
+	if !containsCanvasRectangleColor(scroll.Content, archiveHeaderRowColor) {
+		t.Fatal("Query quick-search field strip should use the workstation header background")
+	}
+	if got := countCanvasRectanglesWithColor(scroll.Content, tableColumnDividerColor); got < len(queryQuickSearchOptions) {
+		t.Fatalf("Query quick-search strip divider rectangles = %d, want segment dividers plus row divider", got)
+	}
+}
+
+func TestQueryQuickSearchFieldStripUsesStableSegmentSlots(t *testing.T) {
+	fynetest.NewApp()
+	selectWidget := widget.NewSelect(queryQuickSearchOptions, nil)
+	selectWidget.SetSelected(queryQuickSearchPatientName)
+
+	strip := newQueryQuickSearchFieldStrip(selectWidget, widget.NewEntry())
+	scroll := findHorizontalScroll(strip)
+	if scroll == nil {
+		t.Fatal("Query quick-search field strip should be horizontally scrollable")
+	}
+	stack, ok := scroll.Content.(*fyne.Container)
+	if !ok || len(stack.Objects) < 2 {
+		t.Fatal("Query quick-search strip should wrap segments in workstation chrome")
+	}
+	row, ok := stack.Objects[1].(*fyne.Container)
+	if !ok || len(row.Objects) != len(queryQuickSearchOptions) {
+		t.Fatalf("Query quick-search strip segment count = %d, want %d", len(row.Objects), len(queryQuickSearchOptions))
+	}
+	if got := row.Objects[0].MinSize().Width; got < 112 {
+		t.Fatalf("short query quick-search segment width = %.1f, want at least 112", got)
+	}
+}
+
+func TestQueryQuickSearchFieldStripUpdatesPlaceholderFromSelectedSegment(t *testing.T) {
+	fynetest.NewApp()
+	selectWidget := widget.NewSelect(queryQuickSearchOptions, nil)
+	selectWidget.SetSelected(queryQuickSearchPatientName)
+	entry := widget.NewEntry()
+
+	strip := newQueryQuickSearchFieldStrip(selectWidget, entry)
+
+	if entry.PlaceHolder != "Patient Name" {
+		t.Fatalf("initial query search placeholder = %q, want Patient Name", entry.PlaceHolder)
+	}
+	patientIDButton := findButtonWithText(strip, queryQuickSearchPatientID)
+	if patientIDButton == nil || patientIDButton.OnTapped == nil {
+		t.Fatalf("Query quick-search strip should expose actionable %q field", queryQuickSearchPatientID)
+	}
+	patientIDButton.OnTapped()
+	if selectWidget.Selected != queryQuickSearchPatientID {
+		t.Fatalf("selected query search field = %q, want %q", selectWidget.Selected, queryQuickSearchPatientID)
+	}
+	if entry.PlaceHolder != queryQuickSearchPatientID {
+		t.Fatalf("updated query search placeholder = %q, want %q", entry.PlaceHolder, queryQuickSearchPatientID)
+	}
+}
+
 func TestQueryTabExposesComposedSearchBarSubmitButton(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
@@ -1332,9 +1963,9 @@ func TestQueryTabExposesComposedSearchBarSubmitButton(t *testing.T) {
 
 	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
 
-	searchEntry := findEntryWithPlaceholder(tab, "Search")
+	searchEntry := findEntryWithPlaceholder(tab, "Patient Name")
 	if searchEntry == nil {
-		t.Fatal("Query tab should expose the main composed search entry")
+		t.Fatal("Query tab should expose the main workstation search entry")
 	}
 	searchButton := findButtonWithIcon(tab, theme.SearchIcon())
 	if searchButton == nil {
@@ -1345,6 +1976,18 @@ func TestQueryTabExposesComposedSearchBarSubmitButton(t *testing.T) {
 	}
 	if searchButton.OnTapped == nil {
 		t.Fatal("Query search bar button should submit the current Study query")
+	}
+}
+
+func TestQuerySearchBarUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findEntryPlaceholderInWorkbenchChrome(tab, "Patient Name") {
+		t.Fatal("Query search bar should sit in a dark workbench strip")
 	}
 }
 
@@ -1360,7 +2003,7 @@ func TestQueryTabMovesTechnicalCriteriaIntoCollapsedAdvancedCriteria(t *testing.
 		t.Fatal("Query tab should keep raw DICOM fields in an Advanced Criteria accordion")
 	}
 	if item.Open {
-		t.Fatal("Query Advanced Criteria should default collapsed to keep the primary Q/R surface dense")
+		t.Fatal("Query Advanced Criteria should default collapsed to keep the workstation Q/R surface dense")
 	}
 	for _, placeholder := range []string{"1.2.840...", "1.2.840.10008.5.1.4.1.1.2", "ACC123"} {
 		if findEntryWithPlaceholder(item.Detail, placeholder) == nil {
@@ -1394,6 +2037,76 @@ func TestQueryTabExposesCollapsedSelectedResultDetails(t *testing.T) {
 	}
 }
 
+func TestQuerySelectedDetailsPanelCopiesSelectedStudyUID(t *testing.T) {
+	app := fynetest.NewApp()
+	state := &uiState{
+		queries: []query.Match{{
+			StudyInstanceUID:  "1.2.study",
+			SeriesInstanceUID: "1.2.series",
+			SOPClassUID:       "1.2.class",
+			SOPInstanceUID:    "1.2.sop",
+		}},
+		selectedQueryRow: 0,
+	}
+	status := widget.NewLabel("")
+	panel := newQuerySelectedDetailsPanel(state, status)
+
+	button := findButtonWithText(panel, "Copy Study UID")
+	if button == nil || button.OnTapped == nil {
+		t.Fatal("Selected Result Details should expose Copy Study UID")
+	}
+	button.OnTapped()
+
+	if got := app.Clipboard().Content(); got != "1.2.study" {
+		t.Fatalf("clipboard = %q, want study UID", got)
+	}
+	if status.Text != "Copied Study UID" {
+		t.Fatalf("status = %q, want copy confirmation", status.Text)
+	}
+}
+
+func TestArchiveSelectedDetailsPanelCopiesSelectedStudyUID(t *testing.T) {
+	app := fynetest.NewApp()
+	state := &uiState{
+		studies:          []archive.Study{{StudyInstanceUID: "1.2.study"}},
+		selectedStudyRow: 0,
+	}
+	status := widget.NewLabel("")
+	panel := newArchiveSelectedDetailsPanel(state, status)
+
+	button := findButtonWithText(panel, "Copy Study UID")
+	if button == nil || button.OnTapped == nil {
+		t.Fatal("Selected Archive Details should expose Copy Study UID")
+	}
+	button.OnTapped()
+
+	if got := app.Clipboard().Content(); got != "1.2.study" {
+		t.Fatalf("clipboard = %q, want study UID", got)
+	}
+	if status.Text != "Copied Study UID" {
+		t.Fatalf("status = %q, want copy confirmation", status.Text)
+	}
+}
+
+func TestArchiveWorkbenchExposesCollapsedSelectedArchiveDetails(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	workbench := newArchiveWorkbench(nil, status, archiveTables{}, canvas.NewRectangle(color.Transparent), canvas.NewRectangle(color.Transparent), state)
+
+	item := findAccordionItem(workbench, "Selected Archive Details")
+	if item == nil {
+		t.Fatal("Archive workbench should expose a collapsed selected-archive technical details affordance")
+	}
+	if item.Open {
+		t.Fatal("Selected Archive Details should default collapsed to keep technical identifiers out of the default table")
+	}
+	if findLabelContaining(item.Detail, "No archive row selected") == nil {
+		t.Fatal("Selected Archive Details should show an empty-selection placeholder")
+	}
+}
+
 func TestQueryTabPlacesDateAndModalityPanelsSideBySide(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
@@ -1402,7 +2115,39 @@ func TestQueryTabPlacesDateAndModalityPanelsSideBySide(t *testing.T) {
 	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
 
 	if !findSideBySideSectionTitles(tab, "Date", "Modalities") {
-		t.Fatal("Query tab should place Date and Modalities panels side by side in the primary Q/R controls")
+		t.Fatal("Query tab should place Date and Modalities panels side by side in the reference Q/R layout")
+	}
+}
+
+func TestQueryDateModalityPanelsUseWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+
+	panel := newQueryDateModalityPanel(widget.NewLabel("date body"), widget.NewLabel("modality body"))
+
+	if !findSideBySideSectionTitles(panel, "Date", "Modalities") {
+		t.Fatal("Query Date and Modalities chrome should preserve side-by-side section titles")
+	}
+	if got := countCanvasRectanglesWithColor(panel, archiveHeaderRowColor); got < 2 {
+		t.Fatalf("Query Date/Modalities header backgrounds = %d, want one per panel", got)
+	}
+	if got := countCanvasRectanglesWithColor(panel, tableColumnDividerColor); got < 4 {
+		t.Fatalf("Query Date/Modalities divider rectangles = %d, want panel borders and header dividers", got)
+	}
+}
+
+func TestQueryDateModalityPanelsUseStableFilterWidths(t *testing.T) {
+	fynetest.NewApp()
+
+	panel := newQueryDateModalityPanel(widget.NewLabel("date body"), widget.NewLabel("modality body"))
+	row, ok := panel.(*fyne.Container)
+	if !ok || len(row.Objects) != 2 {
+		t.Fatal("Query Date/Modalities panel should keep two stable filter slots")
+	}
+	if got := row.Objects[0].MinSize().Width; got < queryDateFilterPanelMinWidth {
+		t.Fatalf("Query Date panel width = %.1f, want at least %.1f", got, queryDateFilterPanelMinWidth)
+	}
+	if got := row.Objects[1].MinSize().Width; got < queryModalityFilterPanelMinWidth {
+		t.Fatalf("Query Modalities panel width = %.1f, want at least %.1f", got, queryModalityFilterPanelMinWidth)
 	}
 }
 
@@ -1428,6 +2173,37 @@ func TestQueryTabExposesKeepOnTopFooterCheckbox(t *testing.T) {
 	keepOnTop.SetChecked(false)
 	if state.queryKeepOnTop {
 		t.Fatal("Query keep-on-top state did not update when unchecked")
+	}
+}
+
+func TestQueryFooterUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTextsAndWorkbenchChromeExcluding(
+		tab,
+		[]string{queryKeepOnTopLabel, "0 studies found"},
+		[]string{queryActionLabelQuery, "DICOM Nodes:"},
+	) {
+		t.Fatal("Query footer should place keep-on-top and result summary in a dark workbench strip")
+	}
+}
+
+func TestQueryFooterSummaryUsesTrailingAlignment(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	_ = newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if state.queryResultSummaryLabel == nil {
+		t.Fatal("Query tab should retain its result summary label")
+	}
+	if state.queryResultSummaryLabel.Alignment != fyne.TextAlignTrailing {
+		t.Fatalf("Query footer summary alignment = %v, want trailing", state.queryResultSummaryLabel.Alignment)
 	}
 }
 
@@ -1458,10 +2234,75 @@ func TestQueryTabExposesDicomNodesPriorityInstruction(t *testing.T) {
 	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
 
 	if findLabelContaining(tab, "DICOM Nodes:") == nil {
-		t.Fatal("Query tab should label its source list as DICOM Nodes")
+		t.Fatal("Query tab should label its source list as DICOM Nodes in the source panel header")
 	}
 	if findLabelContaining(tab, "Drag sources into the priority order for retrieving") == nil {
 		t.Fatal("Query tab should expose the source-priority instruction")
+	}
+}
+
+func TestQueryTabExposesSourceColumnHeader(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTexts(tab, "Name", "Address", "AETitle") {
+		t.Fatal("Query source panel should expose Name, Address, and AETitle column headers")
+	}
+}
+
+func TestQueryTabUsesLowImportanceSourcePriorityButtons(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	for _, tt := range []struct {
+		name string
+		icon fyne.Resource
+	}{
+		{name: "up", icon: theme.MoveUpIcon()},
+		{name: "down", icon: theme.MoveDownIcon()},
+	} {
+		button := findButtonWithIconAndText(tab, tt.icon, "")
+		if button == nil {
+			t.Fatalf("Query source %s priority button should be icon-only", tt.name)
+		}
+		if button.Importance != widget.LowImportance {
+			t.Fatalf("Query source %s priority importance = %v, want LowImportance", tt.name, button.Importance)
+		}
+	}
+}
+
+func TestQuerySourceColumnHeaderUsesWorkbenchHeaderChrome(t *testing.T) {
+	header := newQuerySourceColumnHeader()
+
+	if !containsCanvasRectangleColor(header, archiveHeaderRowColor) {
+		t.Fatal("Query source column header should use the workstation table header background")
+	}
+	if countCanvasRectangles(header) < 3 {
+		t.Fatal("Query source column header should include background plus row and column dividers")
+	}
+}
+
+func TestQuerySourceColumnHeaderUsesInternalColumnDividers(t *testing.T) {
+	header := newQuerySourceColumnHeader()
+
+	if got := countCanvasRectanglesWithColor(header, tableColumnDividerColor); got < 4 {
+		t.Fatalf("source header divider rectangles = %d, want outer row/column plus internal Name/Address/AETitle dividers", got)
+	}
+}
+
+func TestDicomNodesSourcePanelUsesWorkstationWidth(t *testing.T) {
+	fynetest.NewApp()
+
+	panel := newDicomNodesSourcePanel(widget.NewLabel("DICOM Nodes:"), widget.NewLabel("body"))
+
+	if panel.Size().Width < 360 {
+		t.Fatalf("DICOM Nodes source panel width = %.0f, want at least 360 for Name/Address/AETitle columns", panel.Size().Width)
 	}
 }
 
@@ -1517,10 +2358,137 @@ func TestQueryTabUsesIconOnlyRefreshButton(t *testing.T) {
 
 	refreshButton := findButtonWithIconAndText(tab, theme.ViewRefreshIcon(), "")
 	if refreshButton == nil {
-		t.Fatal("Query refresh action should be an icon-only refresh button")
+		t.Fatal("Query refresh action should be a reference-style icon-only refresh button")
 	}
 	if refreshButton.OnTapped == nil {
 		t.Fatal("Query refresh action should remain actionable")
+	}
+}
+
+func TestQueryActionStripGroupsDestinationWithPrimaryActions(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTextsExcluding(
+		tab,
+		[]string{"Retrieve to", queryActionLabelQuery, queryActionLabelPatient, queryActionLabelRetrieve, queryActionLabelVerify},
+		[]string{"Refresh"},
+	) {
+		t.Fatal("Query action strip should group Retrieve to with Query, Query Patient, Retrieve, and Verify in the primary Q/R action cluster")
+	}
+}
+
+func TestQueryActionStripUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTextsAndWorkbenchChromeExcluding(
+		tab,
+		[]string{"Retrieve to", queryActionLabelQuery, queryActionLabelPatient, queryActionLabelRetrieve, queryActionLabelVerify},
+		[]string{"Refresh"},
+	) {
+		t.Fatal("Query action strip should use dark workbench chrome without merging the Refresh controls into the primary action cluster")
+	}
+}
+
+func TestQueryPrimaryActionStripUsesStableButtonSlots(t *testing.T) {
+	fynetest.NewApp()
+	queryButton := widget.NewButtonWithIcon(queryActionLabelQuery, theme.MediaPlayIcon(), nil)
+
+	strip := newQueryPrimaryActionStrip(queryButton)
+	stack, ok := strip.(*fyne.Container)
+	if !ok || len(stack.Objects) < 2 {
+		t.Fatal("Query primary action strip should use workstation stack chrome")
+	}
+	content, ok := stack.Objects[1].(*fyne.Container)
+	if !ok || len(content.Objects) == 0 {
+		t.Fatal("Query primary action strip should wrap row content")
+	}
+	row, ok := content.Objects[0].(*fyne.Container)
+	if !ok || len(row.Objects) == 0 {
+		t.Fatal("Query primary action strip should keep action buttons in a row")
+	}
+	if got := row.Objects[0].MinSize().Width; got < 116 {
+		t.Fatalf("query primary action button slot width = %.1f, want at least 116", got)
+	}
+}
+
+func TestQueryRefreshClusterUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTextsAndWorkbenchChromeExcluding(
+		tab,
+		[]string{"Refresh", "Auto-Retrieve", autoQuerySettingsButtonText},
+		[]string{queryActionLabelQuery, queryActionLabelPatient},
+	) {
+		t.Fatal("Query refresh and Auto-Retrieve controls should sit in a dark workbench strip separate from primary actions")
+	}
+}
+
+func TestQueryRefreshClusterUsesStableCadenceSlot(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findSelectSlotWithMinWidth(tab, queryRefreshModeDont, queryRefreshCadenceSlotWidth) {
+		t.Fatal("Query refresh cadence selector should sit in a stable-width slot")
+	}
+}
+
+func TestQueryRefreshClusterUsesStableCountdownSlot(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findLabelSlotWithPrefixAndMinWidth(tab, "Next:", queryRefreshCountdownSlotWidth) {
+		t.Fatal("Query refresh countdown label should sit in a stable-width slot")
+	}
+}
+
+func TestQueryRefreshClusterUsesStableAutoRetrieveSlots(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findCheckSlotWithTextAndMinWidth(tab, queryAutoRetrieveLabel, queryAutoRetrieveSlotWidth) {
+		t.Fatal("Query Auto-Retrieve checkbox should sit in a stable-width slot")
+	}
+	if !findButtonSlotWithTextAndMinWidth(tab, autoQuerySettingsButtonText, queryAutoRetrieveSettingsSlotWidth) {
+		t.Fatal("Query Auto-Retrieve Settings button should sit in a stable-width slot")
+	}
+}
+
+func TestQueryPrimaryActionButtonsUseCompactImportance(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	for _, label := range queryActionButtonLabels() {
+		button := findButtonWithText(tab, label)
+		if button == nil {
+			t.Fatalf("Query tab should expose %q action", label)
+		}
+		if button.Importance != widget.LowImportance {
+			t.Fatalf("Query action %q importance = %v, want LowImportance", label, button.Importance)
+		}
 	}
 }
 
@@ -1565,12 +2533,150 @@ func TestMainToolbarButtonGroupsSeparateOperationalClusters(t *testing.T) {
 	}
 }
 
-func TestMainToolbarDisabledLabelsExposeUnavailableActions(t *testing.T) {
+func TestMainToolbarDisabledLabelsExposeUnavailableParityActions(t *testing.T) {
 	labels := mainToolbarDisabledLabels()
 	want := []string{"Anonymize"}
 
 	if strings.Join(labels, "|") != strings.Join(want, "|") {
 		t.Fatalf("disabled toolbar labels = %q, want %q", strings.Join(labels, "|"), strings.Join(want, "|"))
+	}
+}
+
+func TestGroupedToolbarActionsUseWorkbenchChrome(t *testing.T) {
+	buttons := map[string]fyne.CanvasObject{}
+	for _, label := range mainToolbarButtonLabels() {
+		buttons[label] = mainToolbarAction(label, theme.ContentAddIcon(), nil)
+	}
+
+	actions := groupedToolbarActions(buttons)
+
+	if findLabelContaining(actions, toolbarLabelQuery) == nil || findLabelContaining(actions, toolbarLabelSettings) == nil {
+		t.Fatal("grouped toolbar actions should preserve toolbar labels")
+	}
+	if !containsCanvasRectangleColor(actions, archiveHeaderRowColor) {
+		t.Fatal("grouped toolbar actions should use dark workbench chrome")
+	}
+	if got := countCanvasRectanglesWithColor(actions, tableColumnDividerColor); got < 2 {
+		t.Fatalf("toolbar action divider rectangles = %d, want chrome column and row dividers", got)
+	}
+}
+
+func TestGroupedToolbarActionsUseStableGroupSeparatorSlots(t *testing.T) {
+	buttons := map[string]fyne.CanvasObject{}
+	for _, label := range mainToolbarButtonLabels() {
+		buttons[label] = mainToolbarAction(label, theme.ContentAddIcon(), nil)
+	}
+
+	actions := groupedToolbarActions(buttons)
+
+	want := len(mainToolbarButtonGroups()) - 1
+	if got := countToolbarGroupSeparatorSlots(actions); got != want {
+		t.Fatalf("toolbar group separator slots = %d, want %d", got, want)
+	}
+}
+
+func countToolbarGroupSeparatorSlots(obj fyne.CanvasObject) int {
+	const expectedToolbarGroupSeparatorSlotWidth float32 = 12
+	containerObj, ok := obj.(*fyne.Container)
+	if !ok {
+		return 0
+	}
+	count := 0
+	if len(containerObj.Objects) == 1 {
+		if _, ok := containerObj.Objects[0].(*widget.Separator); ok && containerObj.MinSize().Width >= expectedToolbarGroupSeparatorSlotWidth {
+			count++
+		}
+	}
+	for _, child := range containerObj.Objects {
+		count += countToolbarGroupSeparatorSlots(child)
+	}
+	return count
+}
+
+func TestMainToolbarActionUsesVerticalIconLabel(t *testing.T) {
+	tapped := false
+	action := mainToolbarAction("Open", theme.FolderOpenIcon(), func() {
+		tapped = true
+	})
+	if len(action.Objects) != 2 {
+		t.Fatalf("toolbar action object count = %d, want button plus label", len(action.Objects))
+	}
+	iconSlot, ok := action.Objects[0].(*fyne.Container)
+	if !ok {
+		t.Fatalf("toolbar action first object = %T, want icon slot container", action.Objects[0])
+	}
+	captionSlot, ok := action.Objects[1].(*fyne.Container)
+	if !ok {
+		t.Fatalf("toolbar action second object = %T, want caption slot container", action.Objects[1])
+	}
+	button := findButtonWithIconAndText(iconSlot, theme.FolderOpenIcon(), "")
+	if button == nil {
+		t.Fatal("toolbar action icon slot should contain the icon-only button")
+	}
+	label := findLabelContaining(captionSlot, "Open")
+	if label == nil {
+		t.Fatal("toolbar action caption slot should contain the action label")
+	}
+
+	if label.Text != "Open" {
+		t.Fatalf("toolbar action label = %q, want Open", label.Text)
+	}
+	if label.Alignment != fyne.TextAlignCenter {
+		t.Fatalf("toolbar action label alignment = %v, want center", label.Alignment)
+	}
+	if button.Text != "" {
+		t.Fatalf("toolbar action button text = %q, want icon-only", button.Text)
+	}
+	if button.Icon == nil {
+		t.Fatal("toolbar action button icon is nil")
+	}
+	button.OnTapped()
+	if !tapped {
+		t.Fatal("toolbar action should preserve the tapped callback")
+	}
+}
+
+func TestMainToolbarActionUsesStableIconSlot(t *testing.T) {
+	action := mainToolbarAction("Open", theme.FolderOpenIcon(), nil)
+
+	slot, ok := action.Objects[0].(*fyne.Container)
+	if !ok {
+		t.Fatalf("toolbar action icon object = %T, want stable icon slot container", action.Objects[0])
+	}
+	size := slot.MinSize()
+	if size.Width != mainToolbarActionIconSlotSize || size.Height != mainToolbarActionIconSlotSize {
+		t.Fatalf("toolbar action icon slot size = %.0fx%.0f, want %.0fx%.0f", size.Width, size.Height, mainToolbarActionIconSlotSize, mainToolbarActionIconSlotSize)
+	}
+	if findButtonWithIconAndText(slot, theme.FolderOpenIcon(), "") == nil {
+		t.Fatal("toolbar action icon slot should preserve the icon-only button")
+	}
+}
+
+func TestMainToolbarActionUsesStableCaptionSlot(t *testing.T) {
+	action := mainToolbarAction("Send Series", theme.UploadIcon(), nil)
+
+	slot, ok := action.Objects[1].(*fyne.Container)
+	if !ok {
+		t.Fatalf("toolbar action caption object = %T, want stable caption slot container", action.Objects[1])
+	}
+	size := slot.MinSize()
+	if size.Width != mainToolbarActionCaptionSlotWidth {
+		t.Fatalf("toolbar action caption slot width = %.0f, want %.0f", size.Width, mainToolbarActionCaptionSlotWidth)
+	}
+	label := findLabelContaining(slot, "Send Series")
+	if label == nil {
+		t.Fatal("toolbar action caption slot should preserve the action label")
+	}
+	if label.Alignment != fyne.TextAlignCenter {
+		t.Fatalf("toolbar action caption alignment = %v, want center", label.Alignment)
+	}
+}
+
+func TestMainToolbarActionUsesStableActionWidth(t *testing.T) {
+	action := mainToolbarAction("Meta-Data", theme.SearchIcon(), nil)
+
+	if got := action.MinSize().Width; got < mainToolbarActionSlotWidth {
+		t.Fatalf("toolbar action width = %.0f, want at least %.0f", got, mainToolbarActionSlotWidth)
 	}
 }
 
@@ -1588,6 +2694,54 @@ func TestSelectAppTabByTextSelectsMatchingTab(t *testing.T) {
 	}
 	if selectAppTabByText(tabs, "Missing") {
 		t.Fatal("selectAppTabByText should reject unknown tab")
+	}
+}
+
+func TestOpenMetadataInspectorInspectsSelectedArchiveImage(t *testing.T) {
+	tabs := container.NewAppTabs(
+		container.NewTabItem("Archive", widget.NewLabel("archive")),
+		container.NewTabItem("Inspector", widget.NewLabel("inspector")),
+	)
+	state := &uiState{
+		instances:           []archive.Instance{{StoredPath: "/archive/image.dcm", SOPInstanceUID: "1.2.sop"}},
+		selectedInstanceRow: 0,
+	}
+	status := widget.NewLabel("")
+	inspected := false
+
+	openMetadataInspector(tabs, status, state, func() {
+		inspected = true
+	})
+
+	if tabs.Selected() == nil || tabs.Selected().Text != "Inspector" {
+		t.Fatalf("selected tab = %#v, want Inspector", tabs.Selected())
+	}
+	if !inspected {
+		t.Fatal("Meta-Data should inspect the selected archive image when one is selected")
+	}
+}
+
+func TestOpenMetadataInspectorWithoutSelectedImageOnlyShowsInspector(t *testing.T) {
+	tabs := container.NewAppTabs(
+		container.NewTabItem("Archive", widget.NewLabel("archive")),
+		container.NewTabItem("Inspector", widget.NewLabel("inspector")),
+	)
+	state := &uiState{selectedInstanceRow: -1}
+	status := widget.NewLabel("")
+	inspected := false
+
+	openMetadataInspector(tabs, status, state, func() {
+		inspected = true
+	})
+
+	if tabs.Selected() == nil || tabs.Selected().Text != "Inspector" {
+		t.Fatalf("selected tab = %#v, want Inspector", tabs.Selected())
+	}
+	if inspected {
+		t.Fatal("Meta-Data should not inspect when no archive image is selected")
+	}
+	if status.Text != "Showing metadata inspector" {
+		t.Fatalf("status = %q, want Showing metadata inspector", status.Text)
 	}
 }
 
@@ -1617,7 +2771,7 @@ func TestQueryRefreshControlsMatchManualMode(t *testing.T) {
 	if queryRefreshButtonLabel != "Refresh" {
 		t.Fatalf("refresh button label = %q, want Refresh", queryRefreshButtonLabel)
 	}
-	if strings.Join(queryRefreshModeOptions, "|") != "Don't refresh" {
+	if strings.Join(queryRefreshModeOptions, "|") != "Don't refresh|Refresh every 30 min" {
 		t.Fatalf("refresh mode options = %q", strings.Join(queryRefreshModeOptions, "|"))
 	}
 }
@@ -1690,7 +2844,65 @@ func TestAutoQueryTabExposesProfileCadenceAndResultShell(t *testing.T) {
 	}
 }
 
-func TestAutoQueryTabExposesWindowStyleTitle(t *testing.T) {
+func TestAutoQueryFooterUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTextsAndWorkbenchChromeExcluding(
+		tab,
+		[]string{"0 studies found"},
+		[]string{"DICOM Nodes:", queryActionLabelQuery},
+	) {
+		t.Fatal("Auto Q/R footer should place the result summary in a dark workbench strip")
+	}
+}
+
+func TestAutoQueryRefreshClusterUsesStableCountdownSlot(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findLabelSlotWithPrefixAndMinWidth(tab, "Next:", queryRefreshCountdownSlotWidth) {
+		t.Fatal("Auto Q/R refresh countdown label should sit in a stable-width slot")
+	}
+}
+
+func TestAutoQueryRefreshClusterUsesStableAutoRetrieveSlots(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findCheckSlotWithTextAndMinWidth(tab, queryAutoRetrieveLabel, queryAutoRetrieveSlotWidth) {
+		t.Fatal("Auto Q/R Auto-Retrieve checkbox should sit in a stable-width slot")
+	}
+	if !findButtonSlotWithTextAndMinWidth(tab, autoQuerySettingsButtonText, queryAutoRetrieveSettingsSlotWidth) {
+		t.Fatal("Auto Q/R Auto-Retrieve Settings button should sit in a stable-width slot")
+	}
+}
+
+func TestAutoQueryFooterSummaryUsesTrailingAlignment(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	_ = newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if state.autoQueryResultSummaryLabel == nil {
+		t.Fatal("Auto Q/R tab should retain its result summary label")
+	}
+	if state.autoQueryResultSummaryLabel.Alignment != fyne.TextAlignTrailing {
+		t.Fatalf("Auto Q/R footer summary alignment = %v, want trailing", state.autoQueryResultSummaryLabel.Alignment)
+	}
+}
+
+func TestAutoQueryTabExposesProfileWindowTitle(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
 	status := widget.NewLabel("")
@@ -1698,18 +2910,18 @@ func TestAutoQueryTabExposesWindowStyleTitle(t *testing.T) {
 	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
 
 	if findLabelContaining(tab, "DICOM Auto Query/Retrieve : Default Instance") == nil {
-		t.Fatal("Auto Q/R tab should expose the window-style title with the selected profile")
+		t.Fatal("Auto Q/R tab should expose the profile window-style title with the selected profile")
 	}
 }
 
-func TestAutoQueryTabExposesComposedSearchBarSubmitButton(t *testing.T) {
+func TestAutoQueryTabExposesProfileSearchBarSubmitButton(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
 	status := widget.NewLabel("")
 
 	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
 
-	searchEntry := findEntryWithPlaceholder(tab, queryQuickSearchPatientName)
+	searchEntry := findEntryWithPlaceholder(tab, "Patient Name")
 	if searchEntry == nil {
 		t.Fatal("Auto Q/R tab should expose the profile search entry")
 	}
@@ -1725,6 +2937,58 @@ func TestAutoQueryTabExposesComposedSearchBarSubmitButton(t *testing.T) {
 	}
 }
 
+func TestAutoQuerySearchBarUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findEntryPlaceholderInWorkbenchChrome(tab, "Patient Name") {
+		t.Fatal("Auto Q/R search bar should sit in a dark workbench strip")
+	}
+}
+
+func TestAutoQueryTabExposesReferenceQuickSearchFieldStrip(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if findHorizontalScroll(tab) == nil {
+		t.Fatal("Auto Q/R quick-search field strip should be horizontally scrollable as a reference-style strip")
+	}
+	for _, field := range queryQuickSearchOptions {
+		if findButtonWithText(tab, field) == nil {
+			t.Fatalf("Auto Q/R quick-search strip should expose field %q", field)
+		}
+	}
+	customField := findButtonWithText(tab, queryQuickSearchCustomDICOMField)
+	if customField == nil || customField.OnTapped == nil {
+		t.Fatalf("Auto Q/R quick-search strip should expose actionable %q field", queryQuickSearchCustomDICOMField)
+	}
+	customField.OnTapped()
+	if findEntryWithPlaceholder(tab, "StudyID=ABC123") == nil {
+		t.Fatal("tapping Auto Q/R Custom DICOM field should update the search placeholder")
+	}
+	if state.autoQuerySearchField != queryQuickSearchCustomDICOMField {
+		t.Fatalf("auto Q/R search field state = %q, want %q", state.autoQuerySearchField, queryQuickSearchCustomDICOMField)
+	}
+}
+
+func TestAutoQueryProfileBarUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findSelectWithSelectedInWorkbenchChrome(tab, autoQueryProfileDefault) {
+		t.Fatal("Auto Q/R profile selector should sit in a dark workbench strip")
+	}
+}
+
 func TestAutoQueryTabExposesDicomNodesPriorityInstruction(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
@@ -1733,10 +2997,66 @@ func TestAutoQueryTabExposesDicomNodesPriorityInstruction(t *testing.T) {
 	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
 
 	if findLabelContaining(tab, "DICOM Nodes:") == nil {
-		t.Fatal("Auto Q/R tab should label its source list as DICOM Nodes")
+		t.Fatal("Auto Q/R tab should label its source list as DICOM Nodes in the source panel header")
 	}
 	if findLabelContaining(tab, "Drag sources into the priority order for retrieving") == nil {
 		t.Fatal("Auto Q/R tab should expose the source-priority instruction")
+	}
+}
+
+func TestAutoQueryTabExposesSourceColumnHeader(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTexts(tab, "Name", "Address", "AETitle") {
+		t.Fatal("Auto Q/R source panel should expose Name, Address, and AETitle column headers")
+	}
+}
+
+func TestAutoQueryFilterPanelsUseWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findThreeColumnFilterPanelsWithWorkbenchChrome(tab, "DICOM Nodes:", "Date", "Modalities") {
+		t.Fatal("Auto Q/R source, Date, and Modalities filters should share dark workbench panel chrome")
+	}
+}
+
+func TestAutoQueryActionStripUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTextsAndWorkbenchChromeExcluding(
+		tab,
+		[]string{"Retrieve to", queryActionLabelQuery, queryActionLabelPatient, queryActionLabelRetrieve, queryActionLabelVerify},
+		[]string{"Refresh"},
+	) {
+		t.Fatal("Auto Q/R action strip should use dark workbench chrome without merging the Refresh controls")
+	}
+}
+
+func TestAutoQueryRefreshClusterUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	if !findDirectContainerWithTextsAndWorkbenchChromeExcluding(
+		tab,
+		[]string{"Next:", queryAutoRetrieveLabel, autoQuerySettingsButtonText},
+		[]string{"Retrieve to", queryActionLabelPatient},
+	) {
+		t.Fatal("Auto Q/R refresh and Auto-Retrieve controls should sit in a dark workbench strip separate from primary actions")
 	}
 }
 
@@ -1749,7 +3069,7 @@ func TestAutoQueryTabUsesIconOnlyRefreshButton(t *testing.T) {
 
 	refreshButton := findButtonWithIconAndText(tab, theme.ViewRefreshIcon(), "")
 	if refreshButton == nil {
-		t.Fatal("Auto Q/R refresh action should be an icon-only refresh button")
+		t.Fatal("Auto Q/R refresh action should be a reference-style icon-only refresh button")
 	}
 	if refreshButton.OnTapped == nil {
 		t.Fatal("Auto Q/R refresh action should remain actionable")
@@ -2346,6 +3666,37 @@ func TestLoadAutoQueryProfileAppliesSourcePriority(t *testing.T) {
 	}
 }
 
+func TestAutoQuerySourceCellUsesSeparateNodeColumns(t *testing.T) {
+	state := &uiState{
+		nodes: []nodes.Node{
+			{ID: "node-1", Name: "RADIANT", AETitle: "RADIANT_AE", Host: "10.0.0.1", Port: 104},
+		},
+	}
+	loadAutoQueryProfiles(state, []autoquery.Profile{{
+		Name: autoquery.DefaultProfileName,
+		Sources: []autoquery.Source{
+			{NodeID: "node-1", Enabled: true},
+		},
+	}})
+	state.selectedAutoQuerySourceRow = 0
+	cell := newQuerySourceListCell()
+
+	configureAutoQuerySourceCell(cell, state, 0, nil)
+
+	if cell.check.Text != "" {
+		t.Fatalf("Auto Q/R source checkbox text = %q, want empty text with separate labels", cell.check.Text)
+	}
+	if cell.nameLabel.Text != "▶ RADIANT" {
+		t.Fatalf("name label = %q", cell.nameLabel.Text)
+	}
+	if cell.addressLabel.Text != "10.0.0.1:104" {
+		t.Fatalf("address label = %q", cell.addressLabel.Text)
+	}
+	if cell.aeTitleLabel.Text != "RADIANT_AE" {
+		t.Fatalf("AE title label = %q", cell.aeTitleLabel.Text)
+	}
+}
+
 func TestSetAutoQuerySourceEnabledDoesNotMutateGlobalNode(t *testing.T) {
 	state := &uiState{
 		nodes: []nodes.Node{
@@ -2645,8 +3996,11 @@ func TestAutoQueryTabInitializesSavedProfileCriteria(t *testing.T) {
 
 	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
 
-	if findSelectWithSelected(tab, queryQuickSearchPatientID) == nil {
-		t.Fatalf("auto Q/R search field should initialize to %q", queryQuickSearchPatientID)
+	if state.autoQuerySearchField != queryQuickSearchPatientID {
+		t.Fatalf("auto Q/R search field state = %q, want %q", state.autoQuerySearchField, queryQuickSearchPatientID)
+	}
+	if findEntryWithPlaceholder(tab, queryQuickSearchPatientID) == nil {
+		t.Fatalf("auto Q/R search placeholder should initialize to %q", queryQuickSearchPatientID)
 	}
 	if findEntryWithText(tab, "P123") == nil {
 		t.Fatal("auto Q/R search text should initialize from saved profile criteria")
@@ -2698,8 +4052,11 @@ func TestAutoQueryTabSwitchesNamedProfiles(t *testing.T) {
 	if state.autoQueryProfileName != "Night CT" {
 		t.Fatalf("selected profile = %q, want Night CT", state.autoQueryProfileName)
 	}
-	if findSelectWithSelected(tab, queryQuickSearchPatientID) == nil {
-		t.Fatalf("Auto Q/R search selector should switch to %q", queryQuickSearchPatientID)
+	if state.autoQuerySearchField != queryQuickSearchPatientID {
+		t.Fatalf("Auto Q/R search field state = %q, want %q", state.autoQuerySearchField, queryQuickSearchPatientID)
+	}
+	if findEntryWithPlaceholder(tab, queryQuickSearchPatientID) == nil {
+		t.Fatalf("Auto Q/R search placeholder should switch to %q", queryQuickSearchPatientID)
 	}
 	if findEntryWithText(tab, "NIGHT") == nil {
 		t.Fatal("Auto Q/R search text should switch to named profile criteria")
@@ -2857,12 +4214,53 @@ func TestRefreshAutoQueryResultSummaryUpdatesLabel(t *testing.T) {
 			{PatientName: "DOE^JANE"},
 			{PatientName: "SMITH^JOHN"},
 		},
+		nodes: []nodes.Node{{
+			Name:    "RADIANT",
+			Host:    "192.168.100.26",
+			Port:    11112,
+			AETitle: "RADIANT",
+		}},
 	}
 
 	refreshAutoQueryResultSummary(state)
 
-	if state.autoQueryResultSummaryLabel.Text != "2 studies found" {
-		t.Fatalf("auto Q/R summary = %q, want 2 studies found", state.autoQueryResultSummaryLabel.Text)
+	if state.autoQueryResultSummaryLabel.Text != "2 studies found\nRADIANT / 192.168.100.26:11112" {
+		t.Fatalf("auto Q/R summary = %q, want count plus selected source", state.autoQueryResultSummaryLabel.Text)
+	}
+}
+
+func TestAutoQueryResultSummaryTextShowsCheckedSources(t *testing.T) {
+	state := &uiState{
+		nodes: []nodes.Node{
+			{Name: "RADIANT", Host: "192.168.100.26", Port: 11112},
+			{Name: "HOROSMINI", Host: "10.5.4.13", Port: 4007},
+		},
+	}
+
+	text := autoQueryResultSummaryText(state)
+
+	if text != "0 studies found\n2 sources: RADIANT, HOROSMINI" {
+		t.Fatalf("auto Q/R summary = %q, want count plus checked sources", text)
+	}
+}
+
+func TestAutoQueryResultSummaryTextUsesResultSources(t *testing.T) {
+	state := &uiState{
+		queries: []query.Match{
+			{SourceNodeName: "RADIANT", SourceHost: "192.168.100.26", SourcePort: 11112},
+			{SourceNodeName: "RADIANT", SourceHost: "192.168.100.26", SourcePort: 11112},
+		},
+		nodes: []nodes.Node{{
+			Name: "HOROSMINI",
+			Host: "10.5.4.13",
+			Port: 4007,
+		}},
+	}
+
+	text := autoQueryResultSummaryText(state)
+
+	if text != "2 studies found\nRADIANT" {
+		t.Fatalf("auto Q/R summary = %q, want result source before fallback source", text)
 	}
 }
 
@@ -3001,6 +4399,70 @@ func TestRememberLastPatientQueryMakesRefreshAvailable(t *testing.T) {
 	}
 	if state.lastQuery.patient != criteria {
 		t.Fatalf("last patient criteria = %#v, want %#v", state.lastQuery.patient, criteria)
+	}
+}
+
+func TestQueryRefreshIntervalRecognizesThirtyMinuteCadence(t *testing.T) {
+	if got := queryRefreshInterval(autoQueryRefreshEvery30Min); got != 30*time.Minute {
+		t.Fatalf("Refresh every 30 min interval = %s, want 30m", got)
+	}
+	if got := queryRefreshInterval(queryRefreshModeDont); got != 0 {
+		t.Fatalf("Don't refresh interval = %s, want 0", got)
+	}
+}
+
+func TestQueryCountdownTextDescribesRefreshState(t *testing.T) {
+	now := time.Date(2026, 6, 5, 15, 0, 0, 0, time.Local)
+
+	cases := []struct {
+		name     string
+		mode     string
+		next     time.Time
+		hasQuery bool
+		want     string
+	}{
+		{name: "dormant", mode: queryRefreshModeDont, want: autoQueryCountdownDormant},
+		{name: "waiting", mode: autoQueryRefreshEvery30Min, want: "Next: waiting for Query"},
+		{name: "remaining", mode: autoQueryRefreshEvery30Min, next: now.Add(90 * time.Second), hasQuery: true, want: "Next: 1m 30s"},
+		{name: "due", mode: autoQueryRefreshEvery30Min, next: now.Add(-time.Second), hasQuery: true, want: "Next: now"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := queryCountdownText(tc.mode, tc.next, tc.hasQuery, now); got != tc.want {
+				t.Fatalf("countdown text = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScheduleQueryRefreshSetsNextRunAfterRememberedQuery(t *testing.T) {
+	state := &uiState{queryCountdownLabel: widget.NewLabel("")}
+	rememberLastStudyQuery(state, query.Criteria{PatientName: "DOE^JANE"})
+	now := time.Date(2026, 6, 5, 15, 0, 0, 0, time.Local)
+
+	scheduleQueryRefreshAt(nil, widget.NewLabel(""), nil, state, autoQueryRefreshEvery30Min, now)
+	defer stopQueryRefresh(state)
+
+	want := now.Add(30 * time.Minute)
+	if !state.queryNextRefresh.Equal(want) {
+		t.Fatalf("next refresh = %s, want %s", state.queryNextRefresh, want)
+	}
+	if state.queryCountdownLabel.Text != "Next: 30m 00s" {
+		t.Fatalf("countdown label = %q, want Next: 30m 00s", state.queryCountdownLabel.Text)
+	}
+}
+
+func TestScheduleQueryRefreshWaitsForManualQueryRun(t *testing.T) {
+	state := &uiState{queryCountdownLabel: widget.NewLabel("")}
+	now := time.Date(2026, 6, 5, 15, 0, 0, 0, time.Local)
+
+	scheduleQueryRefreshAt(nil, widget.NewLabel(""), nil, state, autoQueryRefreshEvery30Min, now)
+
+	if !state.queryNextRefresh.IsZero() {
+		t.Fatalf("next refresh = %s, want zero before a query run", state.queryNextRefresh)
+	}
+	if state.queryCountdownLabel.Text != "Next: waiting for Query" {
+		t.Fatalf("countdown label = %q, want waiting message", state.queryCountdownLabel.Text)
 	}
 }
 
@@ -3291,8 +4753,24 @@ func TestQuerySourceRowsShowVerifiedNodeStatus(t *testing.T) {
 	recordNodeVerifyStatus(state, node, nodeVerifyOK)
 	rows := querySourceRows(state)
 
-	if len(rows) != 1 || rows[0] != "  [x] ✓ RADIANT 192.168.100.26:11112" {
+	if len(rows) != 1 || !strings.HasPrefix(rows[0], "  [x] ✓ ") || !strings.HasSuffix(rows[0], " RADIANT 192.168.100.26:11112") {
 		t.Fatalf("verified source row = %#v", rows)
+	}
+}
+
+func TestQuerySourceRowsShowVerifiedNodeStatusTimestamp(t *testing.T) {
+	node := nodes.Node{Name: "RADIANT", Host: "192.168.100.26", Port: 11112}
+	state := &uiState{
+		nodes:                 []nodes.Node{node},
+		selectedNodeRow:       -1,
+		nodeVerifyStatuses:    map[string]nodeVerifyStatus{nodeVerifyKey(node): nodeVerifyOK},
+		nodeVerifyStatusTimes: map[string]time.Time{nodeVerifyKey(node): time.Date(2026, 6, 5, 9, 42, 0, 0, time.Local)},
+	}
+
+	rows := querySourceRows(state)
+
+	if len(rows) != 1 || rows[0] != "  [x] ✓ 09:42 RADIANT 192.168.100.26:11112" {
+		t.Fatalf("verified source row with timestamp = %#v", rows)
 	}
 }
 
@@ -3310,11 +4788,55 @@ func TestQuerySourceRowsShowQuerySourceStatus(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("len(rows) = %d, want 2", len(rows))
 	}
-	if rows[0] != "  [x] Q! offline 10.0.0.1:104" {
+	if !strings.HasPrefix(rows[0], "  [x] Q! ") || !strings.HasSuffix(rows[0], " offline 10.0.0.1:104") {
 		t.Fatalf("failed source row = %q", rows[0])
 	}
-	if rows[1] != "  [x] Q✓ online 10.0.0.2:105" {
+	if !strings.HasPrefix(rows[1], "  [x] Q✓ ") || !strings.HasSuffix(rows[1], " online 10.0.0.2:105") {
 		t.Fatalf("successful source row = %q", rows[1])
+	}
+}
+
+func TestQuerySourceRowsShowQuerySourceStatusTimestamp(t *testing.T) {
+	node := nodes.Node{ID: "node-1", Name: "online", Host: "10.0.0.2", Port: 105}
+	state := &uiState{
+		nodes:                  []nodes.Node{node},
+		selectedNodeRow:        -1,
+		querySourceStatuses:    map[string]querySourceStatus{nodeVerifyKey(node): querySourceOK},
+		querySourceStatusTimes: map[string]time.Time{nodeVerifyKey(node): time.Date(2026, 6, 5, 9, 43, 0, 0, time.Local)},
+	}
+
+	rows := querySourceRows(state)
+
+	if len(rows) != 1 || rows[0] != "  [x] Q✓ 09:43 online 10.0.0.2:105" {
+		t.Fatalf("query source row with timestamp = %#v", rows)
+	}
+}
+
+func TestSourceStatusHistoryLinesShowRecentQueryAndVerifyEvents(t *testing.T) {
+	node := nodes.Node{ID: "node-1", Name: "RADIANT", Host: "10.0.0.2", Port: 105}
+	state := &uiState{}
+
+	appendSourceStatusHistoryAt(state, node, sourceStatusHistoryKindVerify, sourceStatusHistoryOK, time.Date(2026, 6, 5, 9, 42, 0, 0, time.Local))
+	appendSourceStatusHistoryAt(state, node, sourceStatusHistoryKindQuery, sourceStatusHistoryFail, time.Date(2026, 6, 5, 9, 43, 0, 0, time.Local))
+
+	lines := sourceStatusHistoryLines(state)
+	want := []string{
+		"09:43 RADIANT Query failed",
+		"09:42 RADIANT C-ECHO OK",
+	}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("source history lines = %#v, want %#v", lines, want)
+	}
+}
+
+func TestRecordQuerySourceStatusRefreshesHistoryLabel(t *testing.T) {
+	node := nodes.Node{ID: "node-1", Name: "RADIANT", Host: "10.0.0.2", Port: 105}
+	state := &uiState{querySourceHistoryLabel: widget.NewLabel("")}
+
+	recordQuerySourceStatus(state, node, querySourceOK)
+
+	if !strings.Contains(state.querySourceHistoryLabel.Text, "RADIANT Query OK") {
+		t.Fatalf("source history label = %q, want query OK event", state.querySourceHistoryLabel.Text)
 	}
 }
 
@@ -3400,6 +4922,22 @@ func TestQuerySourceCheckLabelOmitsTextCheckboxMarker(t *testing.T) {
 	}
 }
 
+func TestQuerySourceCheckLabelIncludesAETitle(t *testing.T) {
+	state := &uiState{
+		nodes: []nodes.Node{{
+			Name:    "RADIANT",
+			AETitle: "RADIANT_AE",
+			Host:    "192.168.100.26",
+			Port:    11112,
+		}},
+		selectedNodeRow: 0,
+	}
+
+	if got := querySourceCheckLabel(state, 0); got != "▶ RADIANT 192.168.100.26:11112 RADIANT_AE" {
+		t.Fatalf("query source check label = %q", got)
+	}
+}
+
 func TestQuerySourceCheckLabelShowsDisabledReason(t *testing.T) {
 	state := &uiState{
 		nodes: []nodes.Node{
@@ -3426,14 +4964,169 @@ func TestQuerySourceListCellUsesNativeStatusDots(t *testing.T) {
 
 	configureQuerySourceCell(cell, state, 0, nil)
 
-	if cell.check.Text != "▶ RADIANT 192.168.100.26:11112" {
+	if cell.check.Text != "" {
 		t.Fatalf("check text = %q", cell.check.Text)
+	}
+	if cell.nameLabel.Text != "▶ RADIANT" {
+		t.Fatalf("name label = %q", cell.nameLabel.Text)
+	}
+	if cell.addressLabel.Text != "192.168.100.26:11112" {
+		t.Fatalf("address label = %q", cell.addressLabel.Text)
 	}
 	if got := color.NRGBAModel.Convert(cell.verifyDot.FillColor).(color.NRGBA); got != sourceStatusOKColor {
 		t.Fatalf("verify dot color = %#v, want %#v", got, sourceStatusOKColor)
 	}
 	if got := color.NRGBAModel.Convert(cell.queryDot.FillColor).(color.NRGBA); got != sourceStatusFailColor {
 		t.Fatalf("query dot color = %#v, want %#v", got, sourceStatusFailColor)
+	}
+}
+
+func TestQuerySourceListCellUsesSeparateNodeColumns(t *testing.T) {
+	node := nodes.Node{Name: "RADIANT", AETitle: "RADIANT_AE", Host: "192.168.100.26", Port: 11112}
+	state := &uiState{nodes: []nodes.Node{node}, selectedNodeRow: 0}
+	cell := newQuerySourceListCell()
+
+	configureQuerySourceCell(cell, state, 0, nil)
+
+	if cell.check.Text != "" {
+		t.Fatalf("source checkbox text = %q, want empty text with separate labels", cell.check.Text)
+	}
+	if cell.nameLabel.Text != "▶ RADIANT" {
+		t.Fatalf("name label = %q", cell.nameLabel.Text)
+	}
+	if cell.addressLabel.Text != "192.168.100.26:11112" {
+		t.Fatalf("address label = %q", cell.addressLabel.Text)
+	}
+	if cell.aeTitleLabel.Text != "RADIANT_AE" {
+		t.Fatalf("AE title label = %q", cell.aeTitleLabel.Text)
+	}
+}
+
+func TestQuerySourceListCellUsesWorkbenchRowBackground(t *testing.T) {
+	state := &uiState{
+		nodes: []nodes.Node{
+			{Name: "HOROS", Host: "127.0.0.1", Port: 4007},
+			{Name: "RADIANT", Host: "192.168.100.26", Port: 11112},
+		},
+		selectedNodeRow: 1,
+	}
+	unselected := newQuerySourceListCell()
+	selected := newQuerySourceListCell()
+
+	configureQuerySourceCell(unselected, state, 0, nil)
+	configureQuerySourceCell(selected, state, 1, nil)
+
+	if got := color.NRGBAModel.Convert(unselected.background.FillColor).(color.NRGBA); got != archiveEvenRowColor {
+		t.Fatalf("unselected source row background = %#v, want %#v", got, archiveEvenRowColor)
+	}
+	if got := color.NRGBAModel.Convert(selected.background.FillColor).(color.NRGBA); got != archiveSelectedRowColor {
+		t.Fatalf("selected source row background = %#v, want %#v", got, archiveSelectedRowColor)
+	}
+}
+
+func TestQuerySourceListCellUsesInternalColumnDividers(t *testing.T) {
+	cell := newQuerySourceListCell()
+
+	if got := countCanvasRectanglesWithColor(cell.Container, tableColumnDividerColor); got < 4 {
+		t.Fatalf("source row divider rectangles = %d, want outer row/column plus internal Name/Address/AETitle dividers", got)
+	}
+}
+
+func TestQuerySourceListCellShowsEmptySourcesPlaceholder(t *testing.T) {
+	state := &uiState{nodes: nil, selectedNodeRow: -1}
+	cell := newQuerySourceListCell()
+
+	configureQuerySourceCell(cell, state, 0, nil)
+
+	if cell.nameLabel.Text != querySourceEmptyLabel {
+		t.Fatalf("empty source name label = %q, want %q", cell.nameLabel.Text, querySourceEmptyLabel)
+	}
+	if cell.addressLabel.Text != "" || cell.aeTitleLabel.Text != "" {
+		t.Fatalf("empty source secondary labels = %q/%q, want empty", cell.addressLabel.Text, cell.aeTitleLabel.Text)
+	}
+	if !cell.check.Disabled() {
+		t.Fatal("empty source placeholder checkbox should be disabled")
+	}
+}
+
+func TestAutoQuerySourceListCellShowsEmptySourcesPlaceholder(t *testing.T) {
+	state := &uiState{nodes: nil, selectedAutoQuerySourceRow: -1}
+	cell := newQuerySourceListCell()
+
+	configureAutoQuerySourceCell(cell, state, 0, nil)
+
+	if cell.nameLabel.Text != querySourceEmptyLabel {
+		t.Fatalf("empty auto source name label = %q, want %q", cell.nameLabel.Text, querySourceEmptyLabel)
+	}
+	if cell.addressLabel.Text != "" || cell.aeTitleLabel.Text != "" {
+		t.Fatalf("empty auto source secondary labels = %q/%q, want empty", cell.addressLabel.Text, cell.aeTitleLabel.Text)
+	}
+	if !cell.check.Disabled() {
+		t.Fatal("empty auto source placeholder checkbox should be disabled")
+	}
+}
+
+func TestQuerySourceListUsesCompactRowHeights(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{
+		nodes: []nodes.Node{
+			{Name: "HOROS", Host: "127.0.0.1", Port: 4007},
+			{Name: "RADIANT", Host: "192.168.100.26", Port: 11112},
+		},
+	}
+
+	list := newQuerySourceList(state)
+
+	for id := range state.nodes {
+		height, ok := listItemHeight(list, id)
+		if !ok {
+			t.Fatalf("source row %d should have an explicit compact height", id)
+		}
+		if height > compactTableRowHeight+6 {
+			t.Fatalf("source row %d height = %.0f, want compact workstation height", id, height)
+		}
+	}
+}
+
+func TestAutoQuerySourceListUsesCompactRowHeights(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{
+		nodes: []nodes.Node{
+			{Name: "HOROS", Host: "127.0.0.1", Port: 4007},
+			{Name: "RADIANT", Host: "192.168.100.26", Port: 11112},
+		},
+	}
+
+	list := newAutoQuerySourceList(nil, nil, state)
+
+	for id := range autoQuerySourceRows(state) {
+		height, ok := listItemHeight(list, id)
+		if !ok {
+			t.Fatalf("auto source row %d should have an explicit compact height", id)
+		}
+		if height > compactTableRowHeight+6 {
+			t.Fatalf("auto source row %d height = %.0f, want compact workstation height", id, height)
+		}
+	}
+}
+
+func TestQuerySourceListCellStylesDisabledSources(t *testing.T) {
+	node := nodes.Node{Name: "OFFLINE", Host: "10.0.0.1", Port: 104, Disabled: true}
+	state := &uiState{nodes: []nodes.Node{node}, selectedNodeRow: 0}
+	cell := newQuerySourceListCell()
+
+	configureQuerySourceCell(cell, state, 0, nil)
+
+	if cell.check.Disabled() {
+		t.Fatal("disabled source checkbox should remain enabled so it can re-enable the source")
+	}
+	if cell.nameLabel.Text != "▶ OFFLINE (disabled)" {
+		t.Fatalf("name label = %q", cell.nameLabel.Text)
+	}
+	for _, label := range []*widget.Label{cell.nameLabel, cell.addressLabel, cell.aeTitleLabel} {
+		if !label.TextStyle.Italic {
+			t.Fatalf("disabled source label %q should be italic", label.Text)
+		}
 	}
 }
 
@@ -3685,6 +5378,20 @@ func TestNetworkNodeActionLabelsMatchNodeManagerFooter(t *testing.T) {
 	}
 }
 
+func TestNetworkSecondaryNodeActionButtonUsesIconOnlyLowImportance(t *testing.T) {
+	button := networkSecondaryNodeActionButton(theme.DocumentCreateIcon(), nil)
+
+	if button.Text != "" {
+		t.Fatalf("secondary node action text = %q, want icon-only", button.Text)
+	}
+	if button.Icon == nil {
+		t.Fatal("secondary node action icon is nil")
+	}
+	if button.Importance != widget.LowImportance {
+		t.Fatalf("secondary node action importance = %v, want LowImportance", button.Importance)
+	}
+}
+
 func TestExportNodesToPathWritesCurrentNodesAsJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.json")
 	state := &uiState{
@@ -3790,6 +5497,72 @@ func TestNetworkDeleteShortcutAppliesOnlyToNetworkTab(t *testing.T) {
 	}
 }
 
+func TestNetworkVerifyShortcutAppliesOnlyToNetworkTab(t *testing.T) {
+	if !networkVerifyShortcutApplies("Network") {
+		t.Fatal("Verify shortcut should apply on Network tab")
+	}
+	for _, tab := range []string{"Archive", "Query", "Tasks", "Inspector", ""} {
+		if networkVerifyShortcutApplies(tab) {
+			t.Fatalf("Verify shortcut should not apply on %q tab", tab)
+		}
+	}
+}
+
+func TestNetworkVerifyShortcutUsesDefaultModifierK(t *testing.T) {
+	shortcut := networkVerifyShortcut()
+
+	if shortcut.KeyName != fyne.KeyK {
+		t.Fatalf("verify shortcut key = %q, want K", shortcut.KeyName)
+	}
+	if shortcut.Modifier != fyne.KeyModifierShortcutDefault {
+		t.Fatalf("verify shortcut modifier = %v, want platform default", shortcut.Modifier)
+	}
+}
+
+func TestQueryShortcutsApplyOnlyToQueryTab(t *testing.T) {
+	if !queryShortcutApplies("Query") {
+		t.Fatal("Query shortcuts should apply on Query tab")
+	}
+	for _, tab := range []string{"Archive", "Network", "Auto Q/R", "Tasks", "Inspector", ""} {
+		if queryShortcutApplies(tab) {
+			t.Fatalf("Query shortcuts should not apply on %q tab", tab)
+		}
+	}
+}
+
+func TestQueryRunShortcutUsesDefaultModifierReturn(t *testing.T) {
+	shortcut := queryRunShortcut()
+
+	if shortcut.KeyName != fyne.KeyReturn {
+		t.Fatalf("query shortcut key = %q, want Return", shortcut.KeyName)
+	}
+	if shortcut.Modifier != fyne.KeyModifierShortcutDefault {
+		t.Fatalf("query shortcut modifier = %v, want platform default", shortcut.Modifier)
+	}
+}
+
+func TestQueryRetrieveShortcutUsesDefaultModifierR(t *testing.T) {
+	shortcut := queryRetrieveShortcut()
+
+	if shortcut.KeyName != fyne.KeyR {
+		t.Fatalf("retrieve shortcut key = %q, want R", shortcut.KeyName)
+	}
+	if shortcut.Modifier != fyne.KeyModifierShortcutDefault {
+		t.Fatalf("retrieve shortcut modifier = %v, want platform default", shortcut.Modifier)
+	}
+}
+
+func TestQueryCancelShortcutUsesEscape(t *testing.T) {
+	shortcut := queryCancelShortcut()
+
+	if shortcut.KeyName != fyne.KeyEscape {
+		t.Fatalf("cancel shortcut key = %q, want Escape", shortcut.KeyName)
+	}
+	if shortcut.Modifier != 0 {
+		t.Fatalf("cancel shortcut modifier = %v, want none", shortcut.Modifier)
+	}
+}
+
 func nodeNames(nodeList []nodes.Node) []string {
 	names := make([]string, 0, len(nodeList))
 	for _, node := range nodeList {
@@ -3808,12 +5581,10 @@ func TestQuerySourceRowsShowsEmptyState(t *testing.T) {
 
 func TestNodeTableHeadersIncludeOperationalColumns(t *testing.T) {
 	headers := nodeTableHeaders()
-	joined := strings.Join(headers, "|")
+	want := []string{"⊙", "Address", "AETitle", "Port", "Q...", "Retrieve", "Send", "TLS", "Name", "Send Transfer Syntax", "Move Destination", "Notes"}
 
-	for _, want := range []string{"Enabled", "Query", "Retrieve", "Send", "TLS", "Name", "Called AE", "Host", "Port", "Move Destination", "Send Syntax", "Notes"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("headers missing %q in %q", want, joined)
-		}
+	if !slices.Equal(headers, want) {
+		t.Fatalf("node headers = %v, want operational order %v", headers, want)
 	}
 }
 
@@ -3831,18 +5602,18 @@ func TestNodeCellShowsOperationalDefaults(t *testing.T) {
 		col  int
 		want string
 	}{
-		{0, "☑"},
-		{1, "☑"},
-		{2, "▾ Auto"},
-		{3, "☑"},
-		{4, "☐"},
-		{5, "RADIANT"},
-		{6, "RADIANTAE"},
-		{7, "192.168.100.26"},
-		{8, "11112"},
-		{9, "GOPACS"},
-		{10, "▾ Auto"},
-		{11, "lab node"},
+		{nodeTableColumnEnabled, "☑"},
+		{nodeTableColumnHost, "192.168.100.26"},
+		{nodeTableColumnAETitle, "RADIANTAE"},
+		{nodeTableColumnPort, "11112"},
+		{nodeTableColumnQuery, "☑"},
+		{nodeTableColumnRetrieve, "▾ Auto"},
+		{nodeTableColumnSend, "☑"},
+		{nodeTableColumnTLS, "▾ No"},
+		{nodeTableColumnName, "RADIANT"},
+		{nodeTableColumnSendSyntax, "▾ Auto"},
+		{nodeTableColumnMoveDestination, "GOPACS"},
+		{nodeTableColumnNotes, "lab node"},
 	}
 
 	for _, tt := range tests {
@@ -3855,7 +5626,7 @@ func TestNodeCellShowsOperationalDefaults(t *testing.T) {
 func TestNodeCellShowsDisabledState(t *testing.T) {
 	node := nodes.Node{Disabled: true}
 
-	if got := nodeCell(node, 0); got != "☐" {
+	if got := nodeCell(node, nodeTableColumnEnabled); got != "☐" {
 		t.Fatalf("disabled Enabled cell = %q, want unchecked marker", got)
 	}
 }
@@ -3863,10 +5634,10 @@ func TestNodeCellShowsDisabledState(t *testing.T) {
 func TestNodeCellShowsQueryAndSendDisabledState(t *testing.T) {
 	node := nodes.Node{QueryDisabled: true, SendDisabled: true}
 
-	if got := nodeCell(node, 1); got != "☐" {
+	if got := nodeCell(node, nodeTableColumnQuery); got != "☐" {
 		t.Fatalf("query cell = %q, want unchecked marker", got)
 	}
-	if got := nodeCell(node, 3); got != "☐" {
+	if got := nodeCell(node, nodeTableColumnSend); got != "☐" {
 		t.Fatalf("send cell = %q, want unchecked marker", got)
 	}
 }
@@ -3874,7 +5645,7 @@ func TestNodeCellShowsQueryAndSendDisabledState(t *testing.T) {
 func TestNodeCellShowsRetrieveMethodPreference(t *testing.T) {
 	node := nodes.Node{RetrieveMethod: nodes.RetrieveMethodGet}
 
-	if got := nodeCell(node, 2); got != "▾ C-GET" {
+	if got := nodeCell(node, nodeTableColumnRetrieve); got != "▾ C-GET" {
 		t.Fatalf("retrieve cell = %q, want dropdown marker", got)
 	}
 }
@@ -3951,10 +5722,65 @@ func TestApplyNodeSortPreservesOperationalNodePriority(t *testing.T) {
 	}
 }
 
+func TestApplyNodeSortPersistsSortPreference(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	state := &uiState{
+		appConfigPath: configPath,
+		appConfig:     appconfig.Defaults(),
+		nodes: []nodes.Node{
+			{Name: "beta", AETitle: "BETA", Host: "10.0.0.2", Port: 11112},
+			{Name: "alpha", AETitle: "ALPHA", Host: "10.0.0.1", Port: 104},
+		},
+	}
+
+	if !applyNodeSort(state, nodeTableColumnName) {
+		t.Fatal("applyNodeSort returned false for Name column")
+	}
+
+	loaded, err := appconfig.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load persisted config: %v", err)
+	}
+	pref, ok := loaded.UISortPreferences[nodeSortPreferenceKey]
+	if !ok {
+		t.Fatalf("missing node sort preference in %#v", loaded.UISortPreferences)
+	}
+	if pref.Column != nodeTableColumnName || pref.Descending {
+		t.Fatalf("persisted node sort = col %d desc %v", pref.Column, pref.Descending)
+	}
+}
+
+func TestApplySavedNodeSortPreferenceSortsVisualRows(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{
+			UISortPreferences: map[string]appconfig.SortPreference{
+				nodeSortPreferenceKey: {Column: nodeTableColumnName, Descending: true},
+			},
+		},
+		nodes: []nodes.Node{
+			{Name: "alpha", AETitle: "ALPHA", Host: "10.0.0.1", Port: 104},
+			{Name: "gamma", AETitle: "GAMMA", Host: "10.0.0.3", Port: 4242},
+			{Name: "beta", AETitle: "BETA", Host: "10.0.0.2", Port: 11112},
+		},
+	}
+
+	applySavedNodeSortPreference(state)
+
+	if got := nodeTableNames(state); strings.Join(got, "|") != "gamma|beta|alpha" {
+		t.Fatalf("saved visual node order = %q", strings.Join(got, "|"))
+	}
+	if got := nodeNames(state.nodes); strings.Join(got, "|") != "alpha|gamma|beta" {
+		t.Fatalf("operational node order changed to %v", got)
+	}
+	if !state.nodeSortActive || state.nodeSortColumn != nodeTableColumnName || !state.nodeSortDescending {
+		t.Fatalf("saved node sort state = active %v col %d desc %v", state.nodeSortActive, state.nodeSortColumn, state.nodeSortDescending)
+	}
+}
+
 func TestNodeSortRejectsEditableOperationalColumns(t *testing.T) {
 	state := &uiState{nodes: []nodes.Node{{Name: "beta"}, {Name: "alpha"}}}
 
-	for _, col := range []int{nodeTableColumnEnabled, nodeTableColumnQuery, nodeTableColumnRetrieve, nodeTableColumnSend} {
+	for _, col := range []int{nodeTableColumnEnabled, nodeTableColumnQuery, nodeTableColumnRetrieve, nodeTableColumnSend, nodeTableColumnTLS} {
 		if applyNodeSort(state, col) {
 			t.Fatalf("operational column %d should not be sortable", col)
 		}
@@ -4054,6 +5880,30 @@ func TestNodeDraftFromFormStateMapsOperationalFields(t *testing.T) {
 	}
 }
 
+func TestNodeTLSControlsExposeDisabledTLSAffordance(t *testing.T) {
+	fynetest.NewApp()
+
+	controls := newNodeTLSControls()
+	texts := collectWidgetTexts(controls)
+	if !slices.Contains(texts, "Use TLS") || !slices.Contains(texts, "TLS Settings") {
+		t.Fatalf("TLS controls texts = %#v", texts)
+	}
+	tlsCheck := findCheckWithText(controls, "Use TLS")
+	if tlsCheck == nil {
+		t.Fatal("node TLS controls should expose a Use TLS checkbox")
+	}
+	if !tlsCheck.Disabled() {
+		t.Fatal("node TLS checkbox should stay disabled until TLS support exists")
+	}
+	settings := findButtonWithText(controls, "TLS Settings")
+	if settings == nil {
+		t.Fatal("node TLS controls should expose TLS Settings")
+	}
+	if !settings.Disabled() {
+		t.Fatal("node TLS Settings should stay disabled until TLS support exists")
+	}
+}
+
 func TestToggleNodeOperationalCellPersistsEnabledQueryAndSend(t *testing.T) {
 	store := nodes.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
 	state := &uiState{
@@ -4075,9 +5925,9 @@ func TestToggleNodeOperationalCellPersistsEnabledQueryAndSend(t *testing.T) {
 		col  int
 		want func(nodes.Node) bool
 	}{
-		{"enabled", 0, func(node nodes.Node) bool { return node.Disabled }},
-		{"query", 1, func(node nodes.Node) bool { return node.QueryDisabled }},
-		{"send", 3, func(node nodes.Node) bool { return node.SendDisabled }},
+		{"enabled", nodeTableColumnEnabled, func(node nodes.Node) bool { return node.Disabled }},
+		{"query", nodeTableColumnQuery, func(node nodes.Node) bool { return node.QueryDisabled }},
+		{"send", nodeTableColumnSend, func(node nodes.Node) bool { return node.SendDisabled }},
 	}
 
 	for _, tt := range tests {
@@ -4125,7 +5975,7 @@ func TestToggleNodeOperationalCellCyclesAndPersistsRetrieveMethod(t *testing.T) 
 	}
 
 	for _, want := range []string{nodes.RetrieveMethodMove, nodes.RetrieveMethodGet, ""} {
-		changed, err := toggleNodeOperationalCell(state, 0, 2)
+		changed, err := toggleNodeOperationalCell(state, 0, nodeTableColumnRetrieve)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4148,7 +5998,7 @@ func TestToggleNodeOperationalCellCyclesAndPersistsRetrieveMethod(t *testing.T) 
 func TestToggleNodeOperationalCellIgnoresNonEditableColumns(t *testing.T) {
 	state := &uiState{nodes: []nodes.Node{{Name: "radiant"}}}
 
-	changed, err := toggleNodeOperationalCell(state, 0, 4)
+	changed, err := toggleNodeOperationalCell(state, 0, nodeTableColumnTLS)
 
 	if err != nil {
 		t.Fatal(err)
@@ -4401,6 +6251,39 @@ func TestRunQueryAcrossSourcesContinuesAfterSourceError(t *testing.T) {
 	}
 }
 
+func TestRunQueryAcrossSourcesWithProgressReportsSourceCounts(t *testing.T) {
+	sources := []nodes.Node{
+		{ID: "node-1", Name: "offline"},
+		{ID: "node-2", Name: "online"},
+	}
+	var updates []queryActivityProgress
+
+	result, err := runQueryAcrossSourcesWithProgress(context.Background(), sources, func(_ context.Context, node nodes.Node) (query.Result, error) {
+		if node.Name == "offline" {
+			return query.Result{}, errors.New("association failed")
+		}
+		return query.Result{Matches: []query.Match{{PatientName: "A"}, {PatientName: "B"}}, FinalStatus: 0x0000}, nil
+	}, func(update queryActivityProgress) {
+		updates = append(updates, update)
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Fatalf("error = %v, want partial source failure", err)
+	}
+	if len(result.Matches) != 2 {
+		t.Fatalf("matches = %d, want 2", len(result.Matches))
+	}
+	if len(updates) != 2 {
+		t.Fatalf("progress updates = %#v, want two source updates", updates)
+	}
+	if updates[0].Attempted != 1 || updates[0].Total != 2 || updates[0].Matches != 0 || updates[0].Failures != 1 {
+		t.Fatalf("first progress update = %#v", updates[0])
+	}
+	if updates[1].Attempted != 2 || updates[1].Total != 2 || updates[1].Matches != 2 || updates[1].Failures != 1 {
+		t.Fatalf("second progress update = %#v", updates[1])
+	}
+}
+
 func TestRunQueryAcrossSourcesReportsAllSourceErrors(t *testing.T) {
 	sources := []nodes.Node{{Name: "first"}, {Name: "second"}}
 	var calls []string
@@ -4468,10 +6351,10 @@ func TestRecordQuerySourceStatusesMarksPartialFailure(t *testing.T) {
 
 	recordQuerySourceStatuses(state, nodesList, err)
 
-	if querySourceStatusMarker(state, nodesList[0]) != "Q! " {
+	if marker := querySourceStatusMarker(state, nodesList[0]); !strings.HasPrefix(marker, "Q! ") || len(marker) <= len("Q! ") {
 		t.Fatalf("failed status marker = %q", querySourceStatusMarker(state, nodesList[0]))
 	}
-	if querySourceStatusMarker(state, nodesList[1]) != "Q✓ " {
+	if marker := querySourceStatusMarker(state, nodesList[1]); !strings.HasPrefix(marker, "Q✓ ") || len(marker) <= len("Q✓ ") {
 		t.Fatalf("successful status marker = %q", querySourceStatusMarker(state, nodesList[1]))
 	}
 }
@@ -4542,26 +6425,67 @@ func TestReceiverAddressFromPartsValidatesAndJoins(t *testing.T) {
 	}
 }
 
-func TestListenerAddressSummaryIncludesHostnameAndAddresses(t *testing.T) {
-	lines := listenerAddressSummaryLines("mac-mini", []string{"192.168.100.10", "10.0.0.5"}, "11113")
-	joined := strings.Join(lines, "\n")
+func TestListenerAddressSummaryTextShowsCommaSeparatedAdvertisedAddresses(t *testing.T) {
+	summary := listenerAddressSummaryText([]string{"192.168.100.10", "10.0.0.5"}, "11113")
 
-	for _, want := range []string{
-		"Host Name: mac-mini",
-		"192.168.100.10:11113",
-		"10.0.0.5:11113",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("summary missing %q in:\n%s", want, joined)
-		}
+	if summary != "192.168.100.10:11113, 10.0.0.5:11113" {
+		t.Fatalf("summary = %q", summary)
+	}
+	if strings.Contains(summary, "Advertised Address(es):") || strings.Contains(summary, "Host Name:") {
+		t.Fatalf("summary should be field text only, got %q", summary)
 	}
 }
 
-func TestListenerAddressSummaryShowsFallback(t *testing.T) {
-	lines := listenerAddressSummaryLines("", nil, "11113")
+func TestListenerAddressSummaryTextShowsFallback(t *testing.T) {
+	summary := listenerAddressSummaryText(nil, "11113")
 
-	if strings.Join(lines, "\n") != "Host Name: -\nReachable Addresses: -" {
-		t.Fatalf("lines = %#v", lines)
+	if summary != "-" {
+		t.Fatalf("summary = %q, want -", summary)
+	}
+}
+
+func TestNewListenerAddressSummaryEntryIsReadOnly(t *testing.T) {
+	fynetest.NewApp()
+
+	entry := newListenerAddressSummaryEntry("192.168.100.10:11113")
+
+	if entry.Text != "192.168.100.10:11113" {
+		t.Fatalf("entry text = %q", entry.Text)
+	}
+	if !entry.Disabled() {
+		t.Fatal("address summary entry should be read-only until address override editing is implemented")
+	}
+}
+
+func TestNewListenerHostNameControlsExposeReadOnlyHostName(t *testing.T) {
+	fynetest.NewApp()
+
+	hostName, editButton := newListenerHostNameControls(" mac-mini.local ")
+
+	if hostName.Text != "mac-mini.local" {
+		t.Fatalf("host name text = %q, want trimmed host name", hostName.Text)
+	}
+	if !hostName.Disabled() {
+		t.Fatal("host name entry should be read-only until editing is implemented")
+	}
+	if editButton.Text != "Edit" {
+		t.Fatalf("edit button text = %q, want Edit", editButton.Text)
+	}
+	if !editButton.Disabled() {
+		t.Fatal("host name edit button should be disabled until editing is implemented")
+	}
+}
+
+func TestNewListenerAddressEditButtonIsDisabledAffordance(t *testing.T) {
+	fynetest.NewApp()
+
+	editButton := newListenerAddressEditButton()
+
+	if editButton.Text != "Edit" {
+		t.Fatalf("edit button text = %q, want Edit", editButton.Text)
+	}
+	if !editButton.Disabled() {
+		t.Fatal("address edit button should stay disabled until address override editing is implemented")
 	}
 }
 
@@ -4600,14 +6524,59 @@ func TestNewListenerHostSelectUpdatesReceiverHost(t *testing.T) {
 	}
 }
 
+func TestAETitleFromHostNameSanitizesAndTruncatesForDICOM(t *testing.T) {
+	got := aeTitleFromHostName("Thaless-Mac-mini.local")
+
+	if got != "THALESS MAC MINI" {
+		t.Fatalf("AE title from host = %q, want THALESS MAC MINI", got)
+	}
+	if err := nodes.ValidateAETitle(got); err != nil {
+		t.Fatalf("derived AE title should be valid: %v", err)
+	}
+}
+
+func TestNewUseHostNameForAETitleCheckFillsAndRestoresManualTitle(t *testing.T) {
+	fynetest.NewApp()
+	localAE := widget.NewEntry()
+	localAE.SetText("MANUAL")
+	refreshed := false
+
+	check := newUseHostNameForAETitleCheck(localAE, "Thaless-Mac-mini.local", func() {
+		refreshed = true
+	})
+
+	check.SetChecked(true)
+	if localAE.Text != "THALESS MAC MINI" {
+		t.Fatalf("checked AE title = %q, want hostname-derived title", localAE.Text)
+	}
+	if !localAE.Disabled() {
+		t.Fatal("local AE entry should be disabled while using host name")
+	}
+	if !refreshed {
+		t.Fatal("checking host-name AE should refresh listener status")
+	}
+
+	refreshed = false
+	check.SetChecked(false)
+	if localAE.Text != "MANUAL" {
+		t.Fatalf("unchecked AE title = %q, want restored manual title", localAE.Text)
+	}
+	if localAE.Disabled() {
+		t.Fatal("local AE entry should be editable after disabling host-name AE")
+	}
+	if !refreshed {
+		t.Fatal("unchecking host-name AE should refresh listener status")
+	}
+}
+
 func TestListenerSettingsStatusTextShowsStoppedAndPendingStates(t *testing.T) {
 	stopped := listenerSettingsStatusText("GOPACS", "0.0.0.0", "11113", false, nil)
-	if stopped != "Stopped: GOPACS on 0.0.0.0:11113" {
+	if stopped != "Stopped: GOPACS binding 0.0.0.0:11113" {
 		t.Fatalf("stopped status = %q", stopped)
 	}
 
 	pending := listenerSettingsStatusText("GOPACS", "0.0.0.0", "11113", true, nil)
-	if pending != "Will start on Save: GOPACS on 0.0.0.0:11113" {
+	if pending != "Will start on Save: GOPACS binding 0.0.0.0:11113" {
 		t.Fatalf("pending status = %q", pending)
 	}
 }
@@ -4617,8 +6586,109 @@ func TestListenerSettingsStatusTextShowsRunningSnapshot(t *testing.T) {
 
 	status := listenerSettingsStatusText("IGNORED", "0.0.0.0", "11112", false, &snapshot)
 
-	if status != "Running: GOPACS on 127.0.0.1:11113; stored 7 objects" {
+	if status != "Running: GOPACS binding 127.0.0.1:11113; stored 7 objects" {
 		t.Fatalf("running status = %q", status)
+	}
+}
+
+func TestNewActivateListenerCheckUsesAutoStartWording(t *testing.T) {
+	fynetest.NewApp()
+
+	autoStart := newActivateListenerCheck(true, false)
+	running := newActivateListenerCheck(false, true)
+	stopped := newActivateListenerCheck(false, false)
+
+	if autoStart.Text != "Activate DICOM listener when Go PACS is running" {
+		t.Fatalf("activate listener text = %q", autoStart.Text)
+	}
+	if !autoStart.Checked {
+		t.Fatal("auto-start checkbox should be checked when the persisted preference is enabled")
+	}
+	if !running.Checked {
+		t.Fatal("auto-start checkbox should be checked while the receiver is already running")
+	}
+	if stopped.Checked {
+		t.Fatal("auto-start checkbox should be unchecked when stopped and not persisted")
+	}
+}
+
+func TestListenerPortFormLabelMatchesReference(t *testing.T) {
+	if settingsLabelReceiverPort != "Port Number" {
+		t.Fatalf("receiver port form label = %q, want Port Number", settingsLabelReceiverPort)
+	}
+}
+
+func TestNewReceiverPortControlsShowValidRangeHint(t *testing.T) {
+	fynetest.NewApp()
+
+	entry, controls := newReceiverPortControls("11112")
+	texts := collectWidgetTexts(controls)
+
+	if entry.Text != "11112" {
+		t.Fatalf("port entry text = %q", entry.Text)
+	}
+	if !slices.Contains(texts, "11112") {
+		t.Fatalf("port controls missing entry text in %#v", texts)
+	}
+	if !slices.Contains(texts, "(between 1 and 65535)") {
+		t.Fatalf("port controls missing valid range hint in %#v", texts)
+	}
+}
+
+func TestListenerIncomingPolicyControlsExposeDisabledIncomingPolicyChoices(t *testing.T) {
+	fynetest.NewApp()
+
+	panel := newListenerIncomingPolicyControls()
+	texts := collectWidgetTexts(panel)
+
+	for _, want := range []string{
+		"Check for new files every",
+		"10",
+		"seconds",
+		"Incoming files",
+		"If Go PACS is not able to open a file received by the DICOM listener:",
+		"Replace existing files with newly received files",
+	} {
+		if !slices.Contains(texts, want) {
+			t.Fatalf("incoming policy controls missing %q in %#v", want, texts)
+		}
+	}
+	incomingFiles := findRadioGroupWithOption(panel, "Compress non-compressed images with JPEG (See General Preferences)")
+	if incomingFiles == nil {
+		t.Fatal("incoming file processing choices should be a disabled radio group")
+	}
+	if incomingFiles.Selected != "Don't modify" {
+		t.Fatalf("incoming file selected choice = %q, want Don't modify", incomingFiles.Selected)
+	}
+	if !incomingFiles.Disabled() {
+		t.Fatal("incoming file radio group should be disabled until policy support is implemented")
+	}
+	unreadableObjects := findRadioGroupWithOption(panel, "Move it to the NOT READABLE folder")
+	if unreadableObjects == nil {
+		t.Fatal("unreadable object choices should be a disabled radio group")
+	}
+	if unreadableObjects.Selected != "Move it to the NOT READABLE folder" {
+		t.Fatalf("unreadable selected choice = %q, want move policy", unreadableObjects.Selected)
+	}
+	if !unreadableObjects.Disabled() {
+		t.Fatal("unreadable object radio group should be disabled until raw-file policy support is implemented")
+	}
+}
+
+func TestListenerMetadataPolicyControlsExposeDisabledMetadataPolicyChoices(t *testing.T) {
+	fynetest.NewApp()
+
+	panel := newListenerMetadataPolicyControls()
+	texts := collectWidgetTexts(panel)
+
+	for _, want := range []string{
+		"Store Destination AETitle in PrivateInformationCreatorUID (0002,0100)",
+		"Store Source AETitle in SourceApplicationEntityTitle (0002,0016)",
+		"Activate the DICOM Listener only if this user session is active (user switching)",
+	} {
+		if !slices.Contains(texts, want) {
+			t.Fatalf("metadata policy controls missing %q in %#v", want, texts)
+		}
 	}
 }
 
@@ -4640,6 +6710,23 @@ func TestDICOMTimeoutDurationsUseConfiguredSecondsAndDefaults(t *testing.T) {
 	}
 	if got := dicomConnectionTimeoutDuration(appconfig.Config{}); got != time.Duration(appconfig.DefaultDICOMConnectionTimeoutSeconds)*time.Second {
 		t.Fatalf("default connection timeout = %s", got)
+	}
+}
+
+func TestNewDICOMTimeoutControlsShowSecondsSuffix(t *testing.T) {
+	fynetest.NewApp()
+
+	entry, controls := newDICOMTimeoutControls("40")
+	texts := collectWidgetTexts(controls)
+
+	if entry.Text != "40" {
+		t.Fatalf("timeout entry text = %q, want 40", entry.Text)
+	}
+	if !slices.Contains(texts, "40") {
+		t.Fatalf("timeout controls missing entry text in %#v", texts)
+	}
+	if !slices.Contains(texts, "seconds") {
+		t.Fatalf("timeout controls missing seconds suffix in %#v", texts)
 	}
 }
 
@@ -4668,6 +6755,22 @@ func TestReceivePreferredSyntaxLabelRoundTripsTransferSyntax(t *testing.T) {
 
 	if receivePreferredSyntaxValue("unknown") != receive.PreferredTransferSyntaxAuto {
 		t.Fatalf("unknown label should map to Auto")
+	}
+}
+
+func TestNewPreferredReceiveSyntaxControlsShowRetrieveUsageHint(t *testing.T) {
+	fynetest.NewApp()
+
+	selectWidget, hint, controls := newPreferredReceiveSyntaxControls(receive.PreferredTransferSyntaxImplicitVRLittleEndian)
+
+	if selectWidget.Selected != receivePreferredSyntaxImplicitLabel {
+		t.Fatalf("selected preferred syntax = %q, want %q", selectWidget.Selected, receivePreferredSyntaxImplicitLabel)
+	}
+	if hint.Text != "(used during Q/R Retrieve)" {
+		t.Fatalf("hint = %q, want retrieve usage text", hint.Text)
+	}
+	if controls == nil {
+		t.Fatal("preferred syntax controls should return a composed UI object")
 	}
 }
 
@@ -4706,18 +6809,21 @@ func TestParsePositiveSecondsRequiresPositiveInteger(t *testing.T) {
 func TestArchiveAlbumLinesSummarizeStudyCounts(t *testing.T) {
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.Local)
 	studies := []archive.Study{
-		{Modalities: "CT", ImportedAt: now},
-		{Modalities: "MR", ImportedAt: now.Add(-2 * time.Hour)},
-		{Modalities: "CT\\SR", ImportedAt: now.AddDate(0, 0, -2)},
+		{Modalities: "CT", StudyDate: "20260604", StudyTime: "113000", ImportedAt: now.Add(-2 * time.Hour)},
+		{Modalities: "CR", StudyDate: "20260604", StudyTime: "090000", ImportedAt: now.Add(-30 * time.Minute)},
+		{Modalities: "MR", StudyDate: "20260604", StudyTime: "113500", ImportedAt: now.Add(-30 * time.Minute)},
+		{Modalities: "CT\\SR", StudyDate: "20260602", StudyTime: "120000", ImportedAt: now.AddDate(0, 0, -2)},
 	}
 
 	lines := archiveAlbumLines(studies, now)
 	joined := strings.Join(lines, "\n")
 
 	for _, want := range []string{
-		"Database                         3",
-		"Just Acquired (last hour)        1",
-		"Today                            2",
+		"Database                         4",
+		"Just Acquired (last hour)        2",
+		"Just Added (last hour)           2",
+		"Today                            3",
+		"Today CR                         1",
 		"Today CT                         1",
 	} {
 		if !strings.Contains(joined, want) {
@@ -4738,10 +6844,10 @@ func TestArchiveAlbumRowsMarkSelectedFilterableAlbum(t *testing.T) {
 	if rows[0].Text != "  Database                         2" {
 		t.Fatalf("database row text = %q", rows[0].Text)
 	}
-	if rows[5].Text != "▶ Today                            2" {
-		t.Fatalf("selected today row text = %q", rows[5].Text)
+	if rows[6].Text != "▶ Today                            2" {
+		t.Fatalf("selected today row text = %q", rows[6].Text)
 	}
-	if !rows[5].Filterable {
+	if !rows[6].Filterable {
 		t.Fatalf("today row should be filterable")
 	}
 	if rows[1].Text != "  Cases with comments              1" {
@@ -4755,6 +6861,123 @@ func TestArchiveAlbumRowsMarkSelectedFilterableAlbum(t *testing.T) {
 	}
 	if !rows[2].Filterable {
 		t.Fatalf("interesting cases row should be filterable")
+	}
+}
+
+func TestArchiveAlbumRowsCountAndFilterJustOpenedStudies(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.Local)
+	studies := []archive.Study{
+		{StudyInstanceUID: "study-opened", PatientName: "OPENED"},
+		{StudyInstanceUID: "study-other", PatientName: "OTHER"},
+	}
+	opened := map[string]bool{"study-opened": true}
+
+	rows := archiveAlbumRowsWithOpened(studies, now, archiveAlbumOpened, opened)
+
+	if rows[5].Text != "▶ Just Opened                      1" {
+		t.Fatalf("opened row text = %q", rows[5].Text)
+	}
+	if !rows[5].Filterable {
+		t.Fatal("Just Opened should be filterable once opened study tracking exists")
+	}
+
+	filtered := filterStudiesByOpenedUIDs(studies, opened)
+	if len(filtered) != 1 || filtered[0].StudyInstanceUID != "study-opened" {
+		t.Fatalf("opened filtered studies = %#v", filtered)
+	}
+}
+
+func TestArchiveAlbumListUsesNativeIconsAndTrailingCounts(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.Local)
+	state := &uiState{
+		studies: []archive.Study{
+			{Modalities: "CT", ImportedAt: now, Comments: "Needs review"},
+			{Modalities: "MR", ImportedAt: now.Add(-2 * time.Hour)},
+		},
+		selectedArchiveAlbum: archiveAlbumComments,
+	}
+	list := newArchiveAlbumList(nil, widget.NewLabel(""), archiveTables{}, state)
+	item := list.CreateItem()
+
+	albumItem, ok := item.(*archiveAlbumListItem)
+	if !ok {
+		t.Fatalf("album list item = %T, want *archiveAlbumListItem", item)
+	}
+	list.UpdateItem(widget.ListItemID(0), albumItem)
+
+	if albumItem.albumIcon.Resource == nil || albumItem.albumIcon.Resource.Name() != theme.StorageIcon().Name() {
+		t.Fatalf("database icon = %#v, want storage icon", albumItem.albumIcon.Resource)
+	}
+	if albumItem.label.Text != "Database" {
+		t.Fatalf("database label = %q", albumItem.label.Text)
+	}
+	if albumItem.count.Text != "2" {
+		t.Fatalf("database count = %q, want 2", albumItem.count.Text)
+	}
+	if albumItem.countSlot == nil {
+		t.Fatal("album count should be wrapped in a fixed trailing slot")
+	}
+	if size := albumItem.countSlot.MinSize(); size.Width != compactArchiveAlbumCountSlotWidth {
+		t.Fatalf("album count slot width = %.0f, want %.0f", size.Width, compactArchiveAlbumCountSlotWidth)
+	}
+	if albumItem.selectionIcon.Visible() {
+		t.Fatal("unselected album should hide selection marker")
+	}
+
+	list.UpdateItem(widget.ListItemID(1), albumItem)
+	if albumItem.albumIcon.Resource == nil || albumItem.albumIcon.Resource.Name() != theme.FolderIcon().Name() {
+		t.Fatalf("album icon = %#v, want folder icon", albumItem.albumIcon.Resource)
+	}
+	if albumItem.label.Text != "Cases with comments" {
+		t.Fatalf("comments label = %q", albumItem.label.Text)
+	}
+	if albumItem.count.Text != "1" {
+		t.Fatalf("comments count = %q, want 1", albumItem.count.Text)
+	}
+	if !albumItem.selectionIcon.Visible() || albumItem.selectionIcon.Resource.Name() != theme.NavigateNextIcon().Name() {
+		t.Fatalf("selected marker = visible %v resource %#v", albumItem.selectionIcon.Visible(), albumItem.selectionIcon.Resource)
+	}
+	if got := color.NRGBAModel.Convert(albumItem.background.FillColor).(color.NRGBA); got != archiveSelectedRowColor {
+		t.Fatalf("selected album fill = %#v, want %#v", got, archiveSelectedRowColor)
+	}
+	if got := countCanvasRectanglesWithColor(albumItem.Container, tableColumnDividerColor); got < 2 {
+		t.Fatalf("album row dividers = %d, want right and bottom divider", got)
+	}
+}
+
+func TestRecordOpenedArchiveStudyTracksSelectedStudyUID(t *testing.T) {
+	state := &uiState{}
+
+	recordOpenedArchiveStudy(state, archive.Study{StudyInstanceUID: " study-1 "})
+
+	if !state.openedArchiveStudyUIDs["study-1"] {
+		t.Fatalf("opened study UIDs = %#v, want study-1", state.openedArchiveStudyUIDs)
+	}
+}
+
+func TestRecordOpenedArchiveStudyPersistsRecentUIDs(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	state := &uiState{
+		appConfigPath: configPath,
+		appConfig: appconfig.Config{
+			LocalAETitle:           "GOPACS",
+			ReceiverAddress:        "127.0.0.1:11113",
+			OpenedArchiveStudyUIDs: []string{"study-old"},
+		},
+	}
+
+	recordOpenedArchiveStudy(state, archive.Study{StudyInstanceUID: " study-new "})
+	recordOpenedArchiveStudy(state, archive.Study{StudyInstanceUID: " study-old "})
+
+	loaded, err := appconfig.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load persisted config: %v", err)
+	}
+	if got, want := loaded.OpenedArchiveStudyUIDs, []string{"study-old", "study-new"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("persisted opened studies = %#v, want %#v", got, want)
+	}
+	if !state.openedArchiveStudyUIDs["study-new"] || !state.openedArchiveStudyUIDs["study-old"] {
+		t.Fatalf("opened study map = %#v, want both studies", state.openedArchiveStudyUIDs)
 	}
 }
 
@@ -4777,6 +7000,51 @@ func TestArchiveAlbumFilterForInteresting(t *testing.T) {
 	}
 	if filters.Status != "Interesting" {
 		t.Fatalf("Status = %q, want Interesting", filters.Status)
+	}
+}
+
+func TestArchiveAlbumFilterForJustAddedLastHour(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.Local)
+
+	filters, ok := archiveAlbumFilters(archiveAlbumAddedLastHour, now)
+
+	if !ok {
+		t.Fatal("Just Added album should produce filters")
+	}
+	if filters.ImportedAtFrom == "" || filters.StudyDateTimeFrom != "" {
+		t.Fatalf("Just Added filters = %#v, want imported-at only", filters)
+	}
+}
+
+func TestArchiveAlbumFilterForJustAcquiredLastHour(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.Local)
+
+	filters, ok := archiveAlbumFilters(archiveAlbumLastHour, now)
+
+	if !ok {
+		t.Fatal("Just Acquired album should produce filters")
+	}
+	if filters.StudyDateTimeFrom != "20260604110000" || filters.StudyDateTimeTo != "20260604120000" {
+		t.Fatalf("Just Acquired filters = %#v, want study datetime bounds", filters)
+	}
+	if filters.ImportedAtFrom != "" || filters.ImportedAtTo != "" {
+		t.Fatalf("Just Acquired should not use imported-at filters: %#v", filters)
+	}
+}
+
+func TestArchiveAlbumFilterForTodayCR(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.Local)
+
+	filters, ok := archiveAlbumFilters(archiveAlbumTodayCR, now)
+
+	if !ok {
+		t.Fatalf("Today CR album should produce filters")
+	}
+	if filters.ImportedAtFrom == "" || filters.ImportedAtTo == "" {
+		t.Fatalf("today filter did not set imported-at bounds: %#v", filters)
+	}
+	if strings.Join(filters.Modalities, ",") != "CR" {
+		t.Fatalf("Modalities = %#v, want CR", filters.Modalities)
 	}
 }
 
@@ -5018,6 +7286,12 @@ func TestArchiveSourceListUsesNativeIconWidgets(t *testing.T) {
 	if sourceItem.label.Text != "RADIANT 192.168.100.26:11112" {
 		t.Fatalf("source label = %q", sourceItem.label.Text)
 	}
+	if got := color.NRGBAModel.Convert(sourceItem.background.FillColor).(color.NRGBA); got != archiveSelectedRowColor {
+		t.Fatalf("selected source fill = %#v, want %#v", got, archiveSelectedRowColor)
+	}
+	if got := countCanvasRectanglesWithColor(sourceItem.Container, tableColumnDividerColor); got < 2 {
+		t.Fatalf("source row dividers = %d, want right and bottom divider", got)
+	}
 }
 
 func TestArchiveSourceListSelectsRemoteNode(t *testing.T) {
@@ -5077,6 +7351,33 @@ func TestArchiveSourcePriorityButtonsMoveSelectedNode(t *testing.T) {
 	}
 	if status.Text != "Updated source priority" {
 		t.Fatalf("status = %q, want Updated source priority", status.Text)
+	}
+}
+
+func TestArchiveSidebarSectionsUseWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	sidebar := newArchiveSidebar(nil, status, archiveTables{}, state)
+	content := sidebar
+	if scroll, ok := sidebar.(*container.Scroll); ok {
+		content = scroll.Content
+	}
+
+	for _, title := range []string{"Albums", "Sources", "Activity"} {
+		if findLabelContaining(content, title) == nil {
+			t.Fatalf("archive sidebar should expose %q section title", title)
+		}
+	}
+	if got := countCanvasRectanglesWithColor(content, archiveHeaderRowColor); got < 3 {
+		t.Fatalf("archive sidebar header backgrounds = %d, want one per section", got)
+	}
+	if got := countCanvasRectanglesWithColor(content, archiveOddRowColor); got < 3 {
+		t.Fatalf("archive sidebar body backgrounds = %d, want one per section", got)
+	}
+	if got := countCanvasRectanglesWithColor(content, tableColumnDividerColor); got < 6 {
+		t.Fatalf("archive sidebar divider rectangles = %d, want panel borders and header dividers", got)
 	}
 }
 
@@ -5156,6 +7457,26 @@ func TestArchiveSummaryPaneTitleUsesSelectedPatientName(t *testing.T) {
 	refreshArchiveChrome(state)
 	if got := state.archiveSummaryTitle.Text; got != "Selected Study" {
 		t.Fatalf("archive summary title after clearing selection = %q, want Selected Study", got)
+	}
+}
+
+func TestArchiveSummaryPaneUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+
+	pane := newArchiveSummaryPane(nil, widget.NewLabel(""), archiveTables{}, state)
+
+	if state.archiveSummaryTitle == nil || state.archiveEditStudyButton == nil || state.archiveSummary == nil {
+		t.Fatal("archive summary pane should wire title, edit button, and summary label")
+	}
+	if !containsCanvasRectangleColor(pane, archiveHeaderRowColor) {
+		t.Fatal("archive summary pane should use dark workbench header background")
+	}
+	if !containsCanvasRectangleColor(pane, archiveOddRowColor) {
+		t.Fatal("archive summary pane should use dark workbench body background")
+	}
+	if got := countCanvasRectanglesWithColor(pane, tableColumnDividerColor); got < 2 {
+		t.Fatalf("archive summary pane divider rectangles = %d, want panel borders and header divider", got)
 	}
 }
 
@@ -5309,7 +7630,7 @@ func testStringElement(tag core.Tag, vr core.VR, value string) core.Element {
 	}
 }
 
-func TestArchiveSummaryTextListsSamePatientStudies(t *testing.T) {
+func TestPatientStudySummaryRowsListSamePatientStudies(t *testing.T) {
 	state := &uiState{
 		studies: []archive.Study{
 			{PatientName: "DOE^JANE", PatientID: "P123", StudyDate: "20260501", StudyDescription: "CT Chest", Modalities: "CT", InstanceCount: 42},
@@ -5319,21 +7640,139 @@ func TestArchiveSummaryTextListsSamePatientStudies(t *testing.T) {
 	}
 	state.selectedStudyRow = 1
 
-	text := archiveSummaryText(state)
+	rows := patientStudySummaryRows(state, state.selectedStudyRow)
 
-	for _, want := range []string{
-		"Patient studies",
-		"▶ MR Brain MR",
-		"20260531 8 images",
-		"  CT Chest CT",
-		"20260501 42 images",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("summary text missing %q in:\n%s", want, text)
+	if len(rows) != 2 {
+		t.Fatalf("patient study rows = %#v, want selected plus same-patient prior study", rows)
+	}
+	if !rows[0].Selected || rows[0].StudyIndex != 1 || rows[0].Primary != "MR Brain" || rows[0].Modality != "MR" || rows[0].Secondary != "20260531" || rows[0].Images != "8 images" {
+		t.Fatalf("selected patient study row = %#v", rows[0])
+	}
+	if rows[1].Selected || rows[1].StudyIndex != 0 || rows[1].Primary != "CT Chest" || rows[1].Modality != "CT" || rows[1].Secondary != "20260501" || rows[1].Images != "42 images" {
+		t.Fatalf("prior patient study row = %#v", rows[1])
+	}
+}
+
+func TestArchiveSummaryPaneUsesNativePatientStudyList(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{
+		studies: []archive.Study{
+			{PatientName: "DOE^JANE", PatientID: "P123", StudyDate: "20260501", StudyDescription: "CT Chest", Modalities: "CT", InstanceCount: 42},
+			{PatientName: "DOE^JANE", PatientID: "P123", StudyDate: "20260531", StudyDescription: "MR Brain", Modalities: "MR", InstanceCount: 8},
+		},
+		selectedStudyRow: 1,
+	}
+
+	_ = newArchiveSummaryPane(nil, widget.NewLabel(""), archiveTables{}, state)
+	if state.archivePatientStudyList == nil {
+		t.Fatal("archive summary pane should wire native patient study list")
+	}
+	item := state.archivePatientStudyList.CreateItem()
+	studyItem, ok := item.(*archivePatientStudyListItem)
+	if !ok {
+		t.Fatalf("patient study list item = %T, want *archivePatientStudyListItem", item)
+	}
+
+	state.archivePatientStudyList.UpdateItem(widget.ListItemID(0), studyItem)
+
+	if !studyItem.selectionIcon.Visible() || studyItem.selectionIcon.Resource.Name() != theme.NavigateNextIcon().Name() {
+		t.Fatalf("selected patient study marker = visible %v resource %#v", studyItem.selectionIcon.Visible(), studyItem.selectionIcon.Resource)
+	}
+	if studyItem.primary.Text != "MR Brain" {
+		t.Fatalf("primary text = %q", studyItem.primary.Text)
+	}
+	if !studyItem.primary.TextStyle.Bold {
+		t.Fatal("primary patient study line should use bold compact typography")
+	}
+	if studyItem.modality.Text != "MR" {
+		t.Fatalf("modality text = %q", studyItem.modality.Text)
+	}
+	if studyItem.modality.Alignment != fyne.TextAlignTrailing {
+		t.Fatalf("modality alignment = %v, want trailing", studyItem.modality.Alignment)
+	}
+	if studyItem.secondary.Text != "20260531" {
+		t.Fatalf("secondary text = %q", studyItem.secondary.Text)
+	}
+	if !studyItem.secondary.TextStyle.Italic {
+		t.Fatal("secondary patient study line should remain visually subdued")
+	}
+	if studyItem.images.Text != "8 images" {
+		t.Fatalf("images text = %q", studyItem.images.Text)
+	}
+	if studyItem.images.Alignment != fyne.TextAlignTrailing {
+		t.Fatalf("images alignment = %v, want trailing", studyItem.images.Alignment)
+	}
+	if studyItem.metricsSlot.MinSize().Width < archivePatientStudyMetricsSlotWidth {
+		t.Fatalf("patient study metrics slot width = %.0f, want at least %.0f", studyItem.metricsSlot.MinSize().Width, archivePatientStudyMetricsSlotWidth)
+	}
+	if got := color.NRGBAModel.Convert(studyItem.background.FillColor).(color.NRGBA); got != archiveSelectedRowColor {
+		t.Fatalf("selected patient study fill = %#v, want %#v", got, archiveSelectedRowColor)
+	}
+	if got := countCanvasRectanglesWithColor(studyItem.Container, tableColumnDividerColor); got < 2 {
+		t.Fatalf("patient study row dividers = %d, want right and bottom divider", got)
+	}
+}
+
+func TestArchivePatientStudyListUsesCompactRowHeights(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{
+		studies: []archive.Study{
+			{PatientName: "DOE^JANE", PatientID: "P123", StudyDate: "20260501", StudyDescription: "CT Chest", Modalities: "CT", InstanceCount: 42},
+			{PatientName: "DOE^JANE", PatientID: "P123", StudyDate: "20260531", StudyDescription: "MR Brain", Modalities: "MR", InstanceCount: 8},
+		},
+		selectedStudyRow: 1,
+	}
+
+	list := newArchivePatientStudyList(state)
+
+	for id := range patientStudySummaryRows(state, state.selectedStudyRow) {
+		height, ok := listItemHeight(list, id)
+		if !ok {
+			t.Fatalf("patient study summary row %d should have an explicit compact height", id)
+		}
+		if height != compactArchivePatientStudyRowHeight {
+			t.Fatalf("patient study summary row %d height = %.0f, want %.0f", id, height, compactArchivePatientStudyRowHeight)
 		}
 	}
-	if strings.Contains(text, "SMITH") || strings.Contains(text, "US Abdomen") {
-		t.Fatalf("summary text included another patient:\n%s", text)
+}
+
+func TestArchivePatientStudyListSelectionDrivesArchiveStudySelection(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{
+		studies: []archive.Study{
+			{StudyInstanceUID: "study-ct", PatientName: "DOE^JANE", PatientID: "P123", StudyDate: "20260501", StudyDescription: "CT Chest", Modalities: "CT", InstanceCount: 42},
+			{StudyInstanceUID: "study-mr", PatientName: "DOE^JANE", PatientID: "P123", StudyDate: "20260531", StudyDescription: "MR Brain", Modalities: "MR", InstanceCount: 8},
+		},
+		selectedStudyRow:    1,
+		selectedSeriesRow:   0,
+		selectedInstanceRow: 0,
+		series:              []archive.Series{{SeriesInstanceUID: "series-old"}},
+		instances:           []archive.Instance{{SOPInstanceUID: "instance-old"}},
+	}
+	state.archiveRows = archiveBrowserRows(state.studies)
+	state.archiveSummary = compactWorkbenchLabel()
+
+	list := newArchivePatientStudyList(state)
+	if list.OnSelected == nil {
+		t.Fatal("patient study list should handle row selection")
+	}
+
+	list.OnSelected(widget.ListItemID(1))
+
+	if state.selectedStudyRow != 0 || state.studies[state.selectedStudyRow].StudyInstanceUID != "study-ct" {
+		t.Fatalf("selected study row = %d, want study-ct", state.selectedStudyRow)
+	}
+	if state.selectedSeriesRow != -1 || state.selectedInstanceRow != -1 || len(state.series) != 0 || len(state.instances) != 0 {
+		t.Fatalf("dependent selections not cleared: series row %d instance row %d series %#v instances %#v", state.selectedSeriesRow, state.selectedInstanceRow, state.series, state.instances)
+	}
+	if !archiveBrowserRowSelected(state.archiveRows[1], state) {
+		t.Fatalf("archive rows should highlight the newly selected study: %#v", state.archiveRows)
+	}
+	if !state.openedArchiveStudyUIDs["study-ct"] {
+		t.Fatalf("opened studies = %#v, want study-ct recorded", state.openedArchiveStudyUIDs)
+	}
+	if !strings.Contains(state.archiveSummary.Text, "CT Chest") {
+		t.Fatalf("archive summary = %q, want newly selected study details", state.archiveSummary.Text)
 	}
 }
 
@@ -5365,7 +7804,7 @@ func TestArchiveResultSummaryTextIncludesActiveAlbumContext(t *testing.T) {
 
 	got := archiveResultSummaryText(state)
 
-	want := "2 patients, 2 studies, 3 series, 45 images - Album: Today CT"
+	want := "2 patients, 2 studies, 3 series, 45 images - Album: Today CT - Scope: imported today, modality CT"
 	if got != want {
 		t.Fatalf("archive result summary = %q, want %q", got, want)
 	}
@@ -5391,14 +7830,15 @@ func TestArchiveResultSummaryTextIncludesSelectedSourceContext(t *testing.T) {
 func TestArchiveSeriesSummaryTextCountsLoadedSeries(t *testing.T) {
 	state := &uiState{
 		series: []archive.Series{
-			{Modality: "CT", InstanceCount: 42},
+			{SeriesNumber: "2", SeriesDescription: "Abdomen", Modality: "CT", InstanceCount: 42},
 			{Modality: "SR", InstanceCount: 1},
 		},
+		selectedSeriesRow: 0,
 	}
 
 	got := archiveSeriesSummaryText(state)
 
-	want := "2 series, 43 images"
+	want := "2 series, 43 images - Selected: #2 Abdomen CT"
 	if got != want {
 		t.Fatalf("archive series summary = %q, want %q", got, want)
 	}
@@ -5407,15 +7847,16 @@ func TestArchiveSeriesSummaryTextCountsLoadedSeries(t *testing.T) {
 func TestArchiveInstancesSummaryTextCountsLoadedImages(t *testing.T) {
 	state := &uiState{
 		instances: []archive.Instance{
-			{SOPInstanceUID: "1.2.3"},
-			{SOPInstanceUID: "1.2.4"},
+			{InstanceNumber: "1", SOPInstanceUID: "1.2.3"},
+			{InstanceNumber: "2", SOPInstanceUID: "1.2.4"},
 			{SOPInstanceUID: "1.2.5"},
 		},
+		selectedInstanceRow: 1,
 	}
 
 	got := archiveInstancesSummaryText(state)
 
-	want := "3 images"
+	want := "3 images - Selected: #2 1.2.4"
 	if got != want {
 		t.Fatalf("archive instances summary = %q, want %q", got, want)
 	}
@@ -5431,6 +7872,8 @@ func TestRefreshArchiveChromeUpdatesDetailSummaryFooters(t *testing.T) {
 		instances:               []archive.Instance{{SOPInstanceUID: "1"}, {SOPInstanceUID: "2"}},
 		archiveSeriesSummary:    widget.NewLabel("old series"),
 		archiveInstancesSummary: widget.NewLabel("old images"),
+		selectedSeriesRow:       -1,
+		selectedInstanceRow:     -1,
 	}
 
 	refreshArchiveChrome(state)
@@ -5440,6 +7883,28 @@ func TestRefreshArchiveChromeUpdatesDetailSummaryFooters(t *testing.T) {
 	}
 	if state.archiveInstancesSummary.Text != "2 images" {
 		t.Fatalf("instances footer = %q", state.archiveInstancesSummary.Text)
+	}
+}
+
+func TestLabeledTableWithFooterUsesWorkbenchFooterChrome(t *testing.T) {
+	fynetest.NewApp()
+	footer := widget.NewLabel("2 series, 5 images")
+	table := widget.NewTable(
+		func() (int, int) { return 1, 1 },
+		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func(widget.TableCellID, fyne.CanvasObject) {},
+	)
+
+	panel := labeledTableWithFooter("Series", table, footer)
+
+	if findLabelContaining(panel, "2 series, 5 images") == nil {
+		t.Fatal("labeled table footer should preserve the summary label")
+	}
+	if !containsCanvasRectangleColor(panel, archiveHeaderRowColor) {
+		t.Fatal("labeled table footer should use dark workbench footer background")
+	}
+	if got := countCanvasRectanglesWithColor(panel, tableColumnDividerColor); got < 2 {
+		t.Fatalf("labeled table footer divider rectangles = %d, want footer chrome dividers", got)
 	}
 }
 
@@ -5628,7 +8093,7 @@ func TestArchiveBrowserCellRendersPatientAndIndentedStudyRows(t *testing.T) {
 	}
 }
 
-func TestArchiveTableHeadersIncludeClinicalDisplayFields(t *testing.T) {
+func TestArchiveTableHeadersIncludeWorkstationDisplayFields(t *testing.T) {
 	headers := strings.Join(archiveTableHeaders(), "|")
 
 	for _, want := range []string{"Patient name", "Date of Birth", "Date Acquired", "Date Added", "# im", "# ser", "Institution", "Status", "Comments"} {
@@ -5657,7 +8122,7 @@ func TestArchiveTableHeadersHideSeparateTimeAndDescriptionByDefault(t *testing.T
 	}
 }
 
-func TestArchiveTableHeadersFollowPrimaryClinicalOrder(t *testing.T) {
+func TestArchiveTableHeadersFollowWorkstationPrimaryOrder(t *testing.T) {
 	want := []string{"Patient name", "Modality", "# im", "# ser", "Patient ID", "Date of Birth", "Accession", "Date Acquired", "Date Added", "Institution", "Status", "Comments"}
 
 	if got := archiveTableHeaders(); strings.Join(got, "|") != strings.Join(want, "|") {
@@ -5747,6 +8212,67 @@ func TestApplyArchiveSortPreservesSelectedStudyWhenItMoves(t *testing.T) {
 	}
 }
 
+func TestApplyArchiveSortPersistsSortPreference(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	state := &uiState{
+		appConfigPath: configPath,
+		appConfig:     appconfig.Defaults(),
+		studies: []archive.Study{
+			{StudyInstanceUID: "study-smith", PatientName: "SMITH^JOHN", PatientID: "P2"},
+			{StudyInstanceUID: "study-doe", PatientName: "DOE^JANE", PatientID: "P1"},
+		},
+	}
+	state.archiveRows = archiveBrowserRows(state.studies)
+
+	if !applyArchiveSort(state, archiveStudyTableColumnPatient) {
+		t.Fatal("applyArchiveSort returned false for Patient column")
+	}
+
+	loaded, err := appconfig.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load persisted config: %v", err)
+	}
+	pref, ok := loaded.UISortPreferences[archiveSortPreferenceKey]
+	if !ok {
+		t.Fatalf("missing archive sort preference in %#v", loaded.UISortPreferences)
+	}
+	if pref.Column != archiveStudyTableColumnPatient || pref.Descending {
+		t.Fatalf("persisted archive sort = col %d desc %v", pref.Column, pref.Descending)
+	}
+}
+
+func TestApplySavedArchiveSortPreferenceSortsLoadedStudiesAndPreservesSelection(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{
+			UISortPreferences: map[string]appconfig.SortPreference{
+				archiveSortPreferenceKey: {Column: archiveStudyTableColumnPatient, Descending: true},
+			},
+		},
+		studies: []archive.Study{
+			{StudyInstanceUID: "study-alpha", PatientName: "ALPHA^ANN", PatientID: "P0"},
+			{StudyInstanceUID: "study-smith", PatientName: "SMITH^JOHN", PatientID: "P2"},
+			{StudyInstanceUID: "study-doe", PatientName: "DOE^JANE", PatientID: "P1"},
+		},
+		selectedStudyRow: 2,
+	}
+	state.archiveRows = archiveBrowserRows(state.studies)
+
+	applySavedArchiveSortPreference(state)
+
+	if got := archivePatientOrder(state.studies); strings.Join(got, "|") != "SMITH^JOHN|DOE^JANE|ALPHA^ANN" {
+		t.Fatalf("saved archive sort order = %q", strings.Join(got, "|"))
+	}
+	if !state.archiveSortActive || state.archiveSortColumn != archiveStudyTableColumnPatient || !state.archiveSortDescending {
+		t.Fatalf("saved archive sort state = active %v col %d desc %v", state.archiveSortActive, state.archiveSortColumn, state.archiveSortDescending)
+	}
+	if state.selectedStudyRow != 1 || state.studies[state.selectedStudyRow].StudyInstanceUID != "study-doe" {
+		t.Fatalf("selected study after saved sort = row %d uid %q", state.selectedStudyRow, state.studies[state.selectedStudyRow].StudyInstanceUID)
+	}
+	if len(state.archiveRows) == 0 || state.archiveRows[0].kind != archiveRowPatient {
+		t.Fatalf("archive rows not rebuilt after saved sort: %#v", state.archiveRows)
+	}
+}
+
 func TestArchiveSortRejectsUnsortableColumns(t *testing.T) {
 	state := &uiState{
 		studies: []archive.Study{{PatientName: "DOE^JANE"}, {PatientName: "ALPHA^ANN"}},
@@ -5776,6 +8302,14 @@ func TestArchiveHeaderLabelShowsSortDirection(t *testing.T) {
 	if got := archiveHeaderLabel(state, archiveStudyTableColumnPatient, "Patient"); got != "Patient" {
 		t.Fatalf("inactive header = %q, want Patient", got)
 	}
+}
+
+func archivePatientOrder(studies []archive.Study) []string {
+	out := make([]string, 0, len(studies))
+	for _, study := range studies {
+		out = append(out, study.PatientName)
+	}
+	return out
 }
 
 func TestArchiveHeaderSelectionMapsVisibleColumnToDataColumn(t *testing.T) {
@@ -5887,6 +8421,58 @@ func TestApplySeriesSortRebuildsInlineArchiveRows(t *testing.T) {
 	}
 }
 
+func TestApplySeriesSortPersistsSortPreference(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	state := &uiState{
+		appConfigPath: configPath,
+		appConfig:     appconfig.Defaults(),
+		series: []archive.Series{
+			{SeriesNumber: "10", SeriesDescription: "Late"},
+			{SeriesNumber: "2", SeriesDescription: "Early"},
+		},
+	}
+
+	if !applySeriesSort(state, seriesTableColumnNumber) {
+		t.Fatal("applySeriesSort returned false for Series # column")
+	}
+
+	loaded, err := appconfig.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load persisted config: %v", err)
+	}
+	pref, ok := loaded.UISortPreferences[seriesSortPreferenceKey]
+	if !ok {
+		t.Fatalf("missing series sort preference in %#v", loaded.UISortPreferences)
+	}
+	if pref.Column != seriesTableColumnNumber || pref.Descending {
+		t.Fatalf("persisted series sort = col %d desc %v", pref.Column, pref.Descending)
+	}
+}
+
+func TestApplySavedSeriesSortPreferenceSortsLoadedSeries(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{
+			UISortPreferences: map[string]appconfig.SortPreference{
+				seriesSortPreferenceKey: {Column: seriesTableColumnNumber, Descending: true},
+			},
+		},
+		series: []archive.Series{
+			{SeriesNumber: "2", SeriesDescription: "Early"},
+			{SeriesNumber: "10", SeriesDescription: "Late"},
+			{SeriesNumber: "7", SeriesDescription: "Middle"},
+		},
+	}
+
+	applySavedSeriesSortPreference(state)
+
+	if got := seriesNumberOrder(state.series); strings.Join(got, "|") != "10|7|2" {
+		t.Fatalf("saved series sort order = %q", strings.Join(got, "|"))
+	}
+	if !state.seriesSortActive || state.seriesSortColumn != seriesTableColumnNumber || !state.seriesSortDescending {
+		t.Fatalf("saved series sort state = active %v col %d desc %v", state.seriesSortActive, state.seriesSortColumn, state.seriesSortDescending)
+	}
+}
+
 func TestApplyInstanceSortSortsDetailRowsAndResetsSelection(t *testing.T) {
 	state := &uiState{
 		instances: []archive.Instance{
@@ -5921,6 +8507,58 @@ func TestApplyInstanceSortSortsDetailRowsAndResetsSelection(t *testing.T) {
 	}
 }
 
+func TestApplyInstanceSortPersistsSortPreference(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	state := &uiState{
+		appConfigPath: configPath,
+		appConfig:     appconfig.Defaults(),
+		instances: []archive.Instance{
+			{InstanceNumber: "10", SOPInstanceUID: "1.2.10"},
+			{InstanceNumber: "2", SOPInstanceUID: "1.2.2"},
+		},
+	}
+
+	if !applyInstanceSort(state, instanceTableColumnNumber) {
+		t.Fatal("applyInstanceSort returned false for Instance # column")
+	}
+
+	loaded, err := appconfig.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load persisted config: %v", err)
+	}
+	pref, ok := loaded.UISortPreferences[instanceSortPreferenceKey]
+	if !ok {
+		t.Fatalf("missing instance sort preference in %#v", loaded.UISortPreferences)
+	}
+	if pref.Column != instanceTableColumnNumber || pref.Descending {
+		t.Fatalf("persisted instance sort = col %d desc %v", pref.Column, pref.Descending)
+	}
+}
+
+func TestApplySavedInstanceSortPreferenceSortsLoadedInstances(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{
+			UISortPreferences: map[string]appconfig.SortPreference{
+				instanceSortPreferenceKey: {Column: instanceTableColumnNumber, Descending: true},
+			},
+		},
+		instances: []archive.Instance{
+			{InstanceNumber: "2", SOPInstanceUID: "1.2.2"},
+			{InstanceNumber: "10", SOPInstanceUID: "1.2.10"},
+			{InstanceNumber: "7", SOPInstanceUID: "1.2.7"},
+		},
+	}
+
+	applySavedInstanceSortPreference(state)
+
+	if got := instanceNumberOrder(state.instances); strings.Join(got, "|") != "10|7|2" {
+		t.Fatalf("saved instance sort order = %q", strings.Join(got, "|"))
+	}
+	if !state.instanceSortActive || state.instanceSortColumn != instanceTableColumnNumber || !state.instanceSortDescending {
+		t.Fatalf("saved instance sort state = active %v col %d desc %v", state.instanceSortActive, state.instanceSortColumn, state.instanceSortDescending)
+	}
+}
+
 func TestArchiveDetailHeaderLabelsShowSortDirection(t *testing.T) {
 	state := &uiState{
 		seriesSortActive:   true,
@@ -5952,7 +8590,23 @@ func TestArchiveDetailHeaderLabelsShowSortDirection(t *testing.T) {
 	}
 }
 
-func TestStudyCellShowsClinicalDisplayFields(t *testing.T) {
+func seriesNumberOrder(seriesList []archive.Series) []string {
+	out := make([]string, 0, len(seriesList))
+	for _, series := range seriesList {
+		out = append(out, series.SeriesNumber)
+	}
+	return out
+}
+
+func instanceNumberOrder(instances []archive.Instance) []string {
+	out := make([]string, 0, len(instances))
+	for _, instance := range instances {
+		out = append(out, instance.InstanceNumber)
+	}
+	return out
+}
+
+func TestStudyCellShowsWorkstationDisplayFields(t *testing.T) {
 	study := archive.Study{
 		PatientBirthDate: "19700102",
 		InstitutionName:  "General Hospital",
@@ -6041,6 +8695,35 @@ func TestArchiveBrowserRowsIncludeLoadedSeriesBelowStudy(t *testing.T) {
 	}
 }
 
+func TestArchiveBrowserRowsIncludeLoadedInstancesBelowSeries(t *testing.T) {
+	studies := []archive.Study{{
+		StudyInstanceUID: "1.2.3",
+		StudyDescription: "CT Abdomen",
+		SeriesCount:      1,
+		InstanceCount:    2,
+	}}
+	series := archive.Series{SeriesInstanceUID: "9.8.7", SeriesNumber: "4", Modality: "CT", InstanceCount: 2}
+	instances := []archive.Instance{
+		{SeriesInstanceUID: "9.8.7", InstanceNumber: "1", Modality: "CT", SOPInstanceUID: "1.2.image.1"},
+		{SeriesInstanceUID: "9.8.7", InstanceNumber: "2", Modality: "CT", SOPInstanceUID: "1.2.image.2"},
+	}
+
+	rows := archiveBrowserRowsWithInlineSeriesAndInstances(studies, nil, map[string][]archive.Series{"1.2.3": {series}}, map[string][]archive.Instance{"9.8.7": instances})
+
+	if len(rows) != 5 {
+		t.Fatalf("len(rows) = %d, want patient, study, series, and 2 image rows", len(rows))
+	}
+	if rows[3].kind != archiveRowInstance || rows[3].studyIndex != 0 || rows[3].seriesIndex != 0 || rows[3].instanceIndex != 0 {
+		t.Fatalf("first image row = %#v", rows[3])
+	}
+	if rows[4].kind != archiveRowInstance || rows[4].instanceIndex != 1 {
+		t.Fatalf("second image row = %#v", rows[4])
+	}
+	if got := archiveBrowserCell(rows[2], studies, archiveStudyTableColumnPatient); got != "      ▾ Series 4" {
+		t.Fatalf("loaded series label = %q, want expanded disclosure affordance", got)
+	}
+}
+
 func TestArchiveBrowserRowsHideCollapsedLoadedStudySeries(t *testing.T) {
 	studies := []archive.Study{{
 		StudyInstanceUID: "1.2.3",
@@ -6092,6 +8775,48 @@ func TestToggleArchiveStudySeriesCollapsesAndExpandsLoadedRows(t *testing.T) {
 	}
 }
 
+func TestToggleArchiveSeriesImagesCollapsesAndExpandsLoadedRows(t *testing.T) {
+	state := &uiState{
+		studies: []archive.Study{{
+			StudyInstanceUID: "1.2.3",
+			StudyDescription: "CT Abdomen",
+			SeriesCount:      1,
+			InstanceCount:    2,
+		}},
+		archiveSeriesByStudy: map[string][]archive.Series{
+			"1.2.3": {{
+				SeriesInstanceUID: "9.8.7",
+				SeriesNumber:      "4",
+				Modality:          "CT",
+				InstanceCount:     2,
+			}},
+		},
+		archiveInstancesBySeries: map[string][]archive.Instance{
+			"9.8.7": {
+				{SeriesInstanceUID: "9.8.7", InstanceNumber: "1", SOPInstanceUID: "1.2.image.1"},
+				{SeriesInstanceUID: "9.8.7", InstanceNumber: "2", SOPInstanceUID: "1.2.image.2"},
+			},
+		},
+	}
+	state.archiveRows = archiveBrowserRowsForState(state)
+
+	if !toggleArchiveSeriesImages(state, state.archiveRows[2]) {
+		t.Fatal("first toggle returned false, want true")
+	}
+	if !state.collapsedArchiveSeries["9.8.7"] || len(state.archiveRows) != 3 {
+		t.Fatalf("collapsed state = %#v rows=%#v", state.collapsedArchiveSeries, state.archiveRows)
+	}
+	if got := archiveBrowserCell(state.archiveRows[2], state.studies, archiveStudyTableColumnPatient); got != "      ▸ Series 4" {
+		t.Fatalf("collapsed series cell = %q, want collapsed disclosure", got)
+	}
+	if !toggleArchiveSeriesImages(state, state.archiveRows[2]) {
+		t.Fatal("second toggle returned false, want true")
+	}
+	if state.collapsedArchiveSeries["9.8.7"] || len(state.archiveRows) != 5 || state.archiveRows[3].kind != archiveRowInstance {
+		t.Fatalf("expanded state = %#v rows=%#v", state.collapsedArchiveSeries, state.archiveRows)
+	}
+}
+
 func TestArchiveBrowserCellRendersInlineSeriesRows(t *testing.T) {
 	studies := []archive.Study{{StudyInstanceUID: "1.2.3", StudyDescription: "CT Abdomen", SeriesCount: 1}}
 	series := archive.Series{
@@ -6125,6 +8850,35 @@ func TestArchiveBrowserCellRendersInlineSeriesRows(t *testing.T) {
 	}
 	if got := archiveBrowserCell(rows[2], studies, archiveStudyTableColumnStudyUID); got != "9.8.7" {
 		t.Fatalf("series UID cell = %q", got)
+	}
+}
+
+func TestArchiveBrowserCellRendersInlineInstanceRows(t *testing.T) {
+	studies := []archive.Study{{StudyInstanceUID: "1.2.3", StudyDescription: "CT Abdomen", SeriesCount: 1, InstanceCount: 1}}
+	series := archive.Series{SeriesInstanceUID: "9.8.7", SeriesNumber: "4", Modality: "CT", InstanceCount: 1}
+	instance := archive.Instance{
+		SeriesInstanceUID: "9.8.7",
+		InstanceNumber:    "12",
+		Modality:          "CT",
+		SOPInstanceUID:    "1.2.840.technical.image.uid",
+	}
+	rows := archiveBrowserRowsWithInlineSeriesAndInstances(studies, nil, map[string][]archive.Series{"1.2.3": {series}}, map[string][]archive.Instance{"9.8.7": {instance}})
+
+	got := archiveBrowserCell(rows[3], studies, archiveStudyTableColumnPatient)
+	if got != "          • Image 12" {
+		t.Fatalf("inline image label = %q, want leaf marker and image number", got)
+	}
+	if strings.Contains(got, instance.SOPInstanceUID) {
+		t.Fatalf("visible image label leaked SOP Instance UID: %q", got)
+	}
+	if got := archiveBrowserCell(rows[3], studies, archiveStudyTableColumnModality); got != "CT" {
+		t.Fatalf("inline image modality = %q, want CT", got)
+	}
+	if got := archiveBrowserCell(rows[3], studies, archiveStudyTableColumnInstances); got != "1" {
+		t.Fatalf("inline image count = %q, want 1", got)
+	}
+	if got := archiveBrowserCell(rows[3], studies, archiveStudyTableColumnStudyUID); got != instance.SOPInstanceUID {
+		t.Fatalf("inline image technical UID cell = %q, want SOP Instance UID", got)
 	}
 }
 
@@ -6188,6 +8942,18 @@ func TestArchiveTableCellUsesStripedStudyAndSeriesStyling(t *testing.T) {
 	if seriesFill != archiveSeriesRowColor {
 		t.Fatalf("series fill = %#v, want %#v", seriesFill, archiveSeriesRowColor)
 	}
+
+	applyArchiveTableCell(cell, 4, "          Image 12", archiveBrowserRow{kind: archiveRowInstance}, false, false)
+	instanceFill := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA)
+	if instanceFill != archiveInstanceRowColor {
+		t.Fatalf("image fill = %#v, want %#v", instanceFill, archiveInstanceRowColor)
+	}
+	if instanceFill == archiveSeriesRowColor {
+		t.Fatalf("image fill should be distinct from series fill %#v", archiveSeriesRowColor)
+	}
+	if !cell.label.TextStyle.Italic {
+		t.Fatal("inline image label should use subdued italic typography")
+	}
 }
 
 func TestArchiveSelectedTableCellUsesSelectionStyling(t *testing.T) {
@@ -6221,6 +8987,35 @@ func TestArchiveStatusTableCellUsesNativeStatusDot(t *testing.T) {
 	}
 }
 
+func TestArchiveStatusTableCellUsesSubtleStatusChipFill(t *testing.T) {
+	cell := newArchiveTableCell()
+
+	applyArchiveTableCellWithColumn(cell, 2, archiveStudyTableColumnStatus, "★ Interesting", archiveBrowserRow{kind: archiveRowStudy}, false, false)
+
+	want := color.NRGBA{R: 60, G: 49, B: 28, A: 255}
+	if got := countCanvasRectanglesWithColor(cell.Container, want); got == 0 {
+		t.Fatalf("archive status cell should include subtle status chip fill %#v", want)
+	}
+
+	applyArchiveTableCellWithColumn(cell, 2, archiveStudyTableColumnComments, "Discuss with surgeon", archiveBrowserRow{kind: archiveRowStudy}, false, false)
+	if got := countCanvasRectanglesWithColor(cell.Container, want); got != 0 {
+		t.Fatalf("archive comments cell kept status chip fill count %d", got)
+	}
+}
+
+func TestArchiveSelectedStatusTableCellPreservesSelectionFill(t *testing.T) {
+	cell := newArchiveTableCell()
+
+	applyArchiveTableCellWithColumn(cell, 2, archiveStudyTableColumnStatus, "★ Interesting", archiveBrowserRow{kind: archiveRowStudy}, false, true)
+
+	if got := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA); got != archiveSelectedRowColor {
+		t.Fatalf("selected archive status fill = %#v, want %#v", got, archiveSelectedRowColor)
+	}
+	if got := countCanvasRectanglesWithColor(cell.Container, studyStatusInterestingChipColor); got != 0 {
+		t.Fatalf("selected archive status cell should not cover selection with status chip, got %d chip fills", got)
+	}
+}
+
 func TestWorkstationTableCellsIncludeColumnDividers(t *testing.T) {
 	tests := []struct {
 		name string
@@ -6235,6 +9030,25 @@ func TestWorkstationTableCellsIncludeColumnDividers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := countCanvasRectangles(tt.cell); got < 2 {
 				t.Fatalf("%s cell has %d rectangles, want background plus explicit divider", tt.name, got)
+			}
+		})
+	}
+}
+
+func TestWorkstationTableCellsIncludeRowAndColumnDividers(t *testing.T) {
+	tests := []struct {
+		name string
+		cell fyne.CanvasObject
+	}{
+		{name: "archive", cell: newArchiveTableCell().Container},
+		{name: "query", cell: newQueryTableCell().Container},
+		{name: "network", cell: newNodeTableCell().Container},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := countCanvasRectangles(tt.cell); got < 3 {
+				t.Fatalf("%s cell has %d rectangles, want background plus row and column dividers", tt.name, got)
 			}
 		})
 	}
@@ -6333,6 +9147,223 @@ func TestUtilityTablesUseWorkstationCells(t *testing.T) {
 	}
 }
 
+func TestApplyElementSortSortsAndTogglesDirection(t *testing.T) {
+	state := &uiState{
+		elements: []dicominspect.ElementSummary{
+			{Tag: "(0020,000D)", Keyword: "StudyInstanceUID"},
+			{Tag: "(0010,0010)", Keyword: "PatientName"},
+			{Tag: "(0008,0060)", Keyword: "Modality"},
+		},
+	}
+
+	if !applyElementSort(state, elementTableColumnKeyword) {
+		t.Fatal("applyElementSort returned false for Keyword column")
+	}
+	if got := elementKeywordOrder(state.elements); strings.Join(got, "|") != "Modality|PatientName|StudyInstanceUID" {
+		t.Fatalf("ascending keyword order = %q", strings.Join(got, "|"))
+	}
+	if !state.elementSortActive || state.elementSortColumn != elementTableColumnKeyword || state.elementSortDescending {
+		t.Fatalf("sort state after ascending = active %v col %d desc %v", state.elementSortActive, state.elementSortColumn, state.elementSortDescending)
+	}
+
+	if !applyElementSort(state, elementTableColumnKeyword) {
+		t.Fatal("second applyElementSort returned false for Keyword column")
+	}
+	if got := elementKeywordOrder(state.elements); strings.Join(got, "|") != "StudyInstanceUID|PatientName|Modality" {
+		t.Fatalf("descending keyword order = %q", strings.Join(got, "|"))
+	}
+	if !state.elementSortDescending {
+		t.Fatal("second sort should toggle descending")
+	}
+}
+
+func TestElementHeaderLabelShowsSortDirection(t *testing.T) {
+	state := &uiState{elementSortActive: true, elementSortColumn: elementTableColumnTag}
+
+	if got := elementHeaderLabel(state, elementTableColumnTag, "Tag"); got != "Tag ▲" {
+		t.Fatalf("ascending header = %q, want Tag ▲", got)
+	}
+	state.elementSortDescending = true
+	if got := elementHeaderLabel(state, elementTableColumnTag, "Tag"); got != "Tag ▼" {
+		t.Fatalf("descending header = %q, want Tag ▼", got)
+	}
+	if got := elementHeaderLabel(state, elementTableColumnKeyword, "Keyword"); got != "Keyword" {
+		t.Fatalf("inactive header = %q, want Keyword", got)
+	}
+}
+
+func TestApplyElementSortPersistsSortPreference(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	state := &uiState{
+		appConfigPath: configPath,
+		appConfig:     appconfig.Defaults(),
+		elements: []dicominspect.ElementSummary{
+			{Tag: "(0020,000D)", Keyword: "StudyInstanceUID"},
+			{Tag: "(0010,0010)", Keyword: "PatientName"},
+		},
+	}
+
+	if !applyElementSort(state, elementTableColumnKeyword) {
+		t.Fatal("applyElementSort returned false for Keyword column")
+	}
+
+	loaded, err := appconfig.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load persisted config: %v", err)
+	}
+	pref, ok := loaded.UISortPreferences[elementSortPreferenceKey]
+	if !ok {
+		t.Fatalf("missing element sort preference in %#v", loaded.UISortPreferences)
+	}
+	if pref.Column != elementTableColumnKeyword || pref.Descending {
+		t.Fatalf("persisted element sort = col %d desc %v", pref.Column, pref.Descending)
+	}
+}
+
+func TestApplySavedElementSortPreferenceSortsElementsAfterInspection(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{
+			UISortPreferences: map[string]appconfig.SortPreference{
+				elementSortPreferenceKey: {Column: elementTableColumnKeyword, Descending: true},
+			},
+		},
+		elements: []dicominspect.ElementSummary{
+			{Tag: "(0008,0060)", Keyword: "Modality"},
+			{Tag: "(0010,0010)", Keyword: "PatientName"},
+			{Tag: "(0020,000D)", Keyword: "StudyInstanceUID"},
+		},
+	}
+
+	applySavedElementSortPreference(state)
+
+	if got := elementKeywordOrder(state.elements); strings.Join(got, "|") != "StudyInstanceUID|PatientName|Modality" {
+		t.Fatalf("saved element sort order = %q", strings.Join(got, "|"))
+	}
+	if !state.elementSortActive || state.elementSortColumn != elementTableColumnKeyword || !state.elementSortDescending {
+		t.Fatalf("saved element sort state = active %v col %d desc %v", state.elementSortActive, state.elementSortColumn, state.elementSortDescending)
+	}
+}
+
+func elementKeywordOrder(elements []dicominspect.ElementSummary) []string {
+	out := make([]string, 0, len(elements))
+	for _, element := range elements {
+		out = append(out, element.Keyword)
+	}
+	return out
+}
+
+func TestApplyTaskSortSortsAndTogglesDirection(t *testing.T) {
+	state := &uiState{
+		selectedOperationRow: 1,
+		operations: []operations.Summary{
+			{Kind: operations.KindSendStore, Status: operations.StatusSuccess, DurationMS: 3000},
+			{Kind: operations.KindImport, Status: operations.StatusWarning, DurationMS: 1000},
+			{Kind: operations.KindQueryFind, Status: operations.StatusFailure, DurationMS: 2000},
+		},
+	}
+
+	if !applyTaskSort(state, taskTableColumnDuration) {
+		t.Fatal("applyTaskSort returned false for Duration column")
+	}
+	if got := taskDurationOrder(state.operations); strings.Join(got, "|") != "1s|2s|3s" {
+		t.Fatalf("ascending duration order = %q", strings.Join(got, "|"))
+	}
+	if state.selectedOperationRow != 0 {
+		t.Fatalf("selected operation row after ascending sort = %d, want 0", state.selectedOperationRow)
+	}
+	if !state.taskSortActive || state.taskSortColumn != taskTableColumnDuration || state.taskSortDescending {
+		t.Fatalf("sort state after ascending = active %v col %d desc %v", state.taskSortActive, state.taskSortColumn, state.taskSortDescending)
+	}
+
+	if !applyTaskSort(state, taskTableColumnDuration) {
+		t.Fatal("second applyTaskSort returned false for Duration column")
+	}
+	if got := taskDurationOrder(state.operations); strings.Join(got, "|") != "3s|2s|1s" {
+		t.Fatalf("descending duration order = %q", strings.Join(got, "|"))
+	}
+	if state.selectedOperationRow != 2 {
+		t.Fatalf("selected operation row after descending sort = %d, want 2", state.selectedOperationRow)
+	}
+	if !state.taskSortDescending {
+		t.Fatal("second sort should toggle descending")
+	}
+}
+
+func TestTaskHeaderLabelShowsSortDirection(t *testing.T) {
+	state := &uiState{taskSortActive: true, taskSortColumn: taskTableColumnStatus}
+
+	if got := taskHeaderLabel(state, taskTableColumnStatus, "Status"); got != "Status ▲" {
+		t.Fatalf("ascending header = %q, want Status ▲", got)
+	}
+	state.taskSortDescending = true
+	if got := taskHeaderLabel(state, taskTableColumnStatus, "Status"); got != "Status ▼" {
+		t.Fatalf("descending header = %q, want Status ▼", got)
+	}
+	if got := taskHeaderLabel(state, taskTableColumnKind, "Kind"); got != "Kind" {
+		t.Fatalf("inactive header = %q, want Kind", got)
+	}
+}
+
+func TestApplyTaskSortPersistsSortPreference(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	state := &uiState{
+		appConfigPath: configPath,
+		appConfig:     appconfig.Defaults(),
+		operations: []operations.Summary{
+			{Kind: operations.KindSendStore, Status: operations.StatusSuccess, DurationMS: 3000},
+			{Kind: operations.KindImport, Status: operations.StatusWarning, DurationMS: 1000},
+		},
+	}
+
+	if !applyTaskSort(state, taskTableColumnDuration) {
+		t.Fatal("applyTaskSort returned false for Duration column")
+	}
+
+	loaded, err := appconfig.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load persisted config: %v", err)
+	}
+	pref, ok := loaded.UISortPreferences[taskSortPreferenceKey]
+	if !ok {
+		t.Fatalf("missing task sort preference in %#v", loaded.UISortPreferences)
+	}
+	if pref.Column != taskTableColumnDuration || pref.Descending {
+		t.Fatalf("persisted task sort = col %d desc %v", pref.Column, pref.Descending)
+	}
+}
+
+func TestApplySavedTaskSortPreferenceSortsTasksOnStartup(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{
+			UISortPreferences: map[string]appconfig.SortPreference{
+				taskSortPreferenceKey: {Column: taskTableColumnDuration, Descending: true},
+			},
+		},
+		operations: []operations.Summary{
+			{Kind: operations.KindImport, Status: operations.StatusWarning, DurationMS: 1000},
+			{Kind: operations.KindQueryFind, Status: operations.StatusFailure, DurationMS: 2000},
+			{Kind: operations.KindSendStore, Status: operations.StatusSuccess, DurationMS: 3000},
+		},
+	}
+
+	applySavedTaskSortPreference(state)
+
+	if got := taskDurationOrder(state.operations); strings.Join(got, "|") != "3s|2s|1s" {
+		t.Fatalf("saved task sort order = %q", strings.Join(got, "|"))
+	}
+	if !state.taskSortActive || state.taskSortColumn != taskTableColumnDuration || !state.taskSortDescending {
+		t.Fatalf("saved task sort state = active %v col %d desc %v", state.taskSortActive, state.taskSortColumn, state.taskSortDescending)
+	}
+}
+
+func taskDurationOrder(summaries []operations.Summary) []string {
+	out := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		out = append(out, (time.Duration(summary.DurationMS) * time.Millisecond).String())
+	}
+	return out
+}
+
 func countCanvasRectangles(obj fyne.CanvasObject) int {
 	count := 0
 	if _, ok := obj.(*canvas.Rectangle); ok {
@@ -6344,6 +9375,52 @@ func countCanvasRectangles(obj fyne.CanvasObject) int {
 		}
 	}
 	return count
+}
+
+func containsCanvasRectangleColor(obj fyne.CanvasObject, want color.NRGBA) bool {
+	if rect, ok := obj.(*canvas.Rectangle); ok {
+		if got := color.NRGBAModel.Convert(rect.FillColor).(color.NRGBA); got == want {
+			return true
+		}
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if containsCanvasRectangleColor(child, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func countCanvasRectanglesWithColor(obj fyne.CanvasObject, want color.NRGBA) int {
+	count := 0
+	if rect, ok := obj.(*canvas.Rectangle); ok {
+		if got := color.NRGBAModel.Convert(rect.FillColor).(color.NRGBA); got == want {
+			count++
+		}
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			count += countCanvasRectanglesWithColor(child, want)
+		}
+	}
+	return count
+}
+
+func listItemHeight(list *widget.List, id int) (float32, bool) {
+	if list == nil {
+		return 0, false
+	}
+	itemHeights := reflect.ValueOf(list).Elem().FieldByName("itemHeights")
+	if itemHeights.IsNil() {
+		return 0, false
+	}
+	height := itemHeights.MapIndex(reflect.ValueOf(id))
+	if !height.IsValid() {
+		return 0, false
+	}
+	return float32(height.Float()), true
 }
 
 func TestWorkstationTableCellsUseCompactPadding(t *testing.T) {
@@ -6442,24 +9519,52 @@ func TestQuerySelectedTableCellUsesSelectionStyling(t *testing.T) {
 	}
 }
 
+func TestQueryGroupDisclosureCellUsesBoldText(t *testing.T) {
+	cell := newQueryTableCell()
+
+	applyQueryTableCell(cell, 1, queryTableColumnPatient, "▾ DOE^JANE (3 matches)", false, false, false, 0, "")
+	if !cell.label.TextStyle.Bold {
+		t.Fatal("expanded patient group disclosure should be bold")
+	}
+	if got := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA); got != archivePatientRowColor {
+		t.Fatalf("expanded patient group fill = %#v, want %#v", got, archivePatientRowColor)
+	}
+
+	applyQueryTableCell(cell, 2, queryTableColumnPatient, "    ▸ CT Abdomen (2 items)", false, false, false, 0, "")
+	if !cell.label.TextStyle.Bold {
+		t.Fatal("nested collapsed study group disclosure should be bold")
+	}
+	if got := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA); got != archivePatientRowColor {
+		t.Fatalf("nested study group fill = %#v, want %#v", got, archivePatientRowColor)
+	}
+
+	applyQueryTableCell(cell, 3, queryTableColumnPatient, "    2", false, false, false, 0, "")
+	if cell.label.TextStyle.Bold {
+		t.Fatal("ordinary indented child rows should not be bold")
+	}
+	if got := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA); got != archiveOddRowColor {
+		t.Fatalf("ordinary child fill = %#v, want %#v", got, archiveOddRowColor)
+	}
+}
+
 func TestQueryTableHeadersIncludeRetrieveIndicator(t *testing.T) {
 	headers := queryTableHeaders()
 
-	if len(headers) < 2 || headers[1] != "Retrieve" {
-		t.Fatalf("query headers = %q, want Retrieve as second column", strings.Join(headers, "|"))
+	if len(headers) < 2 || headers[1] != "" {
+		t.Fatalf("query headers = %q, want blank retrieve action column as second column", strings.Join(headers, "|"))
 	}
 }
 
 func TestQueryTableHeadersIncludeLocalStateIndicator(t *testing.T) {
 	headers := queryTableHeaders()
 
-	if len(headers) < 3 || headers[2] != "Local" {
-		t.Fatalf("query headers = %q, want Local as third column", strings.Join(headers, "|"))
+	if len(headers) < 12 || headers[11] != "Local" {
+		t.Fatalf("query headers = %q, want Local after Server Comments", strings.Join(headers, "|"))
 	}
 }
 
-func TestQueryTableHeadersFollowPrimaryClinicalOrderAndHideTechnicalUIDs(t *testing.T) {
-	want := []string{"Patient", "Retrieve", "Local", "Modality", "Images", "Study Date", "Time", "Description", "Patient ID", "DOB", "Local Comments", "Server Comments", "Accession", "Referrer", "Institution", "Study Status", "Series #", "Instance #", "Source", "Status"}
+func TestQueryTableHeadersFollowWorkstationPrimaryOrderAndHideTechnicalUIDs(t *testing.T) {
+	want := []string{"Patient Name", "", "Modality", "# im", "Date", "Time", "Description", "Patient ID", "Date of Birth", "Local Comments", "Server Comments", "Local", "Accession", "Referrer", "Institution", "Study Status", "Series #", "Instance #", "Source", "Status"}
 
 	if got := queryTableHeaders(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("query headers = %q, want %q", strings.Join(got, "|"), strings.Join(want, "|"))
@@ -6471,10 +9576,10 @@ func TestQueryTableHeadersFollowPrimaryClinicalOrderAndHideTechnicalUIDs(t *test
 	}
 }
 
-func TestQueryTableHeadersIncludeClinicalDisplayFields(t *testing.T) {
+func TestQueryTableHeadersIncludeWorkstationDisplayFields(t *testing.T) {
 	headers := strings.Join(queryTableHeaders(), "|")
 
-	for _, want := range []string{"DOB", "Time", "Images", "Referrer", "Institution", "Source"} {
+	for _, want := range []string{"Date of Birth", "Time", "# im", "Referrer", "Institution", "Source"} {
 		if !strings.Contains(headers, want) {
 			t.Fatalf("headers missing %q in %q", want, headers)
 		}
@@ -6546,7 +9651,7 @@ func TestQueryCellShowsLocalState(t *testing.T) {
 	}
 }
 
-func TestQueryCellShowsClinicalDisplayFields(t *testing.T) {
+func TestQueryCellShowsWorkstationDisplayFields(t *testing.T) {
 	match := query.Match{
 		PatientBirthDate:       "19700102",
 		StudyTime:              "134501",
@@ -6638,6 +9743,62 @@ func TestApplyQuerySortSortsAndTogglesDirection(t *testing.T) {
 	}
 }
 
+func TestApplyQuerySortPersistsSortPreference(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	state := &uiState{
+		appConfigPath: configPath,
+		appConfig:     appconfig.Defaults(),
+		queries: []query.Match{
+			{PatientName: "SMITH^JOHN", StudyDate: "20260602"},
+			{PatientName: "DOE^JANE", StudyDate: "20260603"},
+		},
+	}
+
+	if !applyQuerySort(state, queryTableColumnPatient) {
+		t.Fatal("applyQuerySort returned false for Patient column")
+	}
+
+	loaded, err := appconfig.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load persisted config: %v", err)
+	}
+	pref, ok := loaded.UISortPreferences[querySortPreferenceKey]
+	if !ok {
+		t.Fatalf("missing query sort preference in %#v", loaded.UISortPreferences)
+	}
+	if pref.Column != queryTableColumnPatient || pref.Descending {
+		t.Fatalf("persisted query sort = col %d desc %v", pref.Column, pref.Descending)
+	}
+}
+
+func TestApplySavedQuerySortPreferenceSortsLoadedQueries(t *testing.T) {
+	state := &uiState{
+		appConfig: appconfig.Config{
+			UISortPreferences: map[string]appconfig.SortPreference{
+				querySortPreferenceKey: {Column: queryTableColumnPatient, Descending: true},
+			},
+		},
+		queries: []query.Match{
+			{PatientName: "ALPHA^ANN", StudyDate: "20260601"},
+			{PatientName: "SMITH^JOHN", StudyDate: "20260602"},
+			{PatientName: "DOE^JANE", StudyDate: "20260603"},
+		},
+		selectedQueryRow: 1,
+	}
+
+	applySavedQuerySortPreference(state)
+
+	if got := []string{state.queries[0].PatientName, state.queries[1].PatientName, state.queries[2].PatientName}; strings.Join(got, "|") != "SMITH^JOHN|DOE^JANE|ALPHA^ANN" {
+		t.Fatalf("saved query sort order = %v", got)
+	}
+	if !state.querySortActive || state.querySortColumn != queryTableColumnPatient || !state.querySortDescending {
+		t.Fatalf("saved query sort state = active %v col %d desc %v", state.querySortActive, state.querySortColumn, state.querySortDescending)
+	}
+	if state.selectedQueryRow != -1 {
+		t.Fatalf("selected query row = %d, want reset", state.selectedQueryRow)
+	}
+}
+
 func TestQuerySortRejectsUnsortableColumns(t *testing.T) {
 	state := &uiState{
 		queries: []query.Match{{PatientName: "DOE^JANE"}, {PatientName: "ALPHA^ANN"}},
@@ -6701,6 +9862,9 @@ func TestQueryTableRowsGroupSeriesUnderExpandedStudy(t *testing.T) {
 	if got := queryRowCell(rows[0], queryTableColumnLevel); got != "▾ STUDY" {
 		t.Fatalf("group level cell = %q, want expanded STUDY", got)
 	}
+	if got := queryRowCell(rows[0], queryTableColumnPatient); got != "▾ 1.2.study (2 items)" {
+		t.Fatalf("study group patient cell = %q, want expanded study with item count", got)
+	}
 	if got := queryRowCell(rows[1], queryTableColumnPatient); got != "    2" {
 		t.Fatalf("series child patient cell = %q, want indented series number", got)
 	}
@@ -6727,8 +9891,8 @@ func TestQueryTableRowsGroupStudiesUnderExpandedPatient(t *testing.T) {
 	if got := queryRowCell(rows[0], queryTableColumnLevel); got != "▾ PATIENT" {
 		t.Fatalf("patient group level cell = %q, want expanded PATIENT", got)
 	}
-	if got := queryRowCell(rows[0], queryTableColumnPatient); got != "▾ DOE^JANE" {
-		t.Fatalf("patient group patient cell = %q, want expanded DOE^JANE", got)
+	if got := queryRowCell(rows[0], queryTableColumnPatient); got != "▾ DOE^JANE (3 matches)" {
+		t.Fatalf("patient group patient cell = %q, want expanded DOE^JANE with match count", got)
 	}
 	if rows[1].kind != queryTableRowStudyGroup || rows[1].depth != 1 {
 		t.Fatalf("nested study group row = %#v, want depth 1 study group", rows[1])
@@ -7231,7 +10395,7 @@ func TestQueryMatchCanRetrieveRequiresUIDsForLevel(t *testing.T) {
 func TestNodeTableCellUsesHeaderAndStripedStyling(t *testing.T) {
 	cell := newNodeTableCell()
 
-	applyNodeTableCell(cell, 0, 0, "Enabled", true, false, false, false, false, "")
+	applyNodeTableCell(cell, 0, 0, "Enabled", true, false, false, false, false, false, "")
 
 	if cell.label.Text != "Enabled" {
 		t.Fatalf("header text = %q", cell.label.Text)
@@ -7249,7 +10413,7 @@ func TestNodeTableCellUsesHeaderAndStripedStyling(t *testing.T) {
 		t.Fatalf("header fill = %#v, want %#v", got, archiveHeaderRowColor)
 	}
 
-	applyNodeTableCell(cell, 2, 5, "RADIANT", false, false, false, false, false, "")
+	applyNodeTableCell(cell, 2, 5, "RADIANT", false, false, false, false, false, false, "")
 	if cell.label.TextStyle.Bold {
 		t.Fatal("node row should not be bold")
 	}
@@ -7267,7 +10431,7 @@ func TestNodeTableCellUsesHeaderAndStripedStyling(t *testing.T) {
 func TestNodeOperationalTableCellUsesNativeCheckbox(t *testing.T) {
 	cell := newNodeTableCell()
 
-	applyNodeTableCell(cell, 1, 0, "", false, false, true, true, false, "")
+	applyNodeTableCell(cell, 1, 0, "", false, false, false, true, true, false, "")
 
 	if !cell.check.Visible() {
 		t.Fatal("operational node cell should show native checkbox")
@@ -7286,7 +10450,7 @@ func TestNodeOperationalTableCellUsesNativeCheckbox(t *testing.T) {
 func TestNodeRetrieveTableCellUsesNativeDropdown(t *testing.T) {
 	cell := newNodeTableCell()
 
-	applyNodeTableCell(cell, 1, 2, nodeMenuCell(nodes.RetrieveMethodGet), false, false, false, false, true, nodes.RetrieveMethodGet)
+	applyNodeTableCell(cell, 1, 2, nodeMenuCell(nodes.RetrieveMethodGet), false, false, false, false, false, true, nodes.RetrieveMethodGet)
 
 	if !cell.retrieveSelect.Visible() {
 		t.Fatal("retrieve node cell should show native dropdown")
@@ -7299,16 +10463,71 @@ func TestNodeRetrieveTableCellUsesNativeDropdown(t *testing.T) {
 	}
 }
 
+func TestNodeSendSyntaxTableCellUsesNativeDropdown(t *testing.T) {
+	cell := newNodeTableCell()
+
+	applyNodeTableCell(cell, 1, nodeTableColumnSendSyntax, nodeMenuCell(sendSyntaxExplicitLabel), false, false, false, false, false, true, sendSyntaxExplicitLabel)
+
+	if !cell.retrieveSelect.Visible() {
+		t.Fatal("send syntax node cell should show native dropdown")
+	}
+	if !slices.Equal(cell.retrieveSelect.Options, sendSyntaxOptions()) {
+		t.Fatalf("send syntax dropdown options = %v, want %v", cell.retrieveSelect.Options, sendSyntaxOptions())
+	}
+	if cell.retrieveSelect.Selected != sendSyntaxExplicitLabel {
+		t.Fatalf("send syntax dropdown selected = %q, want %q", cell.retrieveSelect.Selected, sendSyntaxExplicitLabel)
+	}
+	if cell.label.Visible() && strings.Contains(cell.label.Text, "▾") {
+		t.Fatalf("send syntax node cell should not use text dropdown marker: %q", cell.label.Text)
+	}
+}
+
+func TestNodeTLSTableCellUsesDisabledNativeDropdown(t *testing.T) {
+	cell := newNodeTableCell()
+	dropdown, value := nodeDropdownState(nodes.Node{}, nodeTableColumnTLS)
+
+	if !dropdown {
+		t.Fatal("TLS node cell should use the native dropdown affordance from the reference")
+	}
+	applyNodeTableCell(cell, 1, nodeTableColumnTLS, nodeMenuCell(value), false, false, false, false, false, dropdown, value)
+
+	if !cell.retrieveSelect.Visible() {
+		t.Fatal("TLS node cell should show native dropdown")
+	}
+	if !slices.Equal(cell.retrieveSelect.Options, []string{"No"}) {
+		t.Fatalf("TLS dropdown options = %v, want [No]", cell.retrieveSelect.Options)
+	}
+	if cell.retrieveSelect.Selected != "No" {
+		t.Fatalf("TLS dropdown selected = %q, want No", cell.retrieveSelect.Selected)
+	}
+	if !cell.retrieveSelect.Disabled() {
+		t.Fatal("TLS dropdown should stay disabled until DIMSE TLS is implemented")
+	}
+}
+
 func TestNodeSelectedTableCellUsesSelectionStyling(t *testing.T) {
 	cell := newNodeTableCell()
 
-	applyNodeTableCell(cell, 2, 5, "RADIANT", false, true, false, false, false, "")
+	applyNodeTableCell(cell, 2, 5, "RADIANT", false, true, false, false, false, false, "")
 
 	if cell.label.TextStyle.Bold {
 		t.Fatal("selected node row text should not become bold")
 	}
 	if got := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA); got != archiveSelectedRowColor {
 		t.Fatalf("selected node fill = %#v, want %#v", got, archiveSelectedRowColor)
+	}
+}
+
+func TestDisabledNodeTableCellUsesSubduedStyling(t *testing.T) {
+	cell := newNodeTableCell()
+
+	applyNodeTableCell(cell, 1, 5, "OFFLINE", false, false, true, false, false, false, "")
+
+	if !cell.label.TextStyle.Italic {
+		t.Fatal("disabled node row text should be italic")
+	}
+	if got := color.NRGBAModel.Convert(cell.background.FillColor).(color.NRGBA); got != nodeDisabledRowColor {
+		t.Fatalf("disabled node fill = %#v, want %#v", got, nodeDisabledRowColor)
 	}
 }
 
@@ -7437,6 +10656,132 @@ func TestArchiveControlsOmitQuickSearchForToolbarPlacement(t *testing.T) {
 	}
 }
 
+func TestArchiveControlsShowActiveAlbumScopeInAdvancedFilters(t *testing.T) {
+	fynetest.NewApp()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	defer catalog.Close()
+	state := &uiState{
+		catalog:                catalog,
+		selectedArchiveAlbum:   archiveAlbumTodayCT,
+		openedArchiveStudyUIDs: map[string]bool{},
+	}
+	tables := archiveTables{
+		studies:   newStudyTable(state),
+		series:    newSeriesTable(state),
+		instances: newInstanceTable(state),
+	}
+
+	controls := newArchiveControls(nil, widget.NewLabel(""), tables, state)
+
+	item := findAccordionItem(controls, "Advanced Filters")
+	if item == nil {
+		t.Fatal("archive tab controls should keep Advanced Filters")
+	}
+	if findLabelContaining(item.Detail, "Album Scope: imported today, modality CT") == nil {
+		t.Fatal("archive Advanced Filters should mirror the active smart album scope")
+	}
+}
+
+func TestRefreshArchiveChromeUpdatesAdvancedAlbumScope(t *testing.T) {
+	state := &uiState{
+		selectedArchiveAlbum:   archiveAlbumTodayCT,
+		archiveAlbumScopeLabel: compactWorkbenchLabel(),
+	}
+
+	refreshArchiveChrome(state)
+	if state.archiveAlbumScopeLabel.Text != "Album Scope: imported today, modality CT" {
+		t.Fatalf("scope label = %q, want Today CT scope", state.archiveAlbumScopeLabel.Text)
+	}
+
+	state.selectedArchiveAlbum = archiveAlbumDatabase
+	refreshArchiveChrome(state)
+	if state.archiveAlbumScopeLabel.Text != "Album Scope: all studies" {
+		t.Fatalf("scope label after database = %q, want all studies", state.archiveAlbumScopeLabel.Text)
+	}
+}
+
+func TestArchiveAdvancedFiltersMirrorActiveAlbumFields(t *testing.T) {
+	fynetest.NewApp()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	defer catalog.Close()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.Local)
+	filters, ok := archiveAlbumFilters(archiveAlbumTodayCT, now)
+	if !ok {
+		t.Fatal("Today CT album should produce filters")
+	}
+	state := &uiState{
+		catalog:              catalog,
+		selectedArchiveAlbum: archiveAlbumTodayCT,
+		studyFilters:         filters,
+	}
+	tables := archiveTables{
+		studies:   newStudyTable(state),
+		series:    newSeriesTable(state),
+		instances: newInstanceTable(state),
+	}
+
+	controls := newArchiveControls(nil, widget.NewLabel(""), tables, state)
+	item := findAccordionItem(controls, "Advanced Filters")
+	if item == nil {
+		t.Fatal("archive tab controls should keep Advanced Filters")
+	}
+
+	if entry := findEntryWithPlaceholder(item.Detail, "2026-06-04T00:00:00Z"); entry == nil || entry.Text == "" {
+		t.Fatalf("Imported From entry did not mirror active album filter: %#v", entry)
+	}
+	if entry := findEntryWithPlaceholder(item.Detail, "2026-06-04T23:59:59Z"); entry == nil || entry.Text == "" {
+		t.Fatalf("Imported To entry did not mirror active album filter: %#v", entry)
+	}
+	if entry := findEntryWithPlaceholder(item.Detail, "CT,MR"); entry == nil || entry.Text != "CT" {
+		t.Fatalf("Modality entry = %#v, want CT", entry)
+	}
+}
+
+func TestArchiveAdvancedFilterClearResetsSelectedAlbum(t *testing.T) {
+	fynetest.NewApp()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	defer catalog.Close()
+	filters, ok := archiveAlbumFilters(archiveAlbumTodayCT, time.Now())
+	if !ok {
+		t.Fatal("Today CT album should produce filters")
+	}
+	state := &uiState{
+		catalog:              catalog,
+		selectedArchiveAlbum: archiveAlbumTodayCT,
+		studyFilters:         filters,
+	}
+	tables := archiveTables{
+		studies:   newStudyTable(state),
+		series:    newSeriesTable(state),
+		instances: newInstanceTable(state),
+	}
+
+	controls := newArchiveControls(nil, widget.NewLabel(""), tables, state)
+	item := findAccordionItem(controls, "Advanced Filters")
+	if item == nil {
+		t.Fatal("archive tab controls should keep Advanced Filters")
+	}
+	clearButton := findButtonWithText(item.Detail, "Clear")
+	if clearButton == nil {
+		t.Fatal("advanced filters should expose Clear")
+	}
+
+	clearButton.OnTapped()
+
+	if state.selectedArchiveAlbum != archiveAlbumDatabase {
+		t.Fatalf("selectedArchiveAlbum = %q, want %q", state.selectedArchiveAlbum, archiveAlbumDatabase)
+	}
+}
+
 func TestArchiveQuickSearchFiltersWhileTypingAndShowsSoundex(t *testing.T) {
 	fynetest.NewApp()
 	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
@@ -7459,7 +10804,7 @@ func TestArchiveQuickSearchFiltersWhileTypingAndShowsSoundex(t *testing.T) {
 	}
 	soundex := findCheckWithText(controls, "Soundex")
 	if soundex == nil {
-		t.Fatal("archive toolbar should expose a Soundex checkbox")
+		t.Fatal("archive toolbar should expose a workstation Soundex checkbox")
 	}
 
 	soundex.SetChecked(true)
@@ -7547,6 +10892,93 @@ func TestArchiveQuickSearchUsesIconOnlySearchButton(t *testing.T) {
 	}
 }
 
+func TestArchiveToolbarQuickSearchUsesWorkbenchChrome(t *testing.T) {
+	fynetest.NewApp()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	defer catalog.Close()
+	state := &uiState{catalog: catalog}
+	tables := archiveTables{
+		studies:   newStudyTable(state),
+		series:    newSeriesTable(state),
+		instances: newInstanceTable(state),
+	}
+	status := widget.NewLabel("")
+
+	controls := newArchiveControlSet(nil, status, tables, state).toolbarSearch
+
+	if !findEntryPlaceholderInWorkbenchChrome(controls, archiveQuickSearchPatientName) {
+		t.Fatal("archive toolbar quick search should sit inside dark workbench chrome")
+	}
+	if !findSelectWithSelectedInWorkbenchChrome(controls, archiveQuickSearchPatientName) {
+		t.Fatal("archive toolbar search selector should share the quick-search workbench chrome")
+	}
+	if findCheckWithText(controls, "Soundex") == nil {
+		t.Fatal("archive toolbar quick search should preserve the Soundex checkbox")
+	}
+}
+
+func TestArchiveToolbarQuickSearchBoxUsesStableWidth(t *testing.T) {
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder(archiveQuickSearchPatientName)
+	soundex := widget.NewCheck("Soundex", nil)
+	mode := compactWorkbenchLabel()
+	mode.SetText(archiveQuickSearchModeText(archiveQuickSearchPatientName))
+
+	box := newArchiveToolbarQuickSearchBox(entry, soundex, mode)
+
+	if box.MinSize().Width < archiveToolbarQuickSearchWidth {
+		t.Fatalf("archive toolbar quick search width = %.1f, want at least %.1f", box.MinSize().Width, archiveToolbarQuickSearchWidth)
+	}
+	if findEntryWithPlaceholder(box, archiveQuickSearchPatientName) == nil {
+		t.Fatal("archive toolbar quick search box should preserve the search entry")
+	}
+	if findCheckWithText(box, "Soundex") == nil {
+		t.Fatal("archive toolbar quick search box should preserve Soundex")
+	}
+	if findLabelContaining(box, "Search by Patient Name") == nil {
+		t.Fatal("archive toolbar quick search box should preserve search mode label")
+	}
+	if mode.Alignment != fyne.TextAlignTrailing {
+		t.Fatalf("archive toolbar quick search mode alignment = %v, want trailing", mode.Alignment)
+	}
+	if !findLabelSlotWithPrefixAndMinWidth(box, "Search by", archiveToolbarQuickSearchWidth) {
+		t.Fatal("archive toolbar quick search mode label should sit in the same stable-width slot as the entry")
+	}
+}
+
+func TestArchiveToolbarQuickSearchOmitsSeparateSearchLabel(t *testing.T) {
+	fynetest.NewApp()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	defer catalog.Close()
+	state := &uiState{catalog: catalog}
+	tables := archiveTables{
+		studies:   newStudyTable(state),
+		series:    newSeriesTable(state),
+		instances: newInstanceTable(state),
+	}
+	status := widget.NewLabel("")
+
+	controls := newArchiveControlSet(nil, status, tables, state).toolbarSearch
+
+	for _, text := range collectWidgetTexts(controls) {
+		if text == "Search" {
+			t.Fatal("archive toolbar quick search should not render a separate Search label beside the field selector")
+		}
+	}
+	if findSelectWithOption(controls, archiveQuickSearchPatientID) == nil {
+		t.Fatal("archive toolbar quick search should keep the field selector")
+	}
+	if findLabelContaining(controls, "Search by Patient Name") == nil {
+		t.Fatal("archive toolbar quick search should keep the selected mode label")
+	}
+}
+
 func TestArchiveSoundexToggleReappliesExistingQuickSearch(t *testing.T) {
 	fynetest.NewApp()
 	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
@@ -7587,6 +11019,9 @@ func findEntryWithPlaceholder(obj fyne.CanvasObject, placeholder string) *widget
 	if entry, ok := obj.(*widget.Entry); ok && entry.PlaceHolder == placeholder {
 		return entry
 	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findEntryWithPlaceholder(scroll.Content, placeholder)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
 			if found := findEntryWithPlaceholder(child, placeholder); found != nil {
@@ -7600,6 +11035,9 @@ func findEntryWithPlaceholder(obj fyne.CanvasObject, placeholder string) *widget
 func findEntryWithText(obj fyne.CanvasObject, text string) *widget.Entry {
 	if entry, ok := obj.(*widget.Entry); ok && entry.Text == text {
 		return entry
+	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findEntryWithText(scroll.Content, text)
 	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
@@ -7615,6 +11053,9 @@ func findCheckWithText(obj fyne.CanvasObject, text string) *widget.Check {
 	if check, ok := obj.(*widget.Check); ok && check.Text == text {
 		return check
 	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findCheckWithText(scroll.Content, text)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
 			if found := findCheckWithText(child, text); found != nil {
@@ -7625,9 +11066,60 @@ func findCheckWithText(obj fyne.CanvasObject, text string) *widget.Check {
 	return nil
 }
 
+func findRadioGroupWithOption(obj fyne.CanvasObject, option string) *widget.RadioGroup {
+	if radio, ok := obj.(*widget.RadioGroup); ok && slices.Contains(radio.Options, option) {
+		return radio
+	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findRadioGroupWithOption(scroll.Content, option)
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findRadioGroupWithOption(child, option); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func collectWidgetTexts(obj fyne.CanvasObject) []string {
+	var texts []string
+	switch value := obj.(type) {
+	case *widget.Label:
+		if value.Text != "" {
+			texts = append(texts, value.Text)
+		}
+	case *widget.Check:
+		if value.Text != "" {
+			texts = append(texts, value.Text)
+		}
+	case *widget.Entry:
+		if value.Text != "" {
+			texts = append(texts, value.Text)
+		}
+	case *widget.Button:
+		if value.Text != "" {
+			texts = append(texts, value.Text)
+		}
+	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		texts = append(texts, collectWidgetTexts(scroll.Content)...)
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			texts = append(texts, collectWidgetTexts(child)...)
+		}
+	}
+	return texts
+}
+
 func findSelectWithSelected(obj fyne.CanvasObject, selected string) *widget.Select {
 	if selectWidget, ok := obj.(*widget.Select); ok && selectWidget.Selected == selected {
 		return selectWidget
+	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findSelectWithSelected(scroll.Content, selected)
 	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
@@ -7639,9 +11131,76 @@ func findSelectWithSelected(obj fyne.CanvasObject, selected string) *widget.Sele
 	return nil
 }
 
+func findSelectSlotWithMinWidth(obj fyne.CanvasObject, selected string, minWidth float32) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
+			if selectWidget, ok := c.Objects[0].(*widget.Select); ok && selectWidget.Selected == selected {
+				return true
+			}
+		}
+		for _, child := range c.Objects {
+			if findSelectSlotWithMinWidth(child, selected, minWidth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findLabelSlotWithPrefixAndMinWidth(obj fyne.CanvasObject, prefix string, minWidth float32) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
+			if label, ok := c.Objects[0].(*widget.Label); ok && strings.HasPrefix(label.Text, prefix) {
+				return true
+			}
+		}
+		for _, child := range c.Objects {
+			if findLabelSlotWithPrefixAndMinWidth(child, prefix, minWidth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findCheckSlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWidth float32) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
+			if check, ok := c.Objects[0].(*widget.Check); ok && check.Text == text {
+				return true
+			}
+		}
+		for _, child := range c.Objects {
+			if findCheckSlotWithTextAndMinWidth(child, text, minWidth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findButtonSlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWidth float32) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
+			if button, ok := c.Objects[0].(*widget.Button); ok && button.Text == text {
+				return true
+			}
+		}
+		for _, child := range c.Objects {
+			if findButtonSlotWithTextAndMinWidth(child, text, minWidth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func findSelectWithOption(obj fyne.CanvasObject, option string) *widget.Select {
 	if selectWidget, ok := obj.(*widget.Select); ok && stringInList(option, selectWidget.Options) {
 		return selectWidget
+	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findSelectWithOption(scroll.Content, option)
 	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
@@ -7657,6 +11216,9 @@ func findButtonWithText(obj fyne.CanvasObject, text string) *widget.Button {
 	if button, ok := obj.(*widget.Button); ok && button.Text == text {
 		return button
 	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findButtonWithText(scroll.Content, text)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
 			if found := findButtonWithText(child, text); found != nil {
@@ -7671,6 +11233,9 @@ func findButtonWithIcon(obj fyne.CanvasObject, icon fyne.Resource) *widget.Butto
 	if button, ok := obj.(*widget.Button); ok && button.Icon != nil && icon != nil && button.Icon.Name() == icon.Name() {
 		return button
 	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findButtonWithIcon(scroll.Content, icon)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
 			if found := findButtonWithIcon(child, icon); found != nil {
@@ -7681,13 +11246,74 @@ func findButtonWithIcon(obj fyne.CanvasObject, icon fyne.Resource) *widget.Butto
 	return nil
 }
 
+func findButtonsWithIcon(obj fyne.CanvasObject, icon fyne.Resource) []*widget.Button {
+	var buttons []*widget.Button
+	if button, ok := obj.(*widget.Button); ok && button.Icon != nil && icon != nil && button.Icon.Name() == icon.Name() {
+		buttons = append(buttons, button)
+	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		buttons = append(buttons, findButtonsWithIcon(scroll.Content, icon)...)
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			buttons = append(buttons, findButtonsWithIcon(child, icon)...)
+		}
+	}
+	return buttons
+}
+
 func findButtonWithIconAndText(obj fyne.CanvasObject, icon fyne.Resource, text string) *widget.Button {
 	if button, ok := obj.(*widget.Button); ok && button.Text == text && button.Icon != nil && icon != nil && button.Icon.Name() == icon.Name() {
 		return button
 	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findButtonWithIconAndText(scroll.Content, icon, text)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
 			if found := findButtonWithIconAndText(child, icon, text); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func findProgressBar(obj fyne.CanvasObject) *widget.ProgressBar {
+	if progress, ok := obj.(*widget.ProgressBar); ok {
+		return progress
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findProgressBar(child); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func findProgressBarInfinite(obj fyne.CanvasObject) *widget.ProgressBarInfinite {
+	if progress, ok := obj.(*widget.ProgressBarInfinite); ok {
+		return progress
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findProgressBarInfinite(child); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func findHorizontalScroll(obj fyne.CanvasObject) *container.Scroll {
+	if scroll, ok := obj.(*container.Scroll); ok && scroll.Direction == container.ScrollHorizontalOnly {
+		return scroll
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findHorizontalScroll(child); found != nil {
 				return found
 			}
 		}
@@ -7728,6 +11354,14 @@ func findAccordionItem(obj fyne.CanvasObject, title string) *widget.AccordionIte
 			}
 		}
 	}
+	if split, ok := obj.(*container.Split); ok {
+		if found := findAccordionItem(split.Leading, title); found != nil {
+			return found
+		}
+		if found := findAccordionItem(split.Trailing, title); found != nil {
+			return found
+		}
+	}
 	return nil
 }
 
@@ -7742,6 +11376,155 @@ func findSideBySideSectionTitles(obj fyne.CanvasObject, leftTitle string, rightT
 			if findSideBySideSectionTitles(child, leftTitle, rightTitle) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func findDirectContainerWithTexts(obj fyne.CanvasObject, texts ...string) bool {
+	return findDirectContainerWithTextsExcluding(obj, texts, nil)
+}
+
+func findDirectContainerWithTextsExcluding(obj fyne.CanvasObject, texts []string, excluded []string) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		directTexts := collectDirectChildTexts(c)
+		if allTextsPresent(directTexts, texts...) && !anyTextsPresent(directTexts, excluded...) {
+			return true
+		}
+		for _, child := range c.Objects {
+			if findDirectContainerWithTextsExcluding(child, texts, excluded) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findDirectContainerWithTextsAndWorkbenchChromeExcluding(obj fyne.CanvasObject, texts []string, excluded []string) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		directTexts := collectDirectChildTexts(c)
+		if allTextsPresent(directTexts, texts...) &&
+			!anyTextsPresent(directTexts, excluded...) &&
+			containsCanvasRectangleColor(c, archiveHeaderRowColor) &&
+			countCanvasRectanglesWithColor(c, tableColumnDividerColor) >= 2 {
+			return true
+		}
+		for _, child := range c.Objects {
+			if findDirectContainerWithTextsAndWorkbenchChromeExcluding(child, texts, excluded) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findDirectHeaderChromeWithTextAndSelect(obj fyne.CanvasObject, text string, selected string) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if findLabelContaining(c, text) != nil &&
+			findSelectWithSelected(c, selected) != nil &&
+			directCanvasRectanglesWithColor(c, archiveHeaderRowColor) >= 1 &&
+			countCanvasRectanglesWithColor(c, tableColumnDividerColor) >= 1 {
+			return true
+		}
+		for _, child := range c.Objects {
+			if findDirectHeaderChromeWithTextAndSelect(child, text, selected) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findSelectWithSelectedInWorkbenchChrome(obj fyne.CanvasObject, selected string) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if findSelectWithSelected(c, selected) != nil &&
+			directCanvasRectanglesWithColor(c, archiveHeaderRowColor) >= 1 &&
+			countCanvasRectanglesWithColor(c, tableColumnDividerColor) >= 2 {
+			return true
+		}
+		for _, child := range c.Objects {
+			if findSelectWithSelectedInWorkbenchChrome(child, selected) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findEntryPlaceholderInWorkbenchChrome(obj fyne.CanvasObject, placeholder string) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if findEntryWithPlaceholder(c, placeholder) != nil &&
+			directCanvasRectanglesWithColor(c, archiveHeaderRowColor) >= 1 &&
+			countCanvasRectanglesWithColor(c, tableColumnDividerColor) >= 2 {
+			return true
+		}
+		for _, child := range c.Objects {
+			if findEntryPlaceholderInWorkbenchChrome(child, placeholder) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func directCanvasRectanglesWithColor(c *fyne.Container, want color.NRGBA) int {
+	count := 0
+	for _, child := range c.Objects {
+		rect, ok := child.(*canvas.Rectangle)
+		if !ok {
+			continue
+		}
+		if got := color.NRGBAModel.Convert(rect.FillColor).(color.NRGBA); got == want {
+			count++
+		}
+	}
+	return count
+}
+
+func findThreeColumnFilterPanelsWithWorkbenchChrome(obj fyne.CanvasObject, sourceTitle string, dateTitle string, modalityTitle string) bool {
+	if c, ok := obj.(*fyne.Container); ok {
+		if len(c.Objects) == 3 &&
+			findLabelContaining(c.Objects[0], sourceTitle) != nil &&
+			findLabelContaining(c.Objects[1], dateTitle) != nil &&
+			findLabelContaining(c.Objects[2], modalityTitle) != nil &&
+			containsCanvasRectangleColor(c.Objects[1], archiveHeaderRowColor) &&
+			containsCanvasRectangleColor(c.Objects[2], archiveHeaderRowColor) &&
+			countCanvasRectanglesWithColor(c.Objects[1], tableColumnDividerColor) >= 2 &&
+			countCanvasRectanglesWithColor(c.Objects[2], tableColumnDividerColor) >= 2 {
+			return true
+		}
+		for _, child := range c.Objects {
+			if findThreeColumnFilterPanelsWithWorkbenchChrome(child, sourceTitle, dateTitle, modalityTitle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func collectDirectChildTexts(c *fyne.Container) []string {
+	var texts []string
+	for _, child := range c.Objects {
+		texts = append(texts, collectWidgetTexts(child)...)
+	}
+	return texts
+}
+
+func allTextsPresent(haystack []string, needles ...string) bool {
+	joined := strings.Join(haystack, "\n")
+	for _, needle := range needles {
+		if !strings.Contains(joined, needle) {
+			return false
+		}
+	}
+	return true
+}
+
+func anyTextsPresent(haystack []string, needles ...string) bool {
+	joined := strings.Join(haystack, "\n")
+	for _, needle := range needles {
+		if needle != "" && strings.Contains(joined, needle) {
+			return true
 		}
 	}
 	return false

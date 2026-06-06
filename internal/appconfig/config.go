@@ -28,21 +28,28 @@ const (
 )
 
 type Config struct {
-	LocalAETitle                     string   `json:"localAETitle"`
-	ReceiverAddress                  string   `json:"receiverAddress"`
-	ReceiverAutoStart                bool     `json:"receiverAutoStart"`
-	AdditionalAETitles               []string `json:"additionalAETitles,omitempty"`
-	ReceivePreferredTransferSyntax   string   `json:"receivePreferredTransferSyntax"`
-	DICOMCommunicationTimeoutSeconds int      `json:"dicomCommunicationTimeoutSeconds"`
-	DICOMConnectionTimeoutSeconds    int      `json:"dicomConnectionTimeoutSeconds"`
-	MaxZipEntryBytes                 *int64   `json:"max_zip_entry_bytes"`
-	MaxZipTotalBytes                 *int64   `json:"max_zip_total_bytes"`
-	MaxZipEntryCount                 *int     `json:"max_zip_entry_count"`
-	MaxFileImportBytes               *int64   `json:"max_file_import_bytes"`
-	MaxStoreObjectBytes              *int64   `json:"max_store_object_bytes"`
-	MaxImportTotalFiles              *int     `json:"max_import_total_files"`
-	MaxImportPathLength              *int     `json:"max_import_path_length"`
-	MaxImportDirectoryDepth          *int     `json:"max_import_directory_depth"`
+	LocalAETitle                     string                    `json:"localAETitle"`
+	ReceiverAddress                  string                    `json:"receiverAddress"`
+	ReceiverAutoStart                bool                      `json:"receiverAutoStart"`
+	AdditionalAETitles               []string                  `json:"additionalAETitles,omitempty"`
+	ReceivePreferredTransferSyntax   string                    `json:"receivePreferredTransferSyntax"`
+	DICOMCommunicationTimeoutSeconds int                       `json:"dicomCommunicationTimeoutSeconds"`
+	DICOMConnectionTimeoutSeconds    int                       `json:"dicomConnectionTimeoutSeconds"`
+	UISortPreferences                map[string]SortPreference `json:"uiSortPreferences,omitempty"`
+	OpenedArchiveStudyUIDs           []string                  `json:"openedArchiveStudyUIDs,omitempty"`
+	MaxZipEntryBytes                 *int64                    `json:"max_zip_entry_bytes"`
+	MaxZipTotalBytes                 *int64                    `json:"max_zip_total_bytes"`
+	MaxZipEntryCount                 *int                      `json:"max_zip_entry_count"`
+	MaxFileImportBytes               *int64                    `json:"max_file_import_bytes"`
+	MaxStoreObjectBytes              *int64                    `json:"max_store_object_bytes"`
+	MaxImportTotalFiles              *int                      `json:"max_import_total_files"`
+	MaxImportPathLength              *int                      `json:"max_import_path_length"`
+	MaxImportDirectoryDepth          *int                      `json:"max_import_directory_depth"`
+}
+
+type SortPreference struct {
+	Column     int  `json:"column"`
+	Descending bool `json:"descending"`
 }
 
 func Defaults() Config {
@@ -174,6 +181,7 @@ func Normalize(cfg Config) (Config, error) {
 	if cfg.DICOMConnectionTimeoutSeconds < 0 {
 		return Config{}, fmt.Errorf("dicomConnectionTimeoutSeconds must be greater than zero")
 	}
+	cfg.OpenedArchiveStudyUIDs = normalizeStringList(cfg.OpenedArchiveStudyUIDs)
 	return cfg, nil
 }
 
@@ -192,6 +200,20 @@ func normalizeAdditionalAETitles(localAETitle string, aeTitles []string) ([]stri
 		normalized = append(normalized, aeTitle)
 	}
 	return normalized, nil
+}
+
+func normalizeStringList(values []string) []string {
+	seen := map[string]bool{}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		normalized = append(normalized, value)
+	}
+	return normalized
 }
 
 func applyMissingSafetyLimitDefaults(cfg *Config, raw map[string]json.RawMessage) {

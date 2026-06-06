@@ -77,6 +77,55 @@ func TestImportPathStoresDicomAndListsStudies(t *testing.T) {
 	}
 }
 
+func TestImportPathWithOptionsReportsProgressAfterEachFile(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	sourceDir := t.TempDir()
+	validPath := filepath.Join(sourceDir, "valid.dcm")
+	invalidPath := filepath.Join(sourceDir, "invalid.txt")
+	if err := os.WriteFile(validPath, testPart10File(t, "PROGRESS^ONE", "P001", "CT", "1.2.3.progress"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(invalidPath, []byte("not dicom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var updates []ImportProgress
+	report, err := catalog.ImportPathWithOptions(ctx, sourceDir, ImportOptions{
+		OnProgress: func(update ImportProgress) {
+			updates = append(updates, update)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ScannedFiles != 2 || report.StoredFiles != 1 || report.InvalidFiles != 1 {
+		t.Fatalf("report = %#v, want one stored and one invalid file", report)
+	}
+	if len(updates) != 2 {
+		t.Fatalf("progress updates = %d, want 2", len(updates))
+	}
+	updatesByPath := map[string]ImportProgress{}
+	for _, update := range updates {
+		updatesByPath[update.Path] = update
+	}
+	if _, ok := updatesByPath[validPath]; !ok {
+		t.Fatalf("missing valid file progress update in %#v", updates)
+	}
+	if _, ok := updatesByPath[invalidPath]; !ok {
+		t.Fatalf("missing invalid file progress update in %#v", updates)
+	}
+	final := updates[len(updates)-1]
+	if final.ScannedFiles != 2 || final.StoredFiles != 1 || final.InvalidFiles != 1 {
+		t.Fatalf("final progress update = %#v", final)
+	}
+}
+
 func TestStudyMetadataPersistsStatusAndComments(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
@@ -383,6 +432,36 @@ func TestStudiesWithFilters(t *testing.T) {
 	}
 	if len(studies) != 0 {
 		t.Fatalf("imported-at past upper-bound len = %d, want 0", len(studies))
+	}
+}
+
+func TestStudiesWithFiltersByStudyDateTime(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	sourceDir := t.TempDir()
+	recentPath := filepath.Join(sourceDir, "recent.dcm")
+	oldPath := filepath.Join(sourceDir, "old.dcm")
+	if err := os.WriteFile(recentPath, testPart10FileWithStudyDateTime(t, "Recent^Acquired", "R001", "CT", "1.2.3.recent", "20260604", "113000"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, testPart10FileWithStudyDateTime(t, "Old^Acquired", "O001", "CT", "1.2.3.old", "20260604", "090000"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	studies, err := catalog.StudiesWithFilters(ctx, StudyFilters{StudyDateTimeFrom: "20260604110000", StudyDateTimeTo: "20260604120000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies) != 1 || studies[0].StudyInstanceUID != "1.2.3.recent" {
+		t.Fatalf("study datetime filter studies = %#v", studies)
 	}
 }
 
@@ -913,11 +992,20 @@ func testPart10File(t *testing.T, patientName, patientID, modality, studyUID str
 	return testPart10FileWithDetails(t, patientName, patientID, modality, studyUID, studyUID+".series", studyUID+".instance", "", "", "")
 }
 
+func testPart10FileWithStudyDateTime(t *testing.T, patientName, patientID, modality, studyUID, studyDate, studyTime string) []byte {
+	t.Helper()
+	return testPart10FileWithStudyDateTimeAndSeries(t, patientName, patientID, modality, studyUID, studyUID+".series", studyUID+".instance", "", "", "", studyDate, studyTime, "", "")
+}
+
 func testPart10FileWithDetails(t *testing.T, patientName, patientID, modality, studyUID, seriesUID, sopUID, seriesNumber, seriesDescription, instanceNumber string) []byte {
 	return testPart10FileWithSeriesDetails(t, patientName, patientID, modality, studyUID, seriesUID, sopUID, seriesNumber, seriesDescription, instanceNumber, "", "")
 }
 
 func testPart10FileWithSeriesDetails(t *testing.T, patientName, patientID, modality, studyUID, seriesUID, sopUID, seriesNumber, seriesDescription, instanceNumber, seriesDate, seriesTime string) []byte {
+	return testPart10FileWithStudyDateTimeAndSeries(t, patientName, patientID, modality, studyUID, seriesUID, sopUID, seriesNumber, seriesDescription, instanceNumber, "20260604", "134501", seriesDate, seriesTime)
+}
+
+func testPart10FileWithStudyDateTimeAndSeries(t *testing.T, patientName, patientID, modality, studyUID, seriesUID, sopUID, seriesNumber, seriesDescription, instanceNumber, studyDate, studyTime, seriesDate, seriesTime string) []byte {
 	t.Helper()
 	dataset := []core.Element{
 		stringElement(core.NewTag(0x0008, 0x0016), core.VRUI, "1.2.840.10008.5.1.4.1.1.2"),
@@ -926,8 +1014,8 @@ func testPart10FileWithSeriesDetails(t *testing.T, patientName, patientID, modal
 		stringElement(core.NewTag(0x0010, 0x0020), core.VRLO, patientID),
 		stringElement(core.NewTag(0x0010, 0x0030), core.VRDA, "19700102"),
 		stringElement(core.NewTag(0x0008, 0x0080), core.VRLO, "General Hospital"),
-		stringElement(core.NewTag(0x0008, 0x0020), core.VRDA, "20260604"),
-		stringElement(core.NewTag(0x0008, 0x0030), core.VRTM, "134501"),
+		stringElement(core.NewTag(0x0008, 0x0020), core.VRDA, studyDate),
+		stringElement(core.NewTag(0x0008, 0x0030), core.VRTM, studyTime),
 		stringElement(core.NewTag(0x0008, 0x0060), core.VRCS, modality),
 		stringElement(core.NewTag(0x0020, 0x000D), core.VRUI, studyUID),
 		stringElement(core.NewTag(0x0020, 0x000E), core.VRUI, seriesUID),

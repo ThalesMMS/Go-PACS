@@ -68,6 +68,7 @@ func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
 		ReceivePreferredTransferSyntax:   receive.PreferredTransferSyntaxExplicitVRLittleEndian,
 		DICOMCommunicationTimeoutSeconds: 55,
 		DICOMConnectionTimeoutSeconds:    12,
+		OpenedArchiveStudyUIDs:           []string{" study-2 ", "", "study-1", "study-2"},
 		MaxFileImportBytes:               int64Ptr(123),
 		MaxZipEntryBytes:                 int64Ptr(234),
 		MaxZipTotalBytes:                 int64Ptr(345),
@@ -104,6 +105,9 @@ func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
 	}
 	if loaded.DICOMConnectionTimeoutSeconds != 12 {
 		t.Fatalf("DICOMConnectionTimeoutSeconds = %d, want 12", loaded.DICOMConnectionTimeoutSeconds)
+	}
+	if got, want := loaded.OpenedArchiveStudyUIDs, []string{"study-2", "study-1"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("OpenedArchiveStudyUIDs = %#v, want %#v", got, want)
 	}
 	if loaded.MaxFileImportBytes == nil || *loaded.MaxFileImportBytes != 123 {
 		t.Fatalf("MaxFileImportBytes = %#v, want 123", loaded.MaxFileImportBytes)
