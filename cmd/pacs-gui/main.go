@@ -135,6 +135,7 @@ const (
 	queryModalityFilterPanelMinWidth   float32 = 152
 	queryModalityCheckSlotWidth        float32 = 64
 	querySearchBarEntryWidth           float32 = 820
+	queryRetrieveDestinationSlotWidth  float32 = 520
 	queryRefreshCadenceSlotWidth       float32 = 220
 	queryRefreshCountdownSlotWidth     float32 = 96
 	autoQueryRefreshCountdownSlotWidth float32 = 72
@@ -2552,7 +2553,7 @@ func newArchiveBrowser(studyTable *widget.Table, seriesTable *widget.Table, inst
 		container.NewStack(studyTable),
 		seriesAndInstances,
 	)
-	archiveBrowser.SetOffset(0.92)
+	archiveBrowser.SetOffset(0.94)
 	return archiveBrowser
 }
 
@@ -2940,8 +2941,8 @@ func newArchiveActivityList(status *widget.Label, state *uiState) *widget.List {
 const (
 	compactArchiveRailIconSlotSize      float32 = 20
 	compactArchiveAlbumCountSlotWidth   float32 = 36
-	compactArchiveActivityProgressWidth float32 = 200
-	archiveSidebarMinWidth              float32 = 208
+	compactArchiveActivityProgressWidth float32 = 184
+	archiveSidebarMinWidth              float32 = 192
 	archiveSummaryPaneMinWidth          float32 = 220
 	archivePatientStudyMetricsSlotWidth float32 = 80
 	archiveActivityVerticalPadding      float32 = 3
@@ -6027,7 +6028,7 @@ type querySourceListCell struct {
 
 const querySourceEmptyLabel = "No remote sources configured"
 const querySourcePriorityHandleSlotWidth float32 = 16
-const sourceStatusDotSlotSize float32 = 12
+const sourceStatusDotSlotSize float32 = 14
 const querySourceStatusDotsSlotWidth float32 = sourceStatusDotSlotSize*2 + 4
 
 func newQuerySourceListCell() *querySourceListCell {
@@ -8278,7 +8279,7 @@ func newNetworkFooter(left fyne.CanvasObject, center fyne.CanvasObject, right fy
 const (
 	networkFooterBulkButtonSlotWidth   float32 = 86
 	networkFooterActionButtonSlotWidth float32 = 104
-	networkFooterAddButtonSlotWidth    float32 = 168
+	networkFooterAddButtonSlotWidth    float32 = 204
 	networkFooterIconButtonSlotWidth   float32 = 44
 )
 
@@ -9705,12 +9706,15 @@ var (
 	tableColumnDividerColor              = color.NRGBA{R: 90, G: 90, B: 90, A: 255}
 	queryRetrieveActionRowColor          = color.NRGBA{R: 34, G: 58, B: 38, A: 255}
 	queryQuickSearchSelectedSegmentColor = color.NRGBA{R: 82, G: 82, B: 82, A: 255}
+	archiveMetadataGlyphSlotColor        = color.NRGBA{R: 46, G: 46, B: 46, A: 255}
 )
 
 const tableColumnDividerWidth float32 = 1
 const compactTableRowHeight float32 = 24
 const archiveTableRowHeight float32 = compactTableRowHeight + 4
+const queryTableRowHeight float32 = archiveTableRowHeight
 const networkTableRowHeight float32 = compactTableRowHeight + 8
+const archiveMetadataGlyphSlotWidth float32 = 18
 
 const (
 	tableCellVerticalPadding   float32 = 1
@@ -9731,6 +9735,13 @@ func applyArchiveTableRows(table *widget.Table) {
 	table.SetRowHeight(-1, archiveTableRowHeight)
 }
 
+func applyQueryTableRows(table *widget.Table) {
+	if table == nil {
+		return
+	}
+	table.SetRowHeight(-1, queryTableRowHeight)
+}
+
 func applyNetworkTableRows(table *widget.Table) {
 	if table == nil {
 		return
@@ -9741,6 +9752,8 @@ func applyNetworkTableRows(table *widget.Table) {
 type rightDividerLayout struct{}
 
 type leftDividerLayout struct{}
+
+type archiveMetadataGlyphSlotLayout struct{}
 
 func (leftDividerLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 	if len(objects) == 0 {
@@ -9768,6 +9781,22 @@ func (rightDividerLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 
 func (rightDividerLayout) MinSize([]fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(tableColumnDividerWidth, 1)
+}
+
+func (archiveMetadataGlyphSlotLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) == 0 {
+		return
+	}
+	width := archiveMetadataGlyphSlotWidth
+	if width > size.Width {
+		width = size.Width
+	}
+	objects[0].Move(fyne.NewPos(size.Width-width, 0))
+	objects[0].Resize(fyne.NewSize(width, size.Height))
+}
+
+func (archiveMetadataGlyphSlotLayout) MinSize([]fyne.CanvasObject) fyne.Size {
+	return fyne.NewSize(archiveMetadataGlyphSlotWidth, 1)
 }
 
 type bottomDividerLayout struct{}
@@ -9809,18 +9838,21 @@ func newCompactTableCellContent(content fyne.CanvasObject) *fyne.Container {
 
 type archiveTableCell struct {
 	*fyne.Container
-	background   *canvas.Rectangle
-	statusChip   *canvas.Rectangle
-	label        *widget.Label
-	sortLabel    *widget.Label
-	statusDot    *canvas.Circle
-	statusDotBox *fyne.Container
+	background        *canvas.Rectangle
+	statusChip        *canvas.Rectangle
+	metadataGlyphSlot *canvas.Rectangle
+	label             *widget.Label
+	sortLabel         *widget.Label
+	statusDot         *canvas.Circle
+	statusDotBox      *fyne.Container
 }
 
 func newArchiveTableCell() *archiveTableCell {
 	background := canvas.NewRectangle(archiveOddRowColor)
 	statusChip := canvas.NewRectangle(color.NRGBA{})
 	statusChip.Hide()
+	metadataGlyphSlot := canvas.NewRectangle(color.NRGBA{})
+	metadataGlyphSlot.Hide()
 	label := widget.NewLabel("wide table cell value")
 	label.Wrapping = fyne.TextTruncate
 	sortLabel := widget.NewLabel("")
@@ -9832,13 +9864,14 @@ func newArchiveTableCell() *archiveTableCell {
 	statusDotBox.Hide()
 	labelRow := container.NewBorder(nil, nil, statusDotBox, sortLabel, label)
 	return &archiveTableCell{
-		Container:    container.NewStack(background, statusChip, newCompactTableCellContent(labelRow), newTableColumnDividerLayer(), newTableRowDividerLayer()),
-		background:   background,
-		statusChip:   statusChip,
-		label:        label,
-		sortLabel:    sortLabel,
-		statusDot:    statusDot,
-		statusDotBox: statusDotBox,
+		Container:         container.NewStack(background, statusChip, container.New(archiveMetadataGlyphSlotLayout{}, metadataGlyphSlot), newCompactTableCellContent(labelRow), newTableColumnDividerLayer(), newTableRowDividerLayer()),
+		background:        background,
+		statusChip:        statusChip,
+		metadataGlyphSlot: metadataGlyphSlot,
+		label:             label,
+		sortLabel:         sortLabel,
+		statusDot:         statusDot,
+		statusDotBox:      statusDotBox,
 	}
 }
 
@@ -9897,6 +9930,8 @@ func applyArchiveTableCellWithColumn(cell *archiveTableCell, tableRow int, table
 	cell.statusChip.Hide()
 	cell.sortLabel.Hide()
 	cell.statusChip.FillColor = color.NRGBA{}
+	cell.metadataGlyphSlot.Hide()
+	cell.metadataGlyphSlot.FillColor = color.NRGBA{}
 	cell.label.SetText(text)
 	cell.label.TextStyle = fyne.TextStyle{
 		Bold:   header || row.kind == archiveRowPatient || row.kind == archiveRowSeries,
@@ -9904,6 +9939,11 @@ func applyArchiveTableCellWithColumn(cell *archiveTableCell, tableRow int, table
 	}
 	cell.background.FillColor = archiveTableFillColor(tableRow, row, header, selected)
 	if !header && (tableCol == archiveStudyTableColumnStatus || tableCol == archiveStudyTableColumnComments) {
+		if !selected {
+			cell.metadataGlyphSlot.FillColor = archiveMetadataGlyphSlotColor
+			cell.metadataGlyphSlot.Show()
+			cell.metadataGlyphSlot.Refresh()
+		}
 		cell.sortLabel.SetText("▾")
 		cell.sortLabel.Show()
 		cell.sortLabel.Refresh()
@@ -11288,7 +11328,7 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 	actions := container.NewBorder(
 		nil,
 		nil,
-		newQueryPrimaryActionStrip(labeledControl("Retrieve to:", destinationSelect), queryButton, patientButton, retrieveButton, verifyButton),
+		newQueryPrimaryActionStrip(queryRetrieveDestinationSlot(labeledControl("Retrieve to:", destinationSelect)), queryButton, patientButton, retrieveButton, verifyButton),
 		refreshCluster,
 		nil,
 	)
@@ -12010,7 +12050,7 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 		container.NewBorder(
 			nil,
 			nil,
-			newQueryPrimaryActionStrip(labeledControl("Retrieve to:", destinationSelect), runButton, runPatientButton, retrieveButton, verifyButton),
+			newQueryPrimaryActionStrip(queryRetrieveDestinationSlot(labeledControl("Retrieve to:", destinationSelect)), runButton, runPatientButton, retrieveButton, verifyButton),
 			refreshCluster,
 			state.queryDestinationLabel,
 		),
@@ -12035,6 +12075,10 @@ func newQueryPrimaryActionStrip(objects ...fyne.CanvasObject) fyne.CanvasObject 
 		newTableColumnDividerLayer(),
 		newTableRowDividerLayer(),
 	)
+}
+
+func queryRetrieveDestinationSlot(destination fyne.CanvasObject) fyne.CanvasObject {
+	return container.NewGridWrap(fyne.NewSize(queryRetrieveDestinationSlotWidth, destination.MinSize().Height), destination)
 }
 
 func newQueryPrimaryActionButton(text string, tapped func()) *widget.Button {
@@ -13155,7 +13199,7 @@ func newQueryTableWithColumnsAndWidths(state *uiState, columns []int, widths []f
 	for col, width := range widths {
 		table.SetColumnWidth(col, width)
 	}
-	applyCompactTableRows(table)
+	applyQueryTableRows(table)
 	return table
 }
 

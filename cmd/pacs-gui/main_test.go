@@ -102,6 +102,40 @@ func TestStudyTableUsesReferenceArchiveRowHeight(t *testing.T) {
 	}
 }
 
+func TestQueryTableUsesReferenceResultRowHeight(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+
+	table := newQueryTable(state, nil)
+
+	rowHeights := reflect.ValueOf(table).Elem().FieldByName("rowHeights")
+	defaultHeight := rowHeights.MapIndex(reflect.ValueOf(-1))
+	if !defaultHeight.IsValid() {
+		t.Fatal("query result table should set the default row height")
+	}
+	got := defaultHeight.Float()
+	if got != float64(queryTableRowHeight) {
+		t.Fatalf("query result table row height = %v, want %v", got, queryTableRowHeight)
+	}
+}
+
+func TestAutoQueryTableUsesReferenceResultRowHeight(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+
+	table := newAutoQueryTable(state, nil)
+
+	rowHeights := reflect.ValueOf(table).Elem().FieldByName("rowHeights")
+	defaultHeight := rowHeights.MapIndex(reflect.ValueOf(-1))
+	if !defaultHeight.IsValid() {
+		t.Fatal("Auto Q/R result table should set the default row height")
+	}
+	got := defaultHeight.Float()
+	if got != float64(queryTableRowHeight) {
+		t.Fatalf("Auto Q/R result table row height = %v, want %v", got, queryTableRowHeight)
+	}
+}
+
 func TestRecordOperationPrependsAndCapsHistory(t *testing.T) {
 	state := &uiState{}
 	for i := 0; i < maxTaskHistory+2; i++ {
@@ -720,7 +754,7 @@ func TestArchiveActivityListUsesStableProgressSlots(t *testing.T) {
 	if got := box.Objects[1].MinSize().Width; got < compactArchiveActivityProgressWidth {
 		t.Fatalf("activity progress slot width = %.1f, want at least %.1f", got, compactArchiveActivityProgressWidth)
 	}
-	const referenceActivityProgressWidth float32 = 200
+	const referenceActivityProgressWidth float32 = 184
 	if got := box.Objects[1].MinSize().Width; got != referenceActivityProgressWidth {
 		t.Fatalf("activity progress slot width = %.1f, want %.1f", got, referenceActivityProgressWidth)
 	}
@@ -3102,6 +3136,18 @@ func TestQueryActionStripUsesWorkbenchChrome(t *testing.T) {
 		[]string{"Refresh"},
 	) {
 		t.Fatal("Query action strip should use dark workbench chrome without merging the Refresh controls into the primary action cluster")
+	}
+}
+
+func TestQueryRetrieveDestinationUsesReferenceWidthSlot(t *testing.T) {
+	fynetest.NewApp()
+	const referenceDestinationWidth float32 = 520
+	destination := labeledControl("Retrieve to:", widget.NewEntry())
+
+	slot := queryRetrieveDestinationSlot(destination)
+
+	if got := slot.MinSize().Width; got != referenceDestinationWidth {
+		t.Fatalf("Query Retrieve to slot width = %.1f, want %.1f", got, referenceDestinationWidth)
 	}
 }
 
@@ -6126,7 +6172,7 @@ func TestQuerySourceListCellUsesNativeStatusDots(t *testing.T) {
 func TestSourceStatusDotBoxUsesReferenceSize(t *testing.T) {
 	box := sourceStatusDotBox(newSourceStatusDot())
 
-	const referenceStatusDotSize float32 = 12
+	const referenceStatusDotSize float32 = 14
 	if got := box.MinSize(); got.Width != referenceStatusDotSize || got.Height != referenceStatusDotSize {
 		t.Fatalf("status dot box size = %.0fx%.0f, want %.0fx%.0f", got.Width, got.Height, referenceStatusDotSize, referenceStatusDotSize)
 	}
@@ -6751,7 +6797,7 @@ func TestNetworkFooterButtonSlotsUseReferenceWidths(t *testing.T) {
 func TestNetworkFooterAddNodeSlotUsesCompactReferenceWidth(t *testing.T) {
 	slot := networkFooterButtonSlot(widget.NewButton(networkActionLabelAddNewNode, nil), networkFooterAddButtonSlotWidth)
 
-	const referenceAddNodeWidth float32 = 168
+	const referenceAddNodeWidth float32 = 204
 	if got := slot.MinSize().Width; got != referenceAddNodeWidth {
 		t.Fatalf("Add new node footer slot width = %.0f, want %.0f", got, referenceAddNodeWidth)
 	}
@@ -9408,8 +9454,8 @@ func TestArchiveSidebarUsesNarrowReferenceMinimum(t *testing.T) {
 	if !ok {
 		t.Fatalf("archive sidebar = %T, want scroll container", sidebar)
 	}
-	if got := scroll.MinSize().Width; got > 208 {
-		t.Fatalf("archive sidebar minimum width = %.1f, want at most 208 to preserve the 13%% reference rail at the default window width", got)
+	if got := scroll.MinSize().Width; got > 192 {
+		t.Fatalf("archive sidebar minimum width = %.1f, want at most 192 to preserve the 12%% reference rail at the default window width", got)
 	}
 }
 
@@ -10145,8 +10191,8 @@ func TestArchiveBrowserKeepsDetailTablesAsCompactTransitionBand(t *testing.T) {
 	if !ok {
 		t.Fatalf("archive browser = %T, want split", browser)
 	}
-	if split.Offset < 0.92 {
-		t.Fatalf("archive browser main tree offset = %.2f, want at least 0.92 so Series/Instances remain a compact transition band", split.Offset)
+	if split.Offset < 0.94 {
+		t.Fatalf("archive browser main tree offset = %.2f, want at least 0.94 so Series/Instances remain a compact transition band", split.Offset)
 	}
 }
 
@@ -11437,6 +11483,7 @@ func TestArchiveStatusTableCellUsesNativeStatusDot(t *testing.T) {
 
 func TestArchiveStatusTableCellShowsEditableTrailingGlyph(t *testing.T) {
 	cell := newArchiveTableCell()
+	glyphSlotColor := color.NRGBA{R: 46, G: 46, B: 46, A: 255}
 
 	applyArchiveTableCellWithColumn(cell, 2, archiveStudyTableColumnStatus, "★ Interesting", archiveBrowserRow{kind: archiveRowStudy}, false, false)
 
@@ -11446,6 +11493,9 @@ func TestArchiveStatusTableCellShowsEditableTrailingGlyph(t *testing.T) {
 	if cell.sortLabel.Text != "▾" {
 		t.Fatalf("archive status edit glyph = %q, want solid dropdown chevron", cell.sortLabel.Text)
 	}
+	if got := countCanvasRectanglesWithColor(cell.Container, glyphSlotColor); got != 1 {
+		t.Fatalf("archive status edit glyph slot fill count = %d, want 1", got)
+	}
 
 	applyArchiveTableCellWithColumn(cell, 2, archiveStudyTableColumnComments, "Discuss with surgeon", archiveBrowserRow{kind: archiveRowStudy}, false, false)
 	if cell.sortLabel == nil || !cell.sortLabel.Visible() {
@@ -11453,6 +11503,14 @@ func TestArchiveStatusTableCellShowsEditableTrailingGlyph(t *testing.T) {
 	}
 	if cell.sortLabel.Text != "▾" {
 		t.Fatalf("archive comments edit glyph = %q, want solid dropdown chevron", cell.sortLabel.Text)
+	}
+	if got := countCanvasRectanglesWithColor(cell.Container, glyphSlotColor); got != 1 {
+		t.Fatalf("archive comments edit glyph slot fill count = %d, want 1", got)
+	}
+
+	applyArchiveTableCellWithColumn(cell, 2, archiveStudyTableColumnPatient, "DOE JANE", archiveBrowserRow{kind: archiveRowStudy}, false, false)
+	if got := countCanvasRectanglesWithColor(cell.Container, glyphSlotColor); got != 0 {
+		t.Fatalf("archive patient cell kept edit glyph slot fill count %d", got)
 	}
 }
 
@@ -11474,6 +11532,7 @@ func TestArchiveStatusTableCellUsesSubtleStatusChipFill(t *testing.T) {
 
 func TestArchiveSelectedStatusTableCellPreservesSelectionFill(t *testing.T) {
 	cell := newArchiveTableCell()
+	glyphSlotColor := color.NRGBA{R: 46, G: 46, B: 46, A: 255}
 
 	applyArchiveTableCellWithColumn(cell, 2, archiveStudyTableColumnStatus, "★ Interesting", archiveBrowserRow{kind: archiveRowStudy}, false, true)
 
@@ -11482,6 +11541,9 @@ func TestArchiveSelectedStatusTableCellPreservesSelectionFill(t *testing.T) {
 	}
 	if got := countCanvasRectanglesWithColor(cell.Container, studyStatusInterestingChipColor); got != 0 {
 		t.Fatalf("selected archive status cell should not cover selection with status chip, got %d chip fills", got)
+	}
+	if got := countCanvasRectanglesWithColor(cell.Container, glyphSlotColor); got != 0 {
+		t.Fatalf("selected archive status cell should not cover selection with metadata glyph slot, got %d slot fills", got)
 	}
 }
 
