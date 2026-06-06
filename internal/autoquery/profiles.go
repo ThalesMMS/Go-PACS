@@ -12,6 +12,7 @@ import (
 const DefaultProfileName = "Default Instance"
 
 type Settings struct {
+	AutoRetrieve        bool   `json:"autoRetrieve"`
 	RetrieveLevel       string `json:"retrieveLevel"`
 	MaxMatches          string `json:"maxMatches"`
 	DuplicatePolicy     string `json:"duplicatePolicy"`
@@ -22,6 +23,8 @@ type Criteria struct {
 	SearchField string   `json:"searchField,omitempty"`
 	SearchText  string   `json:"searchText,omitempty"`
 	DatePreset  string   `json:"datePreset,omitempty"`
+	OnDate      string   `json:"onDate,omitempty"`
+	LastHours   string   `json:"lastHours,omitempty"`
 	Modalities  []string `json:"modalities,omitempty"`
 	RefreshMode string   `json:"refreshMode,omitempty"`
 }
@@ -54,6 +57,7 @@ func DefaultProfile() Profile {
 	return Profile{
 		Name: DefaultProfileName,
 		Settings: Settings{
+			AutoRetrieve:        true,
 			RetrieveLevel:       "Study",
 			MaxMatches:          "25",
 			DuplicatePolicy:     "Skip existing",

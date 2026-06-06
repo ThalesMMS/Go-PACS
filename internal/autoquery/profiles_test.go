@@ -19,6 +19,9 @@ func TestStoreListMissingFileReturnsDefaultProfile(t *testing.T) {
 	if profiles[0].Name != DefaultProfileName {
 		t.Fatalf("profile name = %q, want %q", profiles[0].Name, DefaultProfileName)
 	}
+	if !profiles[0].Settings.AutoRetrieve {
+		t.Fatal("default profile should enable auto-retrieve")
+	}
 	if !profiles[0].Settings.RequireConfirmation {
 		t.Fatal("default profile should require confirmation")
 	}
@@ -30,6 +33,7 @@ func TestStoreSaveListRoundTrip(t *testing.T) {
 		Name:   DefaultProfileName,
 		Locked: true,
 		Settings: Settings{
+			AutoRetrieve:        false,
 			RetrieveLevel:       "Series",
 			MaxMatches:          "10",
 			DuplicatePolicy:     "Keep duplicate",
@@ -39,6 +43,8 @@ func TestStoreSaveListRoundTrip(t *testing.T) {
 			SearchField: "Patient ID",
 			SearchText:  "P123",
 			DatePreset:  "Today",
+			OnDate:      "20251117",
+			LastHours:   "6",
 			Modalities:  []string{"CT", "MR"},
 			RefreshMode: "Refresh every 30 min",
 		},
