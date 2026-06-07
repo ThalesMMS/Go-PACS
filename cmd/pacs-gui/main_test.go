@@ -56,6 +56,31 @@ func TestConfigureAppAppearanceUsesDarkTheme(t *testing.T) {
 	}
 }
 
+func TestConfigureAppAppearanceUsesCompactWorkbenchSizes(t *testing.T) {
+	a := fynetest.NewApp()
+	configureAppAppearance(a)
+
+	appTheme := a.Settings().Theme()
+	baseTheme := theme.DarkTheme()
+	for _, name := range []fyne.ThemeSizeName{
+		theme.SizeNameText,
+		theme.SizeNameInlineIcon,
+		theme.SizeNameInnerPadding,
+		theme.SizeNamePadding,
+		theme.SizeNameScrollBar,
+	} {
+		if got, base := appTheme.Size(name), baseTheme.Size(name); got >= base {
+			t.Fatalf("compact theme size %s = %.1f, want smaller than dark theme %.1f", name, got, base)
+		}
+		if got := appTheme.Size(name); got != float32(int(got)) {
+			t.Fatalf("compact theme size %s = %.2f, want whole pixels for clipped table rendering", name, got)
+		}
+	}
+	if got, base := appTheme.Size(theme.SizeNameInputBorder), baseTheme.Size(theme.SizeNameInputBorder); got != base {
+		t.Fatalf("input border size = %.1f, want unchanged %.1f", got, base)
+	}
+}
+
 func TestApplyCompactTableRowsSetsDenseDefaultHeight(t *testing.T) {
 	fynetest.NewApp()
 	table := widget.NewTable(
@@ -74,8 +99,8 @@ func TestApplyCompactTableRowsSetsDenseDefaultHeight(t *testing.T) {
 	if got := defaultHeight.Float(); got != float64(compactTableRowHeight) {
 		t.Fatalf("default row height = %v, want %v", got, compactTableRowHeight)
 	}
-	if compactTableRowHeight >= newArchiveTableCell().MinSize().Height {
-		t.Fatalf("compact row height = %v, want less than template cell height %v", compactTableRowHeight, newArchiveTableCell().MinSize().Height)
+	if compactTableRowHeight < newArchiveTableCell().MinSize().Height {
+		t.Fatalf("compact row height = %v, want at least template cell height %v so labels are not clipped", compactTableRowHeight, newArchiveTableCell().MinSize().Height)
 	}
 }
 
@@ -2337,15 +2362,19 @@ func TestQueryQuickSearchSegmentsUseReferenceCompactHeight(t *testing.T) {
 	}
 }
 
-func TestQueryTabCentersQuickSearchFieldStrip(t *testing.T) {
+func TestQueryTabUsesFullWidthQuickSearchFieldStrip(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
 	status := widget.NewLabel("")
 
 	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
 
-	if !findCenteredHorizontalScrollWithButton(tab, queryQuickSearchPatientName) {
-		t.Fatal("Query quick-search field strip should be centered under the Q/R title like the reference selector")
+	scroll := findHorizontalScroll(tab)
+	if scroll == nil || findButtonWithText(scroll.Content, queryQuickSearchPatientName) == nil {
+		t.Fatal("Query quick-search field strip should expose a full-width horizontal selector")
+	}
+	if findCenteredHorizontalScrollWithButton(tab, queryQuickSearchPatientName) {
+		t.Fatal("Query quick-search field strip should not be centered because that clips the selector")
 	}
 }
 
@@ -2765,6 +2794,20 @@ func TestQueryTabPlacesDateAndModalityPanelsSideBySide(t *testing.T) {
 	if !findThreeColumnFilterPanelsWithWorkbenchChrome(tab, "DICOM Nodes:", "Date", "Modalities") {
 		t.Fatal("Query tab should place DICOM Nodes, Date, and Modalities side by side in the reference Q/R layout")
 	}
+}
+
+func TestQueryTabKeepsCriteriaScrollableAndResultsReserved(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newQueryTab(nil, status, archiveTables{}, nil, state)
+
+	scroll := findVerticalScrollWithTexts(tab, queryWorkspaceTitle, dicomNodesTitle, "Date", "Modalities")
+	if scroll == nil {
+		t.Fatal("Query criteria should live in a vertical viewport so results keep room to scroll")
+	}
+	assertQueryWorkspaceReservesResultsViewport(t, tab)
 }
 
 func TestQueryDateModalityPanelsUseWorkbenchChrome(t *testing.T) {
@@ -3786,6 +3829,20 @@ func TestAutoQueryTabExposesProfileCadenceAndResultShell(t *testing.T) {
 	if got := strings.Join(querySourceRows(state), "|"); !strings.Contains(got, "RADIANT") {
 		t.Fatalf("auto Q/R sources should reuse query source rows, got %q", got)
 	}
+}
+
+func TestAutoQueryTabKeepsCriteriaScrollableAndResultsReserved(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{}
+	status := widget.NewLabel("")
+
+	tab := newAutoQueryTab(nil, status, archiveTables{}, nil, state)
+
+	scroll := findVerticalScrollWithTexts(tab, "DICOM Auto Query/Retrieve : "+autoQueryProfileDefault, dicomNodesTitle, "Date", "Modalities")
+	if scroll == nil {
+		t.Fatal("Auto Q/R criteria should live in a vertical viewport so results keep room to scroll")
+	}
+	assertQueryWorkspaceReservesResultsViewport(t, tab)
 }
 
 func TestAutoQueryFooterUsesWorkbenchChrome(t *testing.T) {
@@ -11585,6 +11642,60 @@ func TestWorkstationTableCellsIncludeRowAndColumnDividers(t *testing.T) {
 	}
 }
 
+func TestWorkstationTableCellsRenderTextWhenUsedAsCanvasObjects(t *testing.T) {
+	fynetest.NewApp()
+	archiveCell := newArchiveTableCell()
+	applyArchiveTableCell(archiveCell, 0, "Patient name", archiveBrowserRow{}, true, false)
+	queryCell := newQueryTableCell()
+	applyQueryTableCell(queryCell, 0, queryTableColumnPatient, "Patient Name", true, false, false, 0, "")
+	nodeCell := newNodeTableCell()
+	applyNodeTableCell(nodeCell, 0, nodeTableColumnName, "Name", true, false, false, false, false, false, "")
+
+	tests := []struct {
+		name string
+		cell fyne.CanvasObject
+		text string
+	}{
+		{name: "archive", cell: archiveCell, text: "Patient name"},
+		{name: "query", cell: queryCell, text: "Patient Name"},
+		{name: "network", cell: nodeCell, text: "Name"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, ok := tt.cell.(fyne.Widget); !ok {
+				t.Fatalf("%s table cell should be a widget so Fyne table traverses its renderer children", tt.name)
+			}
+			slot := container.NewGridWrap(fyne.NewSize(220, networkTableRowHeight), tt.cell)
+			if markup := fynetest.RenderObjectToMarkup(slot); !strings.Contains(markup, tt.text) {
+				t.Fatalf("%s table cell markup missing %q:\n%s", tt.name, tt.text, markup)
+			}
+		})
+	}
+}
+
+func TestWorkstationTableRowHeightsFitCellContent(t *testing.T) {
+	fynetest.NewApp()
+	tests := []struct {
+		name      string
+		rowHeight float32
+		cell      fyne.CanvasObject
+	}{
+		{name: "compact", rowHeight: compactTableRowHeight, cell: newArchiveTableCell().Container},
+		{name: "archive", rowHeight: archiveTableRowHeight, cell: newArchiveTableCell().Container},
+		{name: "query", rowHeight: queryTableRowHeight, cell: newQueryTableCell().Container},
+		{name: "network", rowHeight: networkTableRowHeight, cell: newNodeTableCell().Container},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if minHeight := tt.cell.MinSize().Height; tt.rowHeight < minHeight {
+				t.Fatalf("%s row height = %.1f, want at least %.1f so table text is visible", tt.name, tt.rowHeight, minHeight)
+			}
+		})
+	}
+}
+
 func TestWorkstationTableDividersUseReferenceContrast(t *testing.T) {
 	const referenceMinimumDividerComponent uint8 = 88
 
@@ -13263,8 +13374,8 @@ func TestNodeTableUsesReferenceRowHeight(t *testing.T) {
 	if got := defaultHeight.Float(); got != float64(networkTableRowHeight) {
 		t.Fatalf("Network row height = %v, want %v", got, networkTableRowHeight)
 	}
-	if got := networkTableRowHeight; got != 32 {
-		t.Fatalf("Network row height = %v, want 32 for native node controls", got)
+	if minHeight := newNodeTableCell().MinSize().Height; networkTableRowHeight < minHeight {
+		t.Fatalf("Network row height = %.1f, want at least %.1f for native node controls", networkTableRowHeight, minHeight)
 	}
 	if networkTableRowHeight <= compactTableRowHeight {
 		t.Fatalf("Network row height = %v, want taller than compact table rows for inline controls", networkTableRowHeight)
@@ -14229,6 +14340,9 @@ func findSelectWithSelected(obj fyne.CanvasObject, selected string) *widget.Sele
 }
 
 func findCenteredSelectWithSelected(obj fyne.CanvasObject, selected string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findCenteredSelectWithSelected(scroll.Content, selected)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if c.Layout != nil && strings.Contains(reflect.TypeOf(c.Layout).String(), "centerLayout") && findSelectWithSelected(c, selected) != nil {
 			return true
@@ -14243,6 +14357,9 @@ func findCenteredSelectWithSelected(obj fyne.CanvasObject, selected string) bool
 }
 
 func findSelectSlotWithMinWidth(obj fyne.CanvasObject, selected string, minWidth float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findSelectSlotWithMinWidth(scroll.Content, selected, minWidth)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
 			if selectWidget, ok := c.Objects[0].(*widget.Select); ok && selectWidget.Selected == selected {
@@ -14259,6 +14376,9 @@ func findSelectSlotWithMinWidth(obj fyne.CanvasObject, selected string, minWidth
 }
 
 func findSelectSlotWithExactWidth(obj fyne.CanvasObject, selected string, width float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findSelectSlotWithExactWidth(scroll.Content, selected, width)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width == width {
 			if selectWidget, ok := c.Objects[0].(*widget.Select); ok && selectWidget.Selected == selected {
@@ -14275,6 +14395,9 @@ func findSelectSlotWithExactWidth(obj fyne.CanvasObject, selected string, width 
 }
 
 func findLabelSlotWithPrefixAndMinWidth(obj fyne.CanvasObject, prefix string, minWidth float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findLabelSlotWithPrefixAndMinWidth(scroll.Content, prefix, minWidth)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
 			if label, ok := c.Objects[0].(*widget.Label); ok && strings.HasPrefix(label.Text, prefix) {
@@ -14291,6 +14414,9 @@ func findLabelSlotWithPrefixAndMinWidth(obj fyne.CanvasObject, prefix string, mi
 }
 
 func findLabelSlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWidth float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findLabelSlotWithTextAndMinWidth(scroll.Content, text, minWidth)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
 			if label, ok := c.Objects[0].(*widget.Label); ok && label.Text == text {
@@ -14307,6 +14433,9 @@ func findLabelSlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWid
 }
 
 func findLabelSlotWithTextAndExactWidth(obj fyne.CanvasObject, text string, width float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findLabelSlotWithTextAndExactWidth(scroll.Content, text, width)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width == width {
 			if label, ok := c.Objects[0].(*widget.Label); ok && label.Text == text {
@@ -14323,6 +14452,9 @@ func findLabelSlotWithTextAndExactWidth(obj fyne.CanvasObject, text string, widt
 }
 
 func findLabelSlotWithTextAndExactHeight(obj fyne.CanvasObject, text string, height float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findLabelSlotWithTextAndExactHeight(scroll.Content, text, height)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Height == height {
 			if label, ok := c.Objects[0].(*widget.Label); ok && label.Text == text {
@@ -14342,6 +14474,9 @@ func findLabelWithText(obj fyne.CanvasObject, text string) *widget.Label {
 	if label, ok := obj.(*widget.Label); ok && label.Text == text {
 		return label
 	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findLabelWithText(scroll.Content, text)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
 			if found := findLabelWithText(child, text); found != nil {
@@ -14353,6 +14488,9 @@ func findLabelWithText(obj fyne.CanvasObject, text string) *widget.Label {
 }
 
 func findCheckSlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWidth float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findCheckSlotWithTextAndMinWidth(scroll.Content, text, minWidth)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
 			if check, ok := c.Objects[0].(*widget.Check); ok && check.Text == text {
@@ -14369,6 +14507,9 @@ func findCheckSlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWid
 }
 
 func findEntrySlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWidth float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findEntrySlotWithTextAndMinWidth(scroll.Content, text, minWidth)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
 			if entry, ok := c.Objects[0].(*widget.Entry); ok && entry.Text == text {
@@ -14385,6 +14526,9 @@ func findEntrySlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWid
 }
 
 func findEntrySlotWithPlaceholderAndExactWidth(obj fyne.CanvasObject, placeholder string, width float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findEntrySlotWithPlaceholderAndExactWidth(scroll.Content, placeholder, width)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width == width {
 			if entry, ok := c.Objects[0].(*widget.Entry); ok && entry.PlaceHolder == placeholder {
@@ -14401,6 +14545,9 @@ func findEntrySlotWithPlaceholderAndExactWidth(obj fyne.CanvasObject, placeholde
 }
 
 func findButtonSlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWidth float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findButtonSlotWithTextAndMinWidth(scroll.Content, text, minWidth)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width >= minWidth {
 			if button, ok := c.Objects[0].(*widget.Button); ok && button.Text == text {
@@ -14417,6 +14564,9 @@ func findButtonSlotWithTextAndMinWidth(obj fyne.CanvasObject, text string, minWi
 }
 
 func findButtonSlotWithTextAndExactWidth(obj fyne.CanvasObject, text string, width float32) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findButtonSlotWithTextAndExactWidth(scroll.Content, text, width)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 1 && c.MinSize().Width == width {
 			if button, ok := c.Objects[0].(*widget.Button); ok && button.Text == text {
@@ -14433,6 +14583,9 @@ func findButtonSlotWithTextAndExactWidth(obj fyne.CanvasObject, text string, wid
 }
 
 func findAutoRetrieveSettingsRowWithoutSpacer(obj fyne.CanvasObject) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findAutoRetrieveSettingsRowWithoutSpacer(scroll.Content)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) >= 2 && len(c.Objects) <= 3 {
 			checkIndex := directChildIndexContainingCheck(c, queryAutoRetrieveLabel)
@@ -14629,6 +14782,9 @@ func findHorizontalScroll(obj fyne.CanvasObject) *container.Scroll {
 	if scroll, ok := obj.(*container.Scroll); ok && scroll.Direction == container.ScrollHorizontalOnly {
 		return scroll
 	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findHorizontalScroll(scroll.Content)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
 			if found := findHorizontalScroll(child); found != nil {
@@ -14640,6 +14796,9 @@ func findHorizontalScroll(obj fyne.CanvasObject) *container.Scroll {
 }
 
 func findCenteredHorizontalScrollWithButton(obj fyne.CanvasObject, text string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findCenteredHorizontalScrollWithButton(scroll.Content, text)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if c.Layout != nil && strings.Contains(reflect.TypeOf(c.Layout).String(), "centerLayout") {
 			if scroll := findHorizontalScroll(c); scroll != nil && findButtonWithText(scroll.Content, text) != nil {
@@ -14680,6 +14839,9 @@ func findAccordionItem(obj fyne.CanvasObject, title string) *widget.AccordionIte
 				return item
 			}
 		}
+	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findAccordionItem(scroll.Content, title)
 	}
 	if c, ok := obj.(*fyne.Container); ok {
 		for _, child := range c.Objects {
@@ -14735,6 +14897,67 @@ func collectScrolls(obj fyne.CanvasObject) []*container.Scroll {
 	return scrolls
 }
 
+func findVerticalScrollWithTexts(obj fyne.CanvasObject, texts ...string) *container.Scroll {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		if scroll.Direction == container.ScrollVerticalOnly && allTextsPresent(collectWidgetTexts(scroll.Content), texts...) {
+			return scroll
+		}
+		return findVerticalScrollWithTexts(scroll.Content, texts...)
+	}
+	if split, ok := obj.(*container.Split); ok {
+		if found := findVerticalScrollWithTexts(split.Leading, texts...); found != nil {
+			return found
+		}
+		return findVerticalScrollWithTexts(split.Trailing, texts...)
+	}
+	if c, ok := obj.(*fyne.Container); ok {
+		for _, child := range c.Objects {
+			if found := findVerticalScrollWithTexts(child, texts...); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func assertQueryWorkspaceReservesResultsViewport(t *testing.T, obj fyne.CanvasObject) {
+	t.Helper()
+	workspace := findQueryWorkspaceContainer(obj)
+	if workspace == nil {
+		t.Fatal("Query workspace should use the criteria/results layout")
+	}
+	if len(workspace.Objects) < 2 {
+		t.Fatalf("Query workspace object count = %d, want criteria and results", len(workspace.Objects))
+	}
+	workspace.Resize(fyne.NewSize(1200, 900))
+	if got := workspace.Objects[1].Size().Height; got < queryResultsViewportMinHeight {
+		t.Fatalf("Query results viewport height = %.1f, want at least %.1f", got, queryResultsViewportMinHeight)
+	}
+}
+
+func findQueryWorkspaceContainer(obj fyne.CanvasObject) *fyne.Container {
+	if c, ok := obj.(*fyne.Container); ok {
+		if _, ok := c.Layout.(queryWorkspaceLayout); ok {
+			return c
+		}
+		for _, child := range c.Objects {
+			if found := findQueryWorkspaceContainer(child); found != nil {
+				return found
+			}
+		}
+	}
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findQueryWorkspaceContainer(scroll.Content)
+	}
+	if split, ok := obj.(*container.Split); ok {
+		if found := findQueryWorkspaceContainer(split.Leading); found != nil {
+			return found
+		}
+		return findQueryWorkspaceContainer(split.Trailing)
+	}
+	return nil
+}
+
 func findSideBySideSectionTitles(obj fyne.CanvasObject, leftTitle string, rightTitle string) bool {
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 2 &&
@@ -14756,6 +14979,9 @@ func findDirectContainerWithTexts(obj fyne.CanvasObject, texts ...string) bool {
 }
 
 func findDirectContainerWithTextsExcluding(obj fyne.CanvasObject, texts []string, excluded []string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findDirectContainerWithTextsExcluding(scroll.Content, texts, excluded)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		directTexts := collectDirectChildTexts(c)
 		if allTextsPresent(directTexts, texts...) && !anyTextsPresent(directTexts, excluded...) {
@@ -14771,6 +14997,9 @@ func findDirectContainerWithTextsExcluding(obj fyne.CanvasObject, texts []string
 }
 
 func findDirectContainerWithTextsAndWorkbenchChromeExcluding(obj fyne.CanvasObject, texts []string, excluded []string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findDirectContainerWithTextsAndWorkbenchChromeExcluding(scroll.Content, texts, excluded)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		directTexts := collectDirectChildTexts(c)
 		if allTextsPresent(directTexts, texts...) &&
@@ -14789,6 +15018,9 @@ func findDirectContainerWithTextsAndWorkbenchChromeExcluding(obj fyne.CanvasObje
 }
 
 func findDirectHeaderChromeWithTextAndSelect(obj fyne.CanvasObject, text string, selected string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findDirectHeaderChromeWithTextAndSelect(scroll.Content, text, selected)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if findLabelContaining(c, text) != nil &&
 			findSelectWithSelected(c, selected) != nil &&
@@ -14806,6 +15038,9 @@ func findDirectHeaderChromeWithTextAndSelect(obj fyne.CanvasObject, text string,
 }
 
 func findSelectWithSelectedInWorkbenchChrome(obj fyne.CanvasObject, selected string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findSelectWithSelectedInWorkbenchChrome(scroll.Content, selected)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if findSelectWithSelected(c, selected) != nil &&
 			directCanvasRectanglesWithColor(c, archiveHeaderRowColor) >= 1 &&
@@ -14822,6 +15057,9 @@ func findSelectWithSelectedInWorkbenchChrome(obj fyne.CanvasObject, selected str
 }
 
 func findButtonIconInWorkbenchChrome(obj fyne.CanvasObject, icon fyne.Resource) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findButtonIconInWorkbenchChrome(scroll.Content, icon)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if findButtonWithIcon(c, icon) != nil &&
 			directCanvasRectanglesWithColor(c, archiveHeaderRowColor) >= 1 &&
@@ -14838,6 +15076,9 @@ func findButtonIconInWorkbenchChrome(obj fyne.CanvasObject, icon fyne.Resource) 
 }
 
 func findEntryPlaceholderInWorkbenchChrome(obj fyne.CanvasObject, placeholder string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findEntryPlaceholderInWorkbenchChrome(scroll.Content, placeholder)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if findEntryWithPlaceholder(c, placeholder) != nil &&
 			directCanvasRectanglesWithColor(c, archiveHeaderRowColor) >= 1 &&
@@ -14868,6 +15109,9 @@ func directCanvasRectanglesWithColor(c *fyne.Container, want color.NRGBA) int {
 }
 
 func findThreeColumnFilterPanelsWithWorkbenchChrome(obj fyne.CanvasObject, sourceTitle string, dateTitle string, modalityTitle string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findThreeColumnFilterPanelsWithWorkbenchChrome(scroll.Content, sourceTitle, dateTitle, modalityTitle)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 3 &&
 			findLabelContaining(c.Objects[0], sourceTitle) != nil &&
@@ -14889,6 +15133,9 @@ func findThreeColumnFilterPanelsWithWorkbenchChrome(obj fyne.CanvasObject, sourc
 }
 
 func findThreeColumnSourcePanelExcludingText(obj fyne.CanvasObject, sourceTitle string, excluded string) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findThreeColumnSourcePanelExcludingText(scroll.Content, sourceTitle, excluded)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		if len(c.Objects) == 3 && findLabelContaining(c.Objects[0], sourceTitle) != nil {
 			return findLabelContaining(c.Objects[0], excluded) == nil && findAccordionItem(c.Objects[0], excluded) == nil
@@ -14903,6 +15150,9 @@ func findThreeColumnSourcePanelExcludingText(obj fyne.CanvasObject, sourceTitle 
 }
 
 func findDirectChildOrder(obj fyne.CanvasObject, first func(fyne.CanvasObject) bool, second func(fyne.CanvasObject) bool) bool {
+	if scroll, ok := obj.(*container.Scroll); ok {
+		return findDirectChildOrder(scroll.Content, first, second)
+	}
 	if c, ok := obj.(*fyne.Container); ok {
 		firstIndex := -1
 		secondIndex := -1

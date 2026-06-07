@@ -44,6 +44,7 @@ import (
 const maxTaskHistory = ops.MaxHistoryEntries
 const defaultWindowWidth float32 = 1600
 const defaultWindowHeight float32 = 900
+const workstationCompactScale float32 = 0.86
 
 var queryModalityCodes = []string{
 	"CR", "CT", "MG", "XA", "RF", "NM", "DX", "ES", "PT",
@@ -134,6 +135,7 @@ const (
 	queryDateFilterPanelMinWidth       float32 = 560
 	queryModalityFilterPanelMinWidth   float32 = 152
 	queryModalityCheckSlotWidth        float32 = 64
+	queryCriteriaViewportRatio         float32 = 0.72
 	querySearchBarEntryWidth           float32 = 820
 	queryRetrieveDestinationSlotWidth  float32 = 520
 	queryRefreshCadenceSlotWidth       float32 = 220
@@ -1415,6 +1417,14 @@ func autoQueryRetrieveSettingsSlot(button *widget.Button) fyne.CanvasObject {
 	return container.NewGridWrap(fyne.NewSize(autoQueryRetrieveSettingsSlotWidth, button.MinSize().Height), button)
 }
 
+func newQueryCriteriaViewport(criteria fyne.CanvasObject) *container.Scroll {
+	return container.NewVScroll(criteria)
+}
+
+func newQueryWorkspace(criteria fyne.CanvasObject, results fyne.CanvasObject) fyne.CanvasObject {
+	return container.New(queryWorkspaceLayout{}, newQueryCriteriaViewport(criteria), results)
+}
+
 func mainToolbarButtonLabels() []string {
 	var labels []string
 	for _, group := range mainToolbarButtonGroups() {
@@ -1651,11 +1661,53 @@ func configureAppAppearance(a fyne.App) {
 	if a == nil {
 		return
 	}
-	a.Settings().SetTheme(theme.DarkTheme())
+	a.Settings().SetTheme(newWorkstationCompactTheme())
 }
 
 func defaultWindowSize() fyne.Size {
 	return fyne.NewSize(defaultWindowWidth, defaultWindowHeight)
+}
+
+type workstationCompactTheme struct {
+	base fyne.Theme
+}
+
+func newWorkstationCompactTheme() fyne.Theme {
+	return workstationCompactTheme{base: theme.DarkTheme()}
+}
+
+func (t workstationCompactTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	return t.base.Color(name, variant)
+}
+
+func (t workstationCompactTheme) Font(style fyne.TextStyle) fyne.Resource {
+	return t.base.Font(style)
+}
+
+func (t workstationCompactTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	return t.base.Icon(name)
+}
+
+func (t workstationCompactTheme) Size(name fyne.ThemeSizeName) float32 {
+	size := t.base.Size(name)
+	switch name {
+	case theme.SizeNameInputBorder, theme.SizeNameSeparatorThickness:
+		return size
+	default:
+		return compactThemeSize(size)
+	}
+}
+
+func compactThemeSize(size float32) float32 {
+	if size <= 1 {
+		return size
+	}
+	scaled := size * workstationCompactScale
+	rounded := float32(int(scaled + 0.5))
+	if rounded < 1 {
+		return 1
+	}
+	return rounded
 }
 
 func run() {
@@ -2946,9 +2998,9 @@ const (
 	archiveSummaryPaneMinWidth          float32 = 220
 	archivePatientStudyMetricsSlotWidth float32 = 80
 	archiveActivityVerticalPadding      float32 = 3
-	compactArchiveRailListRowHeight     float32 = compactTableRowHeight + 4
-	compactArchiveActivityRowHeight     float32 = compactTableRowHeight + 32
-	compactArchivePatientStudyRowHeight float32 = compactTableRowHeight + 16
+	compactArchiveRailListRowHeight     float32 = 28
+	compactArchiveActivityRowHeight     float32 = 56
+	compactArchivePatientStudyRowHeight float32 = 40
 )
 
 func newArchiveActivityRowContent(content fyne.CanvasObject) *fyne.Container {
@@ -9710,7 +9762,7 @@ var (
 )
 
 const tableColumnDividerWidth float32 = 1
-const compactTableRowHeight float32 = 24
+const compactTableRowHeight float32 = 38
 const archiveTableRowHeight float32 = compactTableRowHeight + 4
 const queryTableRowHeight float32 = archiveTableRowHeight
 const networkTableRowHeight float32 = compactTableRowHeight + 8
@@ -9740,6 +9792,76 @@ func applyQueryTableRows(table *widget.Table) {
 		return
 	}
 	table.SetRowHeight(-1, queryTableRowHeight)
+}
+
+const queryResultsViewportMinHeight float32 = queryTableRowHeight * 5
+
+type queryWorkspaceLayout struct{}
+
+func (queryWorkspaceLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	visible := visibleObjects(objects)
+	if len(visible) == 0 {
+		return
+	}
+	if len(visible) == 1 {
+		visible[0].Move(fyne.NewPos(0, 0))
+		visible[0].Resize(size)
+		return
+	}
+
+	criteria := visible[0]
+	results := visible[1]
+	resultsMinHeight := fyne.Max(results.MinSize().Height, queryResultsViewportMinHeight)
+	criteriaMinHeight := criteria.MinSize().Height
+	criteriaHeight := size.Height * queryCriteriaViewportRatio
+	maxCriteriaHeight := size.Height - resultsMinHeight
+	if criteriaHeight > maxCriteriaHeight {
+		criteriaHeight = maxCriteriaHeight
+	}
+	if criteriaHeight < criteriaMinHeight {
+		criteriaHeight = criteriaMinHeight
+	}
+	if criteriaHeight > size.Height {
+		criteriaHeight = size.Height
+	}
+	if criteriaHeight < 0 {
+		criteriaHeight = 0
+	}
+	resultsHeight := size.Height - criteriaHeight
+	if resultsHeight < 0 {
+		resultsHeight = 0
+	}
+
+	criteria.Move(fyne.NewPos(0, 0))
+	criteria.Resize(fyne.NewSize(size.Width, criteriaHeight))
+	results.Move(fyne.NewPos(0, criteriaHeight))
+	results.Resize(fyne.NewSize(size.Width, resultsHeight))
+}
+
+func (queryWorkspaceLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	visible := visibleObjects(objects)
+	if len(visible) == 0 {
+		return fyne.NewSize(0, 0)
+	}
+	if len(visible) == 1 {
+		return visible[0].MinSize()
+	}
+	criteriaMin := visible[0].MinSize()
+	resultsMin := visible[1].MinSize()
+	return fyne.NewSize(
+		fyne.Max(criteriaMin.Width, resultsMin.Width),
+		criteriaMin.Height+fyne.Max(resultsMin.Height, queryResultsViewportMinHeight),
+	)
+}
+
+func visibleObjects(objects []fyne.CanvasObject) []fyne.CanvasObject {
+	var visible []fyne.CanvasObject
+	for _, object := range objects {
+		if object != nil && object.Visible() {
+			visible = append(visible, object)
+		}
+	}
+	return visible
 }
 
 func applyNetworkTableRows(table *widget.Table) {
@@ -9837,7 +9959,8 @@ func newCompactTableCellContent(content fyne.CanvasObject) *fyne.Container {
 }
 
 type archiveTableCell struct {
-	*fyne.Container
+	widget.BaseWidget
+	Container         *fyne.Container
 	background        *canvas.Rectangle
 	statusChip        *canvas.Rectangle
 	metadataGlyphSlot *canvas.Rectangle
@@ -9863,7 +9986,7 @@ func newArchiveTableCell() *archiveTableCell {
 	statusDotBox := container.NewPadded(sourceStatusDotBox(statusDot))
 	statusDotBox.Hide()
 	labelRow := container.NewBorder(nil, nil, statusDotBox, sortLabel, label)
-	return &archiveTableCell{
+	cell := &archiveTableCell{
 		Container:         container.NewStack(background, statusChip, container.New(archiveMetadataGlyphSlotLayout{}, metadataGlyphSlot), newCompactTableCellContent(labelRow), newTableColumnDividerLayer(), newTableRowDividerLayer()),
 		background:        background,
 		statusChip:        statusChip,
@@ -9873,10 +9996,17 @@ func newArchiveTableCell() *archiveTableCell {
 		statusDot:         statusDot,
 		statusDotBox:      statusDotBox,
 	}
+	cell.ExtendBaseWidget(cell)
+	return cell
+}
+
+func (cell *archiveTableCell) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(cell.Container)
 }
 
 type queryTableCell struct {
-	*fyne.Container
+	widget.BaseWidget
+	Container      *fyne.Container
 	background     *canvas.Rectangle
 	label          *widget.Label
 	sortLabel      *widget.Label
@@ -9901,7 +10031,7 @@ func newQueryTableCell() *queryTableCell {
 	statusDotBox := container.NewPadded(sourceStatusDotBox(statusDot))
 	statusDotBox.Hide()
 	labelRow := container.NewBorder(nil, nil, statusDotBox, sortLabel, label)
-	return &queryTableCell{
+	cell := &queryTableCell{
 		Container:      container.NewStack(background, newCompactTableCellContent(labelRow), container.NewCenter(retrieveButton), newTableColumnDividerLayer(), newTableRowDividerLayer()),
 		background:     background,
 		label:          label,
@@ -9910,6 +10040,12 @@ func newQueryTableCell() *queryTableCell {
 		statusDot:      statusDot,
 		statusDotBox:   statusDotBox,
 	}
+	cell.ExtendBaseWidget(cell)
+	return cell
+}
+
+func (cell *queryTableCell) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(cell.Container)
 }
 
 func newQueryRetrieveButton(tapped func()) *widget.Button {
@@ -11333,7 +11469,7 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 		nil,
 	)
 	top := container.NewVBox(titleBar, autoQuerySearchStrip, searchBar, filters, actions)
-	return container.NewBorder(top, newAutoQueryFooter(resultSummary), nil, nil, container.NewStack(queryTable))
+	return container.NewBorder(nil, newAutoQueryFooter(resultSummary), nil, nil, newQueryWorkspace(top, container.NewStack(queryTable)))
 }
 
 func autoQueryWindowTitle(profile string) string {
@@ -12044,7 +12180,7 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 	)
 	criteria := container.NewVBox(
 		workbenchWindowTitle(queryWorkspaceTitle),
-		container.NewCenter(quickSearchStrip),
+		quickSearchStrip,
 		querySearchBar,
 		filters,
 		container.NewBorder(
@@ -12058,7 +12194,7 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 	)
 	footer := newQueryFooter(keepOnTop, state.queryResultSummaryLabel)
 	results := container.NewBorder(nil, selectedDetails, nil, nil, container.NewStack(queryTable))
-	return container.NewBorder(criteria, footer, nil, nil, results)
+	return container.NewBorder(nil, footer, nil, nil, newQueryWorkspace(criteria, results))
 }
 
 func newQueryDateModalityPanel(datePanel fyne.CanvasObject, modalityPanel fyne.CanvasObject) fyne.CanvasObject {
@@ -14105,7 +14241,8 @@ func nextRetrieveMethod(current string) string {
 }
 
 type nodeTableCell struct {
-	*fyne.Container
+	widget.BaseWidget
+	Container      *fyne.Container
 	background     *canvas.Rectangle
 	label          *widget.Label
 	sortLabel      *widget.Label
@@ -14128,7 +14265,7 @@ func newNodeTableCell() *nodeTableCell {
 	retrieveSelect.Hide()
 	retrieveSlot := container.New(layout.NewGridWrapLayout(fyne.NewSize(nodeDropdownSlotWidth(nodeTableColumnRetrieve), retrieveSelect.MinSize().Height)), retrieveSelect)
 	labelRow := container.NewBorder(nil, nil, nil, sortLabel, label)
-	return &nodeTableCell{
+	cell := &nodeTableCell{
 		Container:      container.NewStack(background, newCompactTableCellContent(labelRow), container.NewCenter(check), newCompactTableCellContent(retrieveSlot), newTableColumnDividerLayer(), newTableRowDividerLayer()),
 		background:     background,
 		label:          label,
@@ -14137,6 +14274,12 @@ func newNodeTableCell() *nodeTableCell {
 		retrieveSelect: retrieveSelect,
 		retrieveSlot:   retrieveSlot,
 	}
+	cell.ExtendBaseWidget(cell)
+	return cell
+}
+
+func (cell *nodeTableCell) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(cell.Container)
 }
 
 func newNodeTable(status *widget.Label, state *uiState) *widget.Table {
