@@ -3,6 +3,7 @@ package receive
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +23,8 @@ import (
 )
 
 const (
-	DefaultAddress = "127.0.0.1:11112"
+	DefaultAddress         = "127.0.0.1:11112"
+	DefaultMaxAssociations = 100
 
 	PreferredTransferSyntaxAuto                   = "auto"
 	PreferredTransferSyntaxExplicitVRLittleEndian = "1.2.840.10008.1.2.1"
@@ -45,8 +47,10 @@ type Config struct {
 	AllowedCalledAETitles   []string
 	AllowedCallingAETitles  []string
 	AllowedRemoteHosts      []string
+	MaxAssociations         int
 	MaxStoreObjectBytes     int64
 	PreferredTransferSyntax string
+	TLSConfig               *tls.Config
 }
 
 type Snapshot struct {
@@ -67,8 +71,10 @@ type Server struct {
 	allowedCalledAETitles       map[string]struct{}
 	allowedCallingAETitles      map[string]struct{}
 	allowedRemoteHosts          map[string]struct{}
+	associationSlots            chan struct{}
 	maxStoreObjectBytes         int64
 	supportedTransferSyntaxUIDs []string
+	tlsConfig                   *tls.Config
 	ctx                         context.Context
 	cancel                      context.CancelFunc
 	done                        chan error
@@ -110,6 +116,13 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.MaxStoreObjectBytes < 0 {
 		return nil, errors.New("max store object bytes must be greater than zero or unlimited")
 	}
+	maxAssociations := cfg.MaxAssociations
+	if maxAssociations < 0 {
+		return nil, errors.New("max associations must be greater than zero or default")
+	}
+	if maxAssociations == 0 {
+		maxAssociations = DefaultMaxAssociations
+	}
 	supportedTransferSyntaxes, err := TransferSyntaxUIDsForPreference(cfg.PreferredTransferSyntax)
 	if err != nil {
 		return nil, err
@@ -129,8 +142,10 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 		allowedCalledAETitles:       allowedCalledAETitles,
 		allowedCallingAETitles:      allowedCallingAETitles,
 		allowedRemoteHosts:          allowedRemoteHosts,
+		associationSlots:            make(chan struct{}, maxAssociations),
 		maxStoreObjectBytes:         cfg.MaxStoreObjectBytes,
 		supportedTransferSyntaxUIDs: supportedTransferSyntaxes,
+		tlsConfig:                   cfg.TLSConfig,
 		ctx:                         ctx,
 		cancel:                      cancel,
 		done:                        make(chan error, 1),
@@ -207,6 +222,7 @@ func (s *Server) serve() {
 			Context:                   s.ctx,
 			SupportedAbstractSyntaxes: acceptedAbstractSyntaxes(),
 			SupportedTransferSyntaxes: s.supportedTransferSyntaxUIDs,
+			TLSConfig:                 s.tlsConfig,
 		})
 		if err != nil {
 			if s.ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
@@ -222,13 +238,41 @@ func (s *Server) serve() {
 			_ = assoc.Close()
 			continue
 		}
+		if !s.tryAcquireAssociationSlot() {
+			s.rejected.Add(1)
+			_ = assoc.Abort(ul.AbortReasonNotSpecified)
+			_ = assoc.Close()
+			continue
+		}
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			if err := s.handleAssociation(assoc); err != nil {
-				s.failed.Add(1)
-			}
+			defer s.releaseAssociationSlot()
+			// C-STORE object failures are counted where their failure response is sent.
+			_ = s.handleAssociation(assoc)
 		}()
+	}
+}
+
+func (s *Server) tryAcquireAssociationSlot() bool {
+	if s == nil || s.associationSlots == nil {
+		return true
+	}
+	select {
+	case s.associationSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) releaseAssociationSlot() {
+	if s == nil || s.associationSlots == nil {
+		return
+	}
+	select {
+	case <-s.associationSlots:
+	default:
 	}
 }
 
@@ -484,17 +528,33 @@ func receiveDataSet(assoc *ul.Association, incoming incomingCommand, syntax tran
 	pdataReader := dimse.NewPDataReader(assoc, incoming.pcID)
 	if len(incoming.dataPrefix) == 0 {
 		dataset, err := object.ReadDataSet(storeObjectLimitReader(pdataReader, maxBytes), syntax)
-		if errors.Is(err, errStoreObjectLimitExceeded) {
-			_, _ = io.Copy(io.Discard, pdataReader)
-		}
+		drainDataSetPDataOnError(pdataReader, err)
 		return dataset, err
 	}
 	reader := io.MultiReader(bytes.NewReader(incoming.dataPrefix), pdataReader)
 	dataset, err := object.ReadDataSet(storeObjectLimitReader(reader, maxBytes), syntax)
-	if errors.Is(err, errStoreObjectLimitExceeded) {
-		_, _ = io.Copy(io.Discard, pdataReader)
-	}
+	drainDataSetPDataOnError(pdataReader, err)
 	return dataset, err
+}
+
+func drainDataSetPDataOnError(reader *dimse.PDataReader, err error) {
+	if !shouldDrainDataSetPDataOnError(err) {
+		return
+	}
+	_, _ = io.Copy(io.Discard, reader)
+}
+
+func shouldDrainDataSetPDataOnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !errors.Is(err, net.ErrClosed) &&
+		!errors.Is(err, ul.ErrAssociationAborted) &&
+		!errors.Is(err, ul.ErrAssociationTimeout) &&
+		!errors.Is(err, io.EOF) &&
+		!errors.Is(err, io.ErrUnexpectedEOF) &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded)
 }
 
 func storeObjectLimitReader(reader io.Reader, maxBytes int64) io.Reader {

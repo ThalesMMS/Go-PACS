@@ -137,10 +137,15 @@ func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, 
 
 	address := net.JoinHostPort(node.Host, strconv.Itoa(int(node.Port)))
 	start := time.Now()
+	tlsConfig, err := netverify.TLSConfigForNode(node)
+	if err != nil {
+		return Outcome{}, err
+	}
 	assoc, err := ul.DialContext(ctx, address, ul.DialOptions{
 		CalledAETitle:  node.AETitle,
 		CallingAETitle: callingAETitle,
 		Contexts:       presentationContexts(files, node.SendTransferSyntaxOrDefault()),
+		TLSConfig:      tlsConfig,
 	})
 	if err != nil {
 		return Outcome{}, fmt.Errorf("associate with %s (%s): %w", node.Name, address, err)

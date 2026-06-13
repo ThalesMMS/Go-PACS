@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -5646,6 +5647,12 @@ func deleteSelectedStudy(ctx context.Context, status *widget.Label, tables archi
 	if err != nil {
 		return 0, err
 	}
+	if deleted == 0 {
+		if status != nil {
+			status.SetText("Study not found; nothing deleted")
+		}
+		return 0, fmt.Errorf("study %s was not found in the local archive", studyUID)
+	}
 	if state.archiveSeriesByStudy != nil {
 		for _, series := range state.archiveSeriesByStudy[studyUID] {
 			seriesUID := strings.TrimSpace(series.SeriesInstanceUID)
@@ -7206,9 +7213,17 @@ func newListenerAdvancedBindingControls(receiverHost *widget.Entry, hostSelect *
 func newListenerAddressHostBindingItems(addressActions fyne.CanvasObject, listenerAddressSummary *widget.Entry, hostNameEditButton *widget.Button, hostNameEntry *widget.Entry, advancedBinding fyne.CanvasObject) []*widget.FormItem {
 	addressSlot := container.NewGridWrap(fyne.NewSize(listenerAddressEntrySlotWidth, listenerAddressSummary.MinSize().Height), listenerAddressSummary)
 	hostNameSlot := container.NewGridWrap(fyne.NewSize(listenerAddressEntrySlotWidth, hostNameEntry.MinSize().Height), hostNameEntry)
+	addressWidget := fyne.CanvasObject(addressSlot)
+	if addressActions != nil {
+		addressWidget = container.NewHBox(addressSlot, addressActions)
+	}
+	hostNameWidget := fyne.CanvasObject(hostNameSlot)
+	if hostNameEditButton != nil {
+		hostNameWidget = container.NewHBox(hostNameSlot, listenerSettingsActionButtonSlot(hostNameEditButton))
+	}
 	return []*widget.FormItem{
-		widget.NewFormItem(settingsLabelAddressSummary, container.NewHBox(addressSlot, addressActions)),
-		widget.NewFormItem(settingsLabelHostName, container.NewHBox(hostNameSlot, listenerSettingsActionButtonSlot(hostNameEditButton))),
+		widget.NewFormItem(settingsLabelAddressSummary, addressWidget),
+		widget.NewFormItem(settingsLabelHostName, hostNameWidget),
 		widget.NewFormItem("", advancedBinding),
 	}
 }
@@ -7347,15 +7362,7 @@ func newListenerHostNameControls(hostname string) (*widget.Entry, *widget.Button
 		hostname = "-"
 	}
 	hostNameEntry := newDisabledEntryText(hostname)
-	editButton := compactToolbarButton("Edit", theme.DocumentCreateIcon(), func() {})
-	editButton.Disable()
-	return hostNameEntry, editButton
-}
-
-func newListenerAddressEditButton() *widget.Button {
-	editButton := compactToolbarButton("Edit", theme.DocumentCreateIcon(), func() {})
-	editButton.Disable()
-	return editButton
+	return hostNameEntry, nil
 }
 
 func listenerSettingsActionButtonSlot(button *widget.Button) fyne.CanvasObject {
@@ -7366,7 +7373,7 @@ func listenerSettingsActionButtonSlot(button *widget.Button) fyne.CanvasObject {
 }
 
 func newListenerAddressActionControls(copyButton *widget.Button) fyne.CanvasObject {
-	return container.NewHBox(listenerSettingsActionButtonSlot(newListenerAddressEditButton()))
+	return nil
 }
 
 func newListenerSettingsPanel(content fyne.CanvasObject) fyne.CanvasObject {
@@ -7430,11 +7437,14 @@ func newListenerIncomingFilesSection(policy fyne.CanvasObject) fyne.CanvasObject
 	return container.NewVBox(title, newListenerSettingsPanel(policy))
 }
 
-func newListenerTLSControls() (*widget.Check, *widget.Button, fyne.CanvasObject) {
-	tlsListener := widget.NewCheck("Activate DICOM TLS Listener", nil)
-	tlsListener.Disable()
-	tlsSettingsButton := widget.NewButton("TLS Settings", func() {})
-	tlsSettingsButton.Disable()
+func newListenerTLSControls(tlsListener *widget.Check, settingsTapped func()) (*widget.Check, *widget.Button, fyne.CanvasObject) {
+	if tlsListener == nil {
+		tlsListener = widget.NewCheck("Activate DICOM TLS Listener", nil)
+	}
+	if settingsTapped == nil {
+		settingsTapped = func() {}
+	}
+	tlsSettingsButton := widget.NewButton("TLS Settings", settingsTapped)
 	settingsSlot := container.NewGridWrap(fyne.NewSize(listenerTLSSettingsButtonSlotWidth, tlsSettingsButton.MinSize().Height), tlsSettingsButton)
 	return tlsListener, tlsSettingsButton, container.NewHBox(tlsListener, settingsSlot)
 }
@@ -7618,7 +7628,30 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 	preferredReceiveSyntax, _, preferredReceiveSyntaxControls := newPreferredReceiveSyntaxControls(state.appConfig.ReceivePreferredTransferSyntax)
 	dicomCommunicationTimeout, dicomCommunicationTimeoutControls := newDICOMTimeoutControls(strconv.Itoa(timeoutSecondsOrDefault(state.appConfig.DICOMCommunicationTimeoutSeconds, appconfig.DefaultDICOMCommunicationTimeoutSeconds)))
 	dicomConnectionTimeout, dicomConnectionTimeoutControls := newDICOMTimeoutControls(strconv.Itoa(timeoutSecondsOrDefault(state.appConfig.DICOMConnectionTimeoutSeconds, appconfig.DefaultDICOMConnectionTimeoutSeconds)))
-	_, _, tlsListenerControls := newListenerTLSControls()
+	receiverTLSCertFile := state.appConfig.ReceiverTLSCertFile
+	receiverTLSKeyFile := state.appConfig.ReceiverTLSKeyFile
+	tlsListener := widget.NewCheck("Activate DICOM TLS Listener", nil)
+	tlsListener.SetChecked(state.appConfig.ReceiverUseTLS)
+	showTLSSettings := func() {
+		certFile := widget.NewEntry()
+		certFile.SetText(receiverTLSCertFile)
+		keyFile := widget.NewEntry()
+		keyFile.SetText(receiverTLSKeyFile)
+		tlsForm := dialog.NewForm("TLS Settings", "Save", "Cancel", []*widget.FormItem{
+			widget.NewFormItem("Certificate File", certFile),
+			widget.NewFormItem("Key File", keyFile),
+		}, func(ok bool) {
+			if !ok {
+				return
+			}
+			receiverTLSCertFile = strings.TrimSpace(certFile.Text)
+			receiverTLSKeyFile = strings.TrimSpace(keyFile.Text)
+			status.SetText("TLS settings staged")
+		}, w)
+		tlsForm.Resize(fyne.NewSize(560, 180))
+		tlsForm.Show()
+	}
+	_, _, tlsListenerControls := newListenerTLSControls(tlsListener, showTLSSettings)
 	tlsListenerSection := newListenerTLSSection(tlsListenerControls)
 	incomingPolicy := newListenerIncomingPolicyControls()
 	incomingFilesSection := newListenerIncomingFilesSection(incomingPolicy)
@@ -7738,6 +7771,9 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 			LocalAETitle:                     localAE.Text,
 			ReceiverAddress:                  receiverAddress,
 			ReceiverAutoStart:                activateListener.Checked,
+			ReceiverUseTLS:                   tlsListener.Checked,
+			ReceiverTLSCertFile:              receiverTLSCertFile,
+			ReceiverTLSKeyFile:               receiverTLSKeyFile,
 			AdditionalAETitles:               parseAETitleList(additionalAEs.Text),
 			ReceivePreferredTransferSyntax:   receivePreferredSyntaxValue(preferredReceiveSyntax.Selected),
 			DICOMCommunicationTimeoutSeconds: communicationTimeout,
@@ -8023,7 +8059,15 @@ func parseAETitleList(value string) []string {
 	return aeTitles
 }
 
-func nodeDraftFromFormState(name string, aeTitle string, host string, port uint16, enabled bool, queryEnabled bool, retrieveMethod string, sendEnabled bool, sendTransferSyntax string, moveDestination string, notes string) nodes.Draft {
+type nodeTLSSettingsState struct {
+	SkipVerify bool
+	ServerName string
+	CAFile     string
+	CertFile   string
+	KeyFile    string
+}
+
+func nodeDraftFromFormState(name string, aeTitle string, host string, port uint16, enabled bool, queryEnabled bool, retrieveMethod string, sendEnabled bool, sendTransferSyntax string, useTLS bool, tlsSettings nodeTLSSettingsState, moveDestination string, notes string) nodes.Draft {
 	return nodes.Draft{
 		Name:                     name,
 		AETitle:                  aeTitle,
@@ -8034,6 +8078,12 @@ func nodeDraftFromFormState(name string, aeTitle string, host string, port uint1
 		SendDisabled:             !sendEnabled,
 		RetrieveMethod:           retrieveMethod,
 		SendTransferSyntax:       sendTransferSyntax,
+		UseTLS:                   useTLS,
+		TLSSkipVerify:            tlsSettings.SkipVerify,
+		TLSServerName:            tlsSettings.ServerName,
+		TLSCAFile:                tlsSettings.CAFile,
+		TLSCertFile:              tlsSettings.CertFile,
+		TLSKeyFile:               tlsSettings.KeyFile,
 		PreferredMoveDestination: moveDestination,
 		Notes:                    notes,
 	}
@@ -8060,12 +8110,51 @@ func retrieveMethodOptions() []string {
 	return []string{nodes.RetrieveMethodAuto, nodes.RetrieveMethodMove, nodes.RetrieveMethodGet}
 }
 
-func newNodeTLSControls() fyne.CanvasObject {
-	tls := widget.NewCheck("Use TLS", nil)
-	tls.Disable()
-	settings := compactToolbarButton("TLS Settings", theme.SettingsIcon(), func() {})
-	settings.Disable()
+func newNodeTLSControls(tls *widget.Check, settingsTapped func()) fyne.CanvasObject {
+	if tls == nil {
+		tls = widget.NewCheck("Use TLS", nil)
+	}
+	if settingsTapped == nil {
+		settingsTapped = func() {}
+	}
+	settings := compactToolbarButton("TLS Settings", theme.SettingsIcon(), settingsTapped)
 	return container.NewHBox(tls, settings)
+}
+
+func showNodeTLSSettingsDialog(w fyne.Window, status *widget.Label, current nodeTLSSettingsState, save func(nodeTLSSettingsState)) {
+	skipVerify := widget.NewCheck("Skip certificate verification", nil)
+	skipVerify.SetChecked(current.SkipVerify)
+	serverName := widget.NewEntry()
+	serverName.SetText(current.ServerName)
+	caFile := widget.NewEntry()
+	caFile.SetText(current.CAFile)
+	certFile := widget.NewEntry()
+	certFile.SetText(current.CertFile)
+	keyFile := widget.NewEntry()
+	keyFile.SetText(current.KeyFile)
+	form := dialog.NewForm("TLS Settings", "Save", "Cancel", []*widget.FormItem{
+		widget.NewFormItem("", skipVerify),
+		widget.NewFormItem("Server Name", serverName),
+		widget.NewFormItem("CA File", caFile),
+		widget.NewFormItem("Client Certificate", certFile),
+		widget.NewFormItem("Client Key", keyFile),
+	}, func(ok bool) {
+		if !ok {
+			return
+		}
+		save(nodeTLSSettingsState{
+			SkipVerify: skipVerify.Checked,
+			ServerName: strings.TrimSpace(serverName.Text),
+			CAFile:     strings.TrimSpace(caFile.Text),
+			CertFile:   strings.TrimSpace(certFile.Text),
+			KeyFile:    strings.TrimSpace(keyFile.Text),
+		})
+		if status != nil {
+			status.SetText("TLS settings staged")
+		}
+	}, w)
+	form.Resize(fyne.NewSize(600, 300))
+	form.Show()
 }
 
 func networkNodeActionLabels() []string {
@@ -8432,7 +8521,13 @@ func showAddNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table,
 	sendEnabled.SetChecked(true)
 	sendSyntax := widget.NewSelect(sendSyntaxOptions(), nil)
 	sendSyntax.SetSelected(sendSyntaxAutoLabel)
-	tlsControls := newNodeTLSControls()
+	useTLS := widget.NewCheck("Use TLS", nil)
+	tlsSettings := nodeTLSSettingsState{}
+	tlsControls := newNodeTLSControls(useTLS, func() {
+		showNodeTLSSettingsDialog(w, status, tlsSettings, func(updated nodeTLSSettingsState) {
+			tlsSettings = updated
+		})
+	})
 	name := widget.NewEntry()
 	name.SetPlaceHolder("pacs")
 	aeTitle := widget.NewEntry()
@@ -8456,7 +8551,7 @@ func showAddNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table,
 			dialog.ShowError(err, w)
 			return
 		}
-		node, err := state.nodeStore.Add(nodeDraftFromFormState(name.Text, aeTitle.Text, host.Text, portValue, enabled.Checked, queryEnabled.Checked, retrieveMethod.Selected, sendEnabled.Checked, sendSyntaxValue(sendSyntax.Selected), moveDestination.Text, notes.Text))
+		node, err := state.nodeStore.Add(nodeDraftFromFormState(name.Text, aeTitle.Text, host.Text, portValue, enabled.Checked, queryEnabled.Checked, retrieveMethod.Selected, sendEnabled.Checked, sendSyntaxValue(sendSyntax.Selected), useTLS.Checked, tlsSettings, moveDestination.Text, notes.Text))
 		if err != nil {
 			status.SetText("Add node failed")
 			dialog.ShowError(err, w)
@@ -8492,7 +8587,20 @@ func showEditNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table
 	sendEnabled.SetChecked(node.SendEnabled())
 	sendSyntax := widget.NewSelect(sendSyntaxOptions(), nil)
 	sendSyntax.SetSelected(sendSyntaxLabel(node.SendTransferSyntaxOrDefault()))
-	tlsControls := newNodeTLSControls()
+	useTLS := widget.NewCheck("Use TLS", nil)
+	useTLS.SetChecked(node.UseTLS)
+	tlsSettings := nodeTLSSettingsState{
+		SkipVerify: node.TLSSkipVerify,
+		ServerName: node.TLSServerName,
+		CAFile:     node.TLSCAFile,
+		CertFile:   node.TLSCertFile,
+		KeyFile:    node.TLSKeyFile,
+	}
+	tlsControls := newNodeTLSControls(useTLS, func() {
+		showNodeTLSSettingsDialog(w, status, tlsSettings, func(updated nodeTLSSettingsState) {
+			tlsSettings = updated
+		})
+	})
 	name := widget.NewEntry()
 	name.SetText(node.Name)
 	aeTitle := widget.NewEntry()
@@ -8516,7 +8624,7 @@ func showEditNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table
 			dialog.ShowError(err, w)
 			return
 		}
-		updated, err := state.nodeStore.Update(node.ID, nodeDraftFromFormState(name.Text, aeTitle.Text, host.Text, portValue, enabled.Checked, queryEnabled.Checked, retrieveMethod.Selected, sendEnabled.Checked, sendSyntaxValue(sendSyntax.Selected), moveDestination.Text, notes.Text))
+		updated, err := state.nodeStore.Update(node.ID, nodeDraftFromFormState(name.Text, aeTitle.Text, host.Text, portValue, enabled.Checked, queryEnabled.Checked, retrieveMethod.Selected, sendEnabled.Checked, sendSyntaxValue(sendSyntax.Selected), useTLS.Checked, tlsSettings, moveDestination.Text, notes.Text))
 		if err != nil {
 			status.SetText("Edit node failed")
 			dialog.ShowError(err, w)
@@ -8593,7 +8701,7 @@ func parsePort(value string) (uint16, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid port %q", value)
 	}
-	if port == 0 || port > 65535 {
+	if port < 1 || port > 65535 {
 		return 0, fmt.Errorf("port must be between 1 and 65535")
 	}
 	return uint16(port), nil
@@ -8636,7 +8744,14 @@ func startReceiver(w fyne.Window, status *widget.Label, state *uiState) {
 		return
 	}
 	allowedCallingAEs := configuredNodeAETitles(state.nodes)
-	allowedRemoteHosts := configuredNodeIPHosts(state.nodes)
+	remoteAllowlist := nodes.RemoteHostAllowlist(state.nodes)
+	allowedRemoteHosts := remoteAllowlist.Hosts
+	tlsConfig, err := receiverTLSConfig(state.appConfig)
+	if err != nil {
+		status.SetText("Receiver start failed")
+		dialog.ShowError(err, w)
+		return
+	}
 	server, err := receive.Start(context.Background(), receive.Config{
 		Catalog:                 state.catalog,
 		Address:                 state.appConfig.ReceiverAddress,
@@ -8646,6 +8761,7 @@ func startReceiver(w fyne.Window, status *widget.Label, state *uiState) {
 		AllowedRemoteHosts:      allowedRemoteHosts,
 		MaxStoreObjectBytes:     optionalInt64Value(state.appConfig.MaxStoreObjectBytes),
 		PreferredTransferSyntax: state.appConfig.ReceivePreferredTransferSyntax,
+		TLSConfig:               tlsConfig,
 	})
 	if err != nil {
 		status.SetText("Receiver start failed")
@@ -8658,11 +8774,32 @@ func startReceiver(w fyne.Window, status *widget.Label, state *uiState) {
 	refreshQueryDestination(state)
 	refreshQueryResultSummary(state)
 	refreshQuerySourceList(state)
+	if len(remoteAllowlist.Warnings) > 0 {
+		dialog.ShowInformation("Receiver allowlist warnings", strings.Join(remoteAllowlist.Warnings, "\n"), w)
+	}
 	if len(allowedCallingAEs) > 0 {
-		status.SetText(fmt.Sprintf("Receiver listening on %s as %s; allowing %d remote AEs and %d remote IPs", server.Addr(), server.AETitle(), len(allowedCallingAEs), len(allowedRemoteHosts)))
+		message := fmt.Sprintf("Receiver listening on %s as %s; allowing %d remote AEs and %d remote addresses", server.Addr(), server.AETitle(), len(allowedCallingAEs), len(allowedRemoteHosts))
+		if len(remoteAllowlist.Warnings) > 0 {
+			message += fmt.Sprintf("; skipped %d remote hostnames", len(remoteAllowlist.Warnings))
+		}
+		status.SetText(message)
 		return
 	}
 	status.SetText(fmt.Sprintf("Receiver listening on %s as %s; no Calling AE allowlist", server.Addr(), server.AETitle()))
+}
+
+func receiverTLSConfig(cfg appconfig.Config) (*tls.Config, error) {
+	if !cfg.ReceiverUseTLS {
+		return nil, nil
+	}
+	cert, err := tls.LoadX509KeyPair(cfg.ReceiverTLSCertFile, cfg.ReceiverTLSKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load receiver TLS certificate: %w", err)
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}, nil
 }
 
 func configuredNodeAETitles(nodeList []nodes.Node) []string {
@@ -8677,25 +8814,6 @@ func configuredNodeAETitles(nodeList []nodes.Node) []string {
 		aeTitles = append(aeTitles, aeTitle)
 	}
 	return aeTitles
-}
-
-func configuredNodeIPHosts(nodeList []nodes.Node) []string {
-	seen := map[string]bool{}
-	var hosts []string
-	for _, node := range nodeList {
-		host := strings.TrimSpace(node.Host)
-		ip := net.ParseIP(host)
-		if ip == nil {
-			continue
-		}
-		host = ip.String()
-		if seen[host] {
-			continue
-		}
-		seen[host] = true
-		hosts = append(hosts, host)
-	}
-	return hosts
 }
 
 func stopReceiver(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
@@ -13055,6 +13173,7 @@ func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget
 		return
 	}
 	callingAE := localAETitle(state)
+	criteriaWindows := studyQueryCriteriaWindows(criteria)
 	sourceLabel := querySourcesLabel(sources)
 	beginQueryActivity(state, "Study C-FIND "+sourceLabel)
 	status.SetText("Querying " + sourceLabel)
@@ -13062,7 +13181,7 @@ func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
 		result, err := runQueryAcrossSourcesWithProgress(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
-			return query.StudyRootFind(ctx, node, criteria, callingAE)
+			return runStudyQueryCriteriaWindows(ctx, node, criteriaWindows, callingAE)
 		}, queryProgressCallback(state))
 		fyne.Do(func() {
 			clearActiveQueryActivity(state)
@@ -13084,6 +13203,77 @@ func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget
 			}
 		})
 	}()
+}
+
+func runStudyQueryCriteriaWindows(ctx context.Context, node nodes.Node, criteriaWindows []query.Criteria, callingAE string) (query.Result, error) {
+	return runStudyQueryCriteriaWindowsWithFind(ctx, node, criteriaWindows, callingAE, query.StudyRootFind)
+}
+
+func runStudyQueryCriteriaWindowsWithFind(ctx context.Context, node nodes.Node, criteriaWindows []query.Criteria, callingAE string, find func(context.Context, nodes.Node, query.Criteria, string) (query.Result, error)) (query.Result, error) {
+	var merged query.Result
+	if find == nil {
+		return merged, errors.New("study query finder is required")
+	}
+	for _, criteria := range criteriaWindows {
+		if criteria.MaxResults > 0 {
+			remaining := criteria.MaxResults - len(merged.Matches)
+			if remaining <= 0 {
+				break
+			}
+			criteria.MaxResults = remaining
+		}
+		result, err := find(ctx, node, criteria, callingAE)
+		if err != nil {
+			return query.Result{}, err
+		}
+		merged.Matches = append(merged.Matches, result.Matches...)
+		merged.FinalStatus = result.FinalStatus
+		merged.Duration += result.Duration
+	}
+	return merged, nil
+}
+
+func studyQueryCriteriaWindows(criteria query.Criteria) []query.Criteria {
+	timeFrom := strings.TrimSpace(criteria.StudyTimeFrom)
+	timeTo := strings.TrimSpace(criteria.StudyTimeTo)
+	if strings.TrimSpace(criteria.StudyDateFrom) == "" ||
+		strings.TrimSpace(criteria.StudyDateTo) == "" ||
+		timeFrom == "" ||
+		timeTo == "" {
+		return []query.Criteria{criteria}
+	}
+	fromDay, err := time.ParseInLocation("20060102", strings.TrimSpace(criteria.StudyDateFrom), time.Local)
+	if err != nil {
+		return []query.Criteria{criteria}
+	}
+	toDay, err := time.ParseInLocation("20060102", strings.TrimSpace(criteria.StudyDateTo), time.Local)
+	if err != nil || !fromDay.Before(toDay) || timeFrom <= timeTo {
+		return []query.Criteria{criteria}
+	}
+
+	first := criteria
+	first.StudyDateFrom = fromDay.Format("20060102")
+	first.StudyDateTo = first.StudyDateFrom
+	first.StudyTimeTo = "235959"
+	windows := []query.Criteria{first}
+
+	middleFrom := fromDay.AddDate(0, 0, 1)
+	middleTo := toDay.AddDate(0, 0, -1)
+	if !middleFrom.After(middleTo) {
+		middle := criteria
+		middle.StudyDateFrom = middleFrom.Format("20060102")
+		middle.StudyDateTo = middleTo.Format("20060102")
+		middle.StudyTimeFrom = ""
+		middle.StudyTimeTo = ""
+		windows = append(windows, middle)
+	}
+
+	last := criteria
+	last.StudyDateFrom = toDay.Format("20060102")
+	last.StudyDateTo = last.StudyDateFrom
+	last.StudyTimeFrom = "000000"
+	windows = append(windows, last)
+	return windows
 }
 
 func runSeriesQuery(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState, criteria query.SeriesCriteria) {
@@ -14150,6 +14340,8 @@ func toggleNodeOperationalCell(state *uiState, row int, col int) (bool, error) {
 	switch col {
 	case nodeTableColumnRetrieve:
 		next.RetrieveMethod = nextRetrieveMethod(next.RetrieveMethod)
+	case nodeTableColumnTLS:
+		next.UseTLS = !next.UseTLS
 	default:
 		return false, nil
 	}
@@ -14196,8 +14388,19 @@ func setNodeSendSyntax(state *uiState, row int, label string) (bool, error) {
 	return saveNodeAt(state, row, next)
 }
 
+func setNodeTLSLabel(state *uiState, row int, label string) (bool, error) {
+	if state == nil || row < 0 || row >= len(state.nodes) {
+		return false, nil
+	}
+	next := state.nodes[row]
+	next.UseTLS = strings.EqualFold(strings.TrimSpace(label), "Yes")
+	return saveNodeAt(state, row, next)
+}
+
 func setNodeDropdownValue(state *uiState, row int, col int, value string) (bool, error) {
 	switch col {
+	case nodeTableColumnTLS:
+		return setNodeTLSLabel(state, row, value)
 	case nodeTableColumnRetrieve:
 		return setNodeRetrieveMethod(state, row, value)
 	case nodeTableColumnSendSyntax:
@@ -14564,6 +14767,9 @@ func nodeOperationalCheckboxState(node nodes.Node, col int) (bool, bool) {
 func nodeDropdownState(node nodes.Node, col int) (bool, string) {
 	switch col {
 	case nodeTableColumnTLS:
+		if node.UseTLS {
+			return true, "Yes"
+		}
 		return true, "No"
 	case nodeTableColumnRetrieve:
 		return true, node.RetrieveMethodOrDefault()
@@ -14618,8 +14824,7 @@ func applyNodeTableCell(cell *nodeTableCell, tableRow int, tableCol int, text st
 		cell.retrieveSlot.Layout = layout.NewGridWrapLayout(fyne.NewSize(nodeDropdownSlotWidth(tableCol), cell.retrieveSelect.MinSize().Height))
 		switch tableCol {
 		case nodeTableColumnTLS:
-			cell.retrieveSelect.SetOptions([]string{"No"})
-			cell.retrieveSelect.Disable()
+			cell.retrieveSelect.SetOptions([]string{"No", "Yes"})
 		case nodeTableColumnSendSyntax:
 			cell.retrieveSelect.SetOptions(sendSyntaxOptions())
 		default:
@@ -14695,6 +14900,9 @@ func nodeCell(node nodes.Node, col int) string {
 	case nodeTableColumnSend:
 		return nodeCheckCell(node.SendEnabled())
 	case nodeTableColumnTLS:
+		if node.UseTLS {
+			return nodeMenuCell("Yes")
+		}
 		return nodeMenuCell("No")
 	case nodeTableColumnName:
 		return node.Name

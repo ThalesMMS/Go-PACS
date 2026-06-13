@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
+	"github.com/ThalesMMS/Go-PACS/internal/testutil"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
@@ -332,14 +333,14 @@ func TestPatientRootPatientIdentifierIncludesExtendedSearchFields(t *testing.T) 
 
 func TestStudyMatchFromIdentifierIncludesWorkstationDisplayFields(t *testing.T) {
 	identifier := object.FromElements([]core.Element{
-		stringElement(tagPatientName, core.VRPN, "DISPLAY^PATIENT"),
-		stringElement(tagPatientBirthDate, core.VRDA, "19700102"),
-		stringElement(tagStudyTime, core.VRTM, "134501"),
-		stringElement(tagNumberOfStudyRelatedInstances, core.VRIS, "42"),
-		stringElement(tagReferringPhysicianName, core.VRPN, "REFER^DOC"),
-		stringElement(tagInstitutionName, core.VRLO, "General Hospital"),
-		stringElement(tagPatientComments, core.VRLT, "remote comment"),
-		stringElement(tagStudyStatusID, core.VRCS, "VERIFIED"),
+		testutil.StringElement(tagPatientName, core.VRPN, "DISPLAY^PATIENT"),
+		testutil.StringElement(tagPatientBirthDate, core.VRDA, "19700102"),
+		testutil.StringElement(tagStudyTime, core.VRTM, "134501"),
+		testutil.StringElement(tagNumberOfStudyRelatedInstances, core.VRIS, "42"),
+		testutil.StringElement(tagReferringPhysicianName, core.VRPN, "REFER^DOC"),
+		testutil.StringElement(tagInstitutionName, core.VRLO, "General Hospital"),
+		testutil.StringElement(tagPatientComments, core.VRLT, "remote comment"),
+		testutil.StringElement(tagStudyStatusID, core.VRCS, "VERIFIED"),
 	}, std.Dictionary)
 
 	match := studyMatchFromIdentifier(identifier, dimse.StatusPending)
@@ -608,35 +609,35 @@ func TestStudyDateRange(t *testing.T) {
 
 func studyMatch(patientName, patientID, modalities, studyUID string) *object.Object {
 	return object.FromElements([]core.Element{
-		stringElement(tagPatientName, core.VRPN, patientName),
-		stringElement(tagPatientID, core.VRLO, patientID),
-		stringElement(tagStudyDate, core.VRDA, "20260604"),
-		stringElement(tagStudyDescription, core.VRLO, "Query test"),
-		stringElement(tagAccessionNumber, core.VRSH, "ACC-QUERY"),
-		stringElement(tagStudyInstanceUID, core.VRUI, studyUID),
-		stringElement(tagModalitiesInStudy, core.VRCS, modalities),
+		testutil.StringElement(tagPatientName, core.VRPN, patientName),
+		testutil.StringElement(tagPatientID, core.VRLO, patientID),
+		testutil.StringElement(tagStudyDate, core.VRDA, "20260604"),
+		testutil.StringElement(tagStudyDescription, core.VRLO, "Query test"),
+		testutil.StringElement(tagAccessionNumber, core.VRSH, "ACC-QUERY"),
+		testutil.StringElement(tagStudyInstanceUID, core.VRUI, studyUID),
+		testutil.StringElement(tagModalitiesInStudy, core.VRCS, modalities),
 	}, std.Dictionary)
 }
 
 func patientMatch(patientName, patientID, birthDate, comments string) *object.Object {
 	return object.FromElements([]core.Element{
-		stringElement(tagPatientName, core.VRPN, patientName),
-		stringElement(tagPatientID, core.VRLO, patientID),
-		stringElement(tagPatientBirthDate, core.VRDA, birthDate),
-		stringElement(tagPatientComments, core.VRLT, comments),
+		testutil.StringElement(tagPatientName, core.VRPN, patientName),
+		testutil.StringElement(tagPatientID, core.VRLO, patientID),
+		testutil.StringElement(tagPatientBirthDate, core.VRDA, birthDate),
+		testutil.StringElement(tagPatientComments, core.VRLT, comments),
 	}, std.Dictionary)
 }
 
 func seriesMatch(patientName, patientID, studyUID, seriesUID, modality, seriesNumber, seriesDescription string) *object.Object {
 	return object.FromElements([]core.Element{
-		stringElement(tagPatientName, core.VRPN, patientName),
-		stringElement(tagPatientID, core.VRLO, patientID),
-		stringElement(tagStudyDate, core.VRDA, "20260604"),
-		stringElement(tagStudyInstanceUID, core.VRUI, studyUID),
-		stringElement(tagSeriesInstanceUID, core.VRUI, seriesUID),
-		stringElement(tagModality, core.VRCS, modality),
-		stringElement(tagSeriesNumber, core.VRIS, seriesNumber),
-		stringElement(tagSeriesDescription, core.VRLO, seriesDescription),
+		testutil.StringElement(tagPatientName, core.VRPN, patientName),
+		testutil.StringElement(tagPatientID, core.VRLO, patientID),
+		testutil.StringElement(tagStudyDate, core.VRDA, "20260604"),
+		testutil.StringElement(tagStudyInstanceUID, core.VRUI, studyUID),
+		testutil.StringElement(tagSeriesInstanceUID, core.VRUI, seriesUID),
+		testutil.StringElement(tagModality, core.VRCS, modality),
+		testutil.StringElement(tagSeriesNumber, core.VRIS, seriesNumber),
+		testutil.StringElement(tagSeriesDescription, core.VRLO, seriesDescription),
 	}, std.Dictionary)
 }
 
@@ -644,21 +645,14 @@ const testImageStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.2"
 
 func imageMatch(patientName, patientID, studyUID, seriesUID, sopClassUID, sopInstanceUID, modality, instanceNumber string) *object.Object {
 	return object.FromElements([]core.Element{
-		stringElement(tagPatientName, core.VRPN, patientName),
-		stringElement(tagPatientID, core.VRLO, patientID),
-		stringElement(tagStudyDate, core.VRDA, "20260604"),
-		stringElement(tagStudyInstanceUID, core.VRUI, studyUID),
-		stringElement(tagSeriesInstanceUID, core.VRUI, seriesUID),
-		stringElement(tagSOPClassUID, core.VRUI, sopClassUID),
-		stringElement(tagSOPInstanceUID, core.VRUI, sopInstanceUID),
-		stringElement(tagModality, core.VRCS, modality),
-		stringElement(tagInstanceNumber, core.VRIS, instanceNumber),
+		testutil.StringElement(tagPatientName, core.VRPN, patientName),
+		testutil.StringElement(tagPatientID, core.VRLO, patientID),
+		testutil.StringElement(tagStudyDate, core.VRDA, "20260604"),
+		testutil.StringElement(tagStudyInstanceUID, core.VRUI, studyUID),
+		testutil.StringElement(tagSeriesInstanceUID, core.VRUI, seriesUID),
+		testutil.StringElement(tagSOPClassUID, core.VRUI, sopClassUID),
+		testutil.StringElement(tagSOPInstanceUID, core.VRUI, sopInstanceUID),
+		testutil.StringElement(tagModality, core.VRCS, modality),
+		testutil.StringElement(tagInstanceNumber, core.VRIS, instanceNumber),
 	}, std.Dictionary)
-}
-
-func stringElement(tag core.Tag, vr core.VR, value string) core.Element {
-	return core.Element{
-		Header: core.ElementHeader{Tag: tag, VR: vr},
-		Value:  core.StringValue{value},
-	}
 }

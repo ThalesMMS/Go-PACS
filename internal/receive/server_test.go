@@ -3,6 +3,16 @@ package receive
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"io"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,8 +24,11 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/netverify"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/Go-PACS/internal/send"
+	"github.com/ThalesMMS/Go-PACS/internal/testutil"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
+	"github.com/ThalesMMS/dicom-go/net/dimse"
+	"github.com/ThalesMMS/dicom-go/net/ul"
 	"github.com/ThalesMMS/dicom-go/object"
 	"github.com/ThalesMMS/dicom-go/transfer"
 )
@@ -145,6 +158,165 @@ func TestServerRejectsOversizedCStoreObject(t *testing.T) {
 	}
 }
 
+func TestServerDrainsMalformedCStoreDataSetBeforeNextCommand(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server, err := Start(ctx, Config{
+		Catalog: catalog,
+		Address: "127.0.0.1:0",
+		AETitle: testReceiverCalledAETitle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+
+	assoc, pc, err := dialStorageAssociation(ctx, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer assoc.Close()
+
+	if err := dimse.SendCStoreRequest(assoc, pc.ID, dimse.CStoreRequest{
+		AffectedSOPClassUID:    testStorageSOPClassUID,
+		MessageID:              1,
+		Priority:               dimse.PriorityMedium,
+		AffectedSOPInstanceUID: "1.2.826.0.1.3680043.10.543.199",
+	}); err != nil {
+		t.Fatalf("SendCStoreRequest(malformed) error = %v", err)
+	}
+	if err := sendMalformedExplicitVRDataSet(assoc, pc.ID); err != nil {
+		t.Fatalf("sendMalformedExplicitVRDataSet() error = %v", err)
+	}
+	malformedRsp, err := dimse.ReceiveCStoreResponse(assoc, pc.ID)
+	if err != nil {
+		t.Fatalf("ReceiveCStoreResponse(malformed) error = %v", err)
+	}
+	if malformedRsp.Status != statusCannotUnderstand {
+		t.Fatalf("malformed C-STORE status = 0x%04X, want 0x%04X", malformedRsp.Status, statusCannotUnderstand)
+	}
+
+	validFile, err := object.ReadFile(bytes.NewReader(testPart10File(t)))
+	if err != nil {
+		t.Fatalf("ReadFile(valid) error = %v", err)
+	}
+	if err := dimse.SendCStoreRequest(assoc, pc.ID, dimse.CStoreRequest{
+		AffectedSOPClassUID:    testStorageSOPClassUID,
+		MessageID:              2,
+		Priority:               dimse.PriorityMedium,
+		AffectedSOPInstanceUID: testSOPInstanceUID,
+	}); err != nil {
+		t.Fatalf("SendCStoreRequest(valid) error = %v", err)
+	}
+	if err := dimse.SendDataSet(assoc, pc.ID, validFile.Dataset, transfer.ExplicitVRLittleEndian); err != nil {
+		t.Fatalf("SendDataSet(valid) error = %v", err)
+	}
+	validRsp, err := dimse.ReceiveCStoreResponse(assoc, pc.ID)
+	if err != nil {
+		t.Fatalf("ReceiveCStoreResponse(valid) error = %v", err)
+	}
+	if validRsp.Status != dimse.StatusSuccess {
+		t.Fatalf("valid C-STORE status = 0x%04X, want success", validRsp.Status)
+	}
+
+	snapshot := server.Snapshot()
+	if snapshot.Stored != 1 {
+		t.Fatalf("Snapshot.Stored = %d, want 1", snapshot.Stored)
+	}
+	if snapshot.Failed != 1 {
+		t.Fatalf("Snapshot.Failed = %d, want 1", snapshot.Failed)
+	}
+}
+
+func TestServerCountsMalformedCStoreFailureOnceAfterAssociationClose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server, err := Start(ctx, Config{
+		Catalog: catalog,
+		Address: "127.0.0.1:0",
+		AETitle: testReceiverCalledAETitle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+
+	assoc, pc, err := dialStorageAssociation(ctx, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dimse.SendCStoreRequest(assoc, pc.ID, dimse.CStoreRequest{
+		AffectedSOPClassUID:    testStorageSOPClassUID,
+		MessageID:              1,
+		Priority:               dimse.PriorityMedium,
+		AffectedSOPInstanceUID: "1.2.826.0.1.3680043.10.543.200",
+	}); err != nil {
+		t.Fatalf("SendCStoreRequest(malformed) error = %v", err)
+	}
+	if err := sendMalformedExplicitVRDataSet(assoc, pc.ID); err != nil {
+		t.Fatalf("sendMalformedExplicitVRDataSet() error = %v", err)
+	}
+	rsp, err := dimse.ReceiveCStoreResponse(assoc, pc.ID)
+	if err != nil {
+		t.Fatalf("ReceiveCStoreResponse(malformed) error = %v", err)
+	}
+	if rsp.Status != statusCannotUnderstand {
+		t.Fatalf("malformed C-STORE status = 0x%04X, want 0x%04X", rsp.Status, statusCannotUnderstand)
+	}
+	if err := assoc.Close(); err != nil {
+		t.Fatalf("close association: %v", err)
+	}
+	waitForAssociationHandlers(t, server)
+
+	snapshot := server.Snapshot()
+	if snapshot.Stored != 0 {
+		t.Fatalf("Snapshot.Stored = %d, want 0", snapshot.Stored)
+	}
+	if snapshot.Failed != 1 {
+		t.Fatalf("Snapshot.Failed = %d, want 1", snapshot.Failed)
+	}
+}
+
+func TestShouldDrainDataSetPDataOnError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "parser error", err: errors.New("invalid dataset"), want: true},
+		{name: "store object limit", err: storeObjectLimitExceeded(2, 1), want: true},
+		{name: "closed association", err: net.ErrClosed, want: false},
+		{name: "aborted association", err: ul.ErrAssociationAborted, want: false},
+		{name: "association timeout", err: ul.ErrAssociationTimeout, want: false},
+		{name: "eof", err: io.EOF, want: false},
+		{name: "unexpected eof", err: io.ErrUnexpectedEOF, want: false},
+		{name: "context canceled", err: context.Canceled, want: false},
+		{name: "context deadline exceeded", err: context.DeadlineExceeded, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldDrainDataSetPDataOnError(tt.err); got != tt.want {
+				t.Fatalf("shouldDrainDataSetPDataOnError(%v) = %t, want %t", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestServerAnswersCEcho(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -171,6 +343,115 @@ func TestServerAnswersCEcho(t *testing.T) {
 	}
 	if result.Status != 0 {
 		t.Fatalf("Status = 0x%04X, want success", result.Status)
+	}
+}
+
+func TestServerAnswersCEchoOverTLS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server, err := Start(ctx, Config{
+		Catalog:   catalog,
+		Address:   "127.0.0.1:0",
+		AETitle:   testReceiverCalledAETitle,
+		TLSConfig: testReceiveServerTLSConfig(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+
+	node := receiverNode(t, server)
+	node.UseTLS = true
+	node.TLSSkipVerify = true
+	result, err := netverify.Echo(ctx, node, testReceiverCallingAETitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != 0 {
+		t.Fatalf("Status = 0x%04X, want success", result.Status)
+	}
+}
+
+func TestStartRejectsNegativeMaxAssociations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server, err := Start(ctx, Config{
+		Catalog:         catalog,
+		Address:         "127.0.0.1:0",
+		AETitle:         testReceiverCalledAETitle,
+		MaxAssociations: -1,
+	})
+	if err == nil {
+		stopServer(t, server)
+		t.Fatal("Start succeeded with negative MaxAssociations")
+	}
+}
+
+func TestServerLimitsConcurrentAssociations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server, err := Start(ctx, Config{
+		Catalog:         catalog,
+		Address:         "127.0.0.1:0",
+		AETitle:         testReceiverCalledAETitle,
+		MaxAssociations: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+
+	first, _, err := dialVerificationAssociation(ctx, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+
+	secondCtx, cancelSecond := context.WithTimeout(ctx, time.Second)
+	second, secondPC, err := dialVerificationAssociation(secondCtx, server)
+	cancelSecond()
+	if err == nil {
+		_, echoErr := dimse.SendCEcho(second, secondPC.ID, 1)
+		_ = second.Close()
+		if echoErr == nil {
+			t.Fatal("second association processed C-ECHO while max associations slot was full")
+		}
+	}
+	waitForRejectedAssociations(t, server, 1)
+
+	releaseCtx, cancelRelease := context.WithTimeout(ctx, time.Second)
+	defer cancelRelease()
+	if err := first.Release(releaseCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := netverify.Echo(ctx, receiverNode(t, server), testReceiverCallingAETitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != 0 {
+		t.Fatalf("Status after releasing slot = 0x%04X, want success", result.Status)
 	}
 }
 
@@ -424,17 +705,144 @@ func stopServer(t *testing.T, server *Server) {
 	}
 }
 
+func dialVerificationAssociation(ctx context.Context, server *Server) (*ul.Association, ul.AcceptedContext, error) {
+	assoc, err := ul.DialContext(ctx, server.Addr(), ul.DialOptions{
+		CalledAETitle:  server.AETitle(),
+		CallingAETitle: testReceiverCallingAETitle,
+		Contexts: []ul.PresentationContext{{
+			AbstractSyntaxUID:  dimse.VerificationSOPClassUID,
+			TransferSyntaxUIDs: []string{ul.ImplicitVRLittleEndian},
+		}},
+	})
+	if err != nil {
+		return nil, ul.AcceptedContext{}, err
+	}
+	pc, ok := dimse.AcceptedVerificationContext(assoc)
+	if !ok {
+		_ = assoc.Close()
+		return nil, ul.AcceptedContext{}, errors.New("verification presentation context was not accepted")
+	}
+	return assoc, pc, nil
+}
+
+func dialStorageAssociation(ctx context.Context, server *Server) (*ul.Association, ul.AcceptedContext, error) {
+	assoc, err := ul.DialContext(ctx, server.Addr(), ul.DialOptions{
+		CalledAETitle:  server.AETitle(),
+		CallingAETitle: testReceiverCallingAETitle,
+		Contexts: []ul.PresentationContext{{
+			AbstractSyntaxUID:  testStorageSOPClassUID,
+			TransferSyntaxUIDs: []string{transfer.ExplicitVRLittleEndian.UID},
+		}},
+	})
+	if err != nil {
+		return nil, ul.AcceptedContext{}, err
+	}
+	pc, err := dimse.AcceptedContextForSOPClass(assoc, testStorageSOPClassUID)
+	if err != nil {
+		_ = assoc.Close()
+		return nil, ul.AcceptedContext{}, err
+	}
+	return assoc, pc, nil
+}
+
+func sendMalformedExplicitVRDataSet(assoc *ul.Association, pcID byte) error {
+	firstPDV := []byte{
+		0x10, 0x00, 0x10, 0x00,
+		'Z', 'Z',
+		0x04, 0x00,
+		'T', 'E', 'S', 'T',
+	}
+	if err := assoc.WritePDU(&ul.PDataTF{Values: []ul.PDataValue{{
+		PresentationContextID: pcID,
+		IsCommand:             false,
+		IsLast:                false,
+		Data:                  firstPDV,
+	}}}); err != nil {
+		return err
+	}
+	return assoc.WritePDU(&ul.PDataTF{Values: []ul.PDataValue{{
+		PresentationContextID: pcID,
+		IsCommand:             false,
+		IsLast:                true,
+		Data:                  []byte{0xde, 0xad, 0xbe, 0xef},
+	}}})
+}
+
+func waitForRejectedAssociations(t *testing.T, server *Server, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := server.Snapshot().Rejected; got >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("Snapshot.Rejected = %d, want at least %d", server.Snapshot().Rejected, want)
+}
+
+func waitForAssociationHandlers(t *testing.T, server *Server) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		server.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for association handlers")
+	}
+}
+
+func testReceiveServerTLSConfig(t *testing.T) *tls.Config {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("rand.Int() error = %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate() error = %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey() error = %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("X509KeyPair() error = %v", err)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}}
+}
+
 func testPart10File(t *testing.T) []byte {
 	t.Helper()
 	dataset := []core.Element{
-		stringElement(core.NewTag(0x0008, 0x0016), core.VRUI, testStorageSOPClassUID),
-		stringElement(core.NewTag(0x0008, 0x0018), core.VRUI, testSOPInstanceUID),
-		stringElement(core.NewTag(0x0010, 0x0010), core.VRPN, "RECEIVE^PATIENT"),
-		stringElement(core.NewTag(0x0010, 0x0020), core.VRLO, "R001"),
-		stringElement(core.NewTag(0x0008, 0x0020), core.VRDA, "20260604"),
-		stringElement(core.NewTag(0x0008, 0x0060), core.VRCS, "CT"),
-		stringElement(core.NewTag(0x0020, 0x000D), core.VRUI, testStudyInstanceUID),
-		stringElement(core.NewTag(0x0020, 0x000E), core.VRUI, testSeriesInstanceUID),
+		testutil.StringElement(core.NewTag(0x0008, 0x0016), core.VRUI, testStorageSOPClassUID),
+		testutil.StringElement(core.NewTag(0x0008, 0x0018), core.VRUI, testSOPInstanceUID),
+		testutil.StringElement(core.NewTag(0x0010, 0x0010), core.VRPN, "RECEIVE^PATIENT"),
+		testutil.StringElement(core.NewTag(0x0010, 0x0020), core.VRLO, "R001"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0020), core.VRDA, "20260604"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0060), core.VRCS, "CT"),
+		testutil.StringElement(core.NewTag(0x0020, 0x000D), core.VRUI, testStudyInstanceUID),
+		testutil.StringElement(core.NewTag(0x0020, 0x000E), core.VRUI, testSeriesInstanceUID),
 	}
 	file := &object.File{
 		Dataset:        object.FromElements(dataset, std.Dictionary),
@@ -445,11 +853,4 @@ func testPart10File(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
-}
-
-func stringElement(tag core.Tag, vr core.VR, value string) core.Element {
-	return core.Element{
-		Header: core.ElementHeader{Tag: tag, VR: vr},
-		Value:  core.StringValue{value},
-	}
 }

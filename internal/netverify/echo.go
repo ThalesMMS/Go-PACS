@@ -2,9 +2,13 @@ package netverify
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ThalesMMS/Go-PACS/internal/nettimeout"
@@ -37,6 +41,10 @@ func Echo(ctx context.Context, node nodes.Node, callingAETitle string) (EchoResu
 	}
 	address := net.JoinHostPort(node.Host, strconv.Itoa(int(node.Port)))
 	started := time.Now()
+	tlsConfig, err := TLSConfigForNode(node)
+	if err != nil {
+		return EchoResult{}, err
+	}
 
 	dialCtx, cancelDial := nettimeout.WithDefault(ctx, DefaultDialTimeout)
 	defer cancelDial()
@@ -47,6 +55,7 @@ func Echo(ctx context.Context, node nodes.Node, callingAETitle string) (EchoResu
 			AbstractSyntaxUID:  dimse.VerificationSOPClassUID,
 			TransferSyntaxUIDs: []string{ul.ImplicitVRLittleEndian},
 		}},
+		TLSConfig: tlsConfig,
 	})
 	if err != nil {
 		return EchoResult{}, fmt.Errorf("associate with %s (%s): %w", node.Name, address, err)
@@ -81,4 +90,39 @@ func Echo(ctx context.Context, node nodes.Node, callingAETitle string) (EchoResu
 		Duration:  time.Since(started),
 		StartedAt: started.UTC(),
 	}, nil
+}
+
+func TLSConfigForNode(node nodes.Node) (*tls.Config, error) {
+	if !node.UseTLS {
+		return nil, nil
+	}
+	cfg := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: node.TLSSkipVerify,
+		ServerName:         strings.TrimSpace(node.TLSServerName),
+	}
+	if caFile := strings.TrimSpace(node.TLSCAFile); caFile != "" {
+		caPEM, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read TLS CA file: %w", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("TLS CA file %q does not contain a PEM certificate", caFile)
+		}
+		cfg.RootCAs = roots
+	}
+	certFile := strings.TrimSpace(node.TLSCertFile)
+	keyFile := strings.TrimSpace(node.TLSKeyFile)
+	if (certFile == "") != (keyFile == "") {
+		return nil, fmt.Errorf("TLS client certificate and key must be provided together")
+	}
+	if certFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load TLS client certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+	return cfg, nil
 }

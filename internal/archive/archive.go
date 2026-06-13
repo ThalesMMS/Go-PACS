@@ -33,6 +33,8 @@ type Catalog struct {
 
 const CatalogSchemaVersion = 1
 
+const missingUIDSentinel = "(missing)"
+
 type SchemaMigration struct {
 	Version   int
 	Name      string
@@ -588,7 +590,6 @@ ORDER BY imported_at DESC, patient_name ASC`
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate studies: %w", err)
 	}
-	studies = filterStudiesByPatientNameSoundex(studies, filters)
 	return studies, nil
 }
 
@@ -600,8 +601,8 @@ func studyFilterWhere(filters StudyFilters) (string, []any) {
 		if value == "" {
 			return
 		}
-		clauses = append(clauses, "LOWER("+column+") LIKE ?")
-		args = append(args, "%"+strings.ToLower(value)+"%")
+		clauses = append(clauses, column+" COLLATE NOCASE LIKE ?")
+		args = append(args, "%"+value+"%")
 	}
 	if !filters.PatientNameSoundex {
 		addLike("patient_name", filters.PatientName)
@@ -643,7 +644,7 @@ func studyFilterWhere(filters StudyFilters) (string, []any) {
 
 	var modalities []string
 	for _, modality := range filters.Modalities {
-		modality = strings.ToUpper(strings.TrimSpace(modality))
+		modality = strings.TrimSpace(modality)
 		if modality != "" {
 			modalities = append(modalities, modality)
 		}
@@ -654,7 +655,18 @@ func studyFilterWhere(filters StudyFilters) (string, []any) {
 			placeholders[i] = "?"
 			args = append(args, modality)
 		}
-		clauses = append(clauses, "UPPER(modality) IN ("+strings.Join(placeholders, ", ")+")")
+		clauses = append(clauses, "modality COLLATE NOCASE IN ("+strings.Join(placeholders, ", ")+")")
+	}
+	if filters.PatientNameSoundex {
+		for _, code := range soundexTokenCodes(filters.PatientName) {
+			clauses = append(clauses, `EXISTS (
+  SELECT 1
+  FROM instance_patient_soundex ips
+  WHERE ips.instance_sha256 = instances.sha256
+    AND ips.code = ?
+)`)
+			args = append(args, code)
+		}
 	}
 
 	return strings.Join(clauses, " AND "), args
@@ -811,8 +823,8 @@ SELECT
   sop_class_uid, sop_instance_uid, instance_number,
   transfer_syntax_uid, transfer_syntax, imported_at
 FROM instances
-WHERE COALESCE(NULLIF(study_instance_uid, ''), '(missing)') = ?
-ORDER BY series_instance_uid ASC, sop_instance_uid ASC, imported_at ASC`, studyInstanceUID)
+WHERE study_instance_uid = ?
+ORDER BY series_instance_uid ASC, sop_instance_uid ASC, imported_at ASC`, storedLookupUID(studyInstanceUID))
 	if err != nil {
 		return nil, fmt.Errorf("query study instances: %w", err)
 	}
@@ -876,20 +888,20 @@ ORDER BY
 }
 
 func seriesFilterWhere(studyInstanceUID string, filters SeriesFilters) (string, []any) {
-	clauses := []string{"COALESCE(NULLIF(study_instance_uid, ''), '(missing)') = ?"}
-	args := []any{studyInstanceUID}
+	clauses := []string{"study_instance_uid = ?"}
+	args := []any{storedLookupUID(studyInstanceUID)}
 	addLike := func(column string, value string) {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			return
 		}
-		clauses = append(clauses, "LOWER("+column+") LIKE ?")
-		args = append(args, "%"+strings.ToLower(value)+"%")
+		clauses = append(clauses, column+" COLLATE NOCASE LIKE ?")
+		args = append(args, "%"+value+"%")
 	}
 	addLike("series_number", filters.SeriesNumber)
 	addLike("series_description", filters.SeriesDescription)
-	if modality := strings.ToUpper(strings.TrimSpace(filters.Modality)); modality != "" {
-		clauses = append(clauses, "UPPER(modality) = ?")
+	if modality := strings.TrimSpace(filters.Modality); modality != "" {
+		clauses = append(clauses, "modality COLLATE NOCASE = ?")
 		args = append(args, modality)
 	}
 	return strings.Join(clauses, " AND "), args
@@ -905,12 +917,12 @@ SELECT
   sop_class_uid, sop_instance_uid, instance_number,
   transfer_syntax_uid, transfer_syntax, imported_at
 FROM instances
-WHERE COALESCE(NULLIF(series_instance_uid, ''), '(missing)') = ?
+WHERE series_instance_uid = ?
 ORDER BY
   CASE WHEN instance_number GLOB '[0-9]*' THEN CAST(instance_number AS INTEGER) END ASC,
   instance_number ASC,
   sop_instance_uid ASC,
-  imported_at ASC`, seriesInstanceUID)
+  imported_at ASC`, storedLookupUID(seriesInstanceUID))
 	if err != nil {
 		return nil, fmt.Errorf("query series instances: %w", err)
 	}
@@ -944,9 +956,9 @@ SELECT
   sop_class_uid, sop_instance_uid, instance_number,
   transfer_syntax_uid, transfer_syntax, imported_at
 FROM instances
-WHERE COALESCE(NULLIF(sop_instance_uid, ''), '(missing)') = ?
+WHERE sop_instance_uid = ?
 ORDER BY imported_at ASC, sha256 ASC
-LIMIT 1`, sopInstanceUID)
+LIMIT 1`, storedLookupUID(sopInstanceUID))
 	instance, err := scanInstance(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, fmt.Errorf("SOP instance UID %q not found", sopInstanceUID)
@@ -1015,7 +1027,16 @@ CREATE TABLE IF NOT EXISTS instances (
 CREATE INDEX IF NOT EXISTS idx_instances_study ON instances(study_instance_uid);
 CREATE INDEX IF NOT EXISTS idx_instances_series ON instances(series_instance_uid);
 CREATE INDEX IF NOT EXISTS idx_instances_patient ON instances(patient_name, patient_id);
+CREATE INDEX IF NOT EXISTS idx_instances_sha256 ON instances(sha256);
+CREATE INDEX IF NOT EXISTS idx_instances_sop ON instances(sop_instance_uid);
 CREATE INDEX IF NOT EXISTS idx_instances_imported_at ON instances(imported_at);
+CREATE INDEX IF NOT EXISTS idx_instances_modality_nocase ON instances(modality COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS instance_patient_soundex (
+  instance_sha256 TEXT NOT NULL,
+  code TEXT NOT NULL,
+  PRIMARY KEY(instance_sha256, code)
+);
+CREATE INDEX IF NOT EXISTS idx_instance_patient_soundex_code ON instance_patient_soundex(code, instance_sha256);
 CREATE TABLE IF NOT EXISTS study_metadata (
   study_uid TEXT PRIMARY KEY,
   status TEXT NOT NULL DEFAULT '',
@@ -1043,6 +1064,9 @@ CREATE TABLE IF NOT EXISTS study_metadata (
 		}
 	}
 	if err := c.recordSchemaMigration(CatalogSchemaVersion, "create_instances_and_metadata_columns"); err != nil {
+		return err
+	}
+	if err := c.backfillInstancePatientSoundex(); err != nil {
 		return err
 	}
 	return nil
@@ -1112,6 +1136,7 @@ func (c *Catalog) DeleteStudy(ctx context.Context, studyInstanceUID string) (int
 	if studyInstanceUID == "" {
 		return 0, errors.New("study instance UID is required")
 	}
+	storedStudyUID := storedLookupUID(studyInstanceUID)
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin delete study transaction: %w", err)
@@ -1123,18 +1148,21 @@ func (c *Catalog) DeleteStudy(ctx context.Context, studyInstanceUID string) (int
 		}
 	}()
 
-	paths, err := storedPathsForStudy(ctx, tx, studyInstanceUID)
+	paths, err := storedPathsForStudy(ctx, tx, storedStudyUID)
 	if err != nil {
 		return 0, err
 	}
 	if err := c.validateStoredObjectPaths(paths); err != nil {
 		return 0, err
 	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE study_instance_uid = ?`, studyInstanceUID)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM instance_patient_soundex WHERE instance_sha256 IN (SELECT sha256 FROM instances WHERE study_instance_uid = ?)`, storedStudyUID); err != nil {
+		return 0, fmt.Errorf("delete study soundex codes: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE study_instance_uid = ?`, storedStudyUID)
 	if err != nil {
 		return 0, fmt.Errorf("delete study instances: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM study_metadata WHERE study_uid = ?`, studyInstanceUID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM study_metadata WHERE study_uid = ? OR study_uid = ?`, studyInstanceUID, storedStudyUID); err != nil {
 		return 0, fmt.Errorf("delete study metadata: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1503,8 +1531,27 @@ func (c *Catalog) hasInstance(ctx context.Context, sha string) (bool, error) {
 	return true, nil
 }
 
+func storedLookupUID(uid string) string {
+	uid = strings.TrimSpace(uid)
+	if uid == missingUIDSentinel {
+		return ""
+	}
+	return uid
+}
+
 func (c *Catalog) upsertInstance(ctx context.Context, instance Instance) error {
-	_, err := c.db.ExecContext(ctx, `
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin upsert instance: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO instances (
   sha256, stored_path, source_path, file_size,
   patient_name, patient_id, patient_birth_date, institution_name,
@@ -1546,5 +1593,76 @@ ON CONFLICT(sha256) DO UPDATE SET
 	if err != nil {
 		return fmt.Errorf("upsert instance: %w", err)
 	}
+	if err := replaceInstancePatientSoundex(ctx, tx, instance.SHA256, soundexTokenCodes(instance.PatientName)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit upsert instance: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func replaceInstancePatientSoundex(ctx context.Context, tx *sql.Tx, sha string, codes []string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM instance_patient_soundex WHERE instance_sha256 = ?`, sha); err != nil {
+		return fmt.Errorf("delete instance patient soundex: %w", err)
+	}
+	for _, code := range codes {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO instance_patient_soundex(instance_sha256, code) VALUES (?, ?)`, sha, code); err != nil {
+			return fmt.Errorf("insert instance patient soundex: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) backfillInstancePatientSoundex() error {
+	rows, err := c.db.Query(`SELECT sha256, patient_name FROM instances WHERE patient_name <> ''`)
+	if err != nil {
+		return fmt.Errorf("query patient soundex backfill rows: %w", err)
+	}
+	type row struct {
+		sha         string
+		patientName string
+	}
+	var rowsToBackfill []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.sha, &item.patientName); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan patient soundex backfill row: %w", err)
+		}
+		rowsToBackfill = append(rowsToBackfill, item)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close patient soundex backfill rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate patient soundex backfill rows: %w", err)
+	}
+	if len(rowsToBackfill) == 0 {
+		return nil
+	}
+
+	tx, err := c.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin patient soundex backfill: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, item := range rowsToBackfill {
+		for _, code := range soundexTokenCodes(item.patientName) {
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO instance_patient_soundex(instance_sha256, code) VALUES (?, ?)`, item.sha, code); err != nil {
+				return fmt.Errorf("insert patient soundex backfill row: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit patient soundex backfill: %w", err)
+	}
+	committed = true
 	return nil
 }

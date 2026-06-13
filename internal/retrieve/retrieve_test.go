@@ -17,6 +17,7 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/Go-PACS/internal/receive"
 	"github.com/ThalesMMS/Go-PACS/internal/send"
+	"github.com/ThalesMMS/Go-PACS/internal/testutil"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
@@ -258,6 +259,62 @@ func TestRetrieveImageFallsBackToCGetWhenMoveStoresNothing(t *testing.T) {
 	}
 }
 
+func TestRetrieveMoveReportsReceiverDeltaAfterPriorTraffic(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	receiver, err := receive.Start(ctx, receive.Config{
+		Catalog: catalog,
+		Address: "127.0.0.1:0",
+		AETitle: "MOVEDEST",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopReceiver(t, receiver)
+
+	source := filepath.Join(t.TempDir(), "move-source.dcm")
+	if err := os.WriteFile(source, testMovePart10File(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := send.SendFiles(ctx, receiverNode(t, receiver), []string{source}, "PRIOR"); err != nil {
+		t.Fatal(err)
+	} else if outcome.Sent != 1 || outcome.Failed != 0 {
+		t.Fatalf("prior send outcome = %#v, want one stored instance", outcome)
+	}
+	if snapshot := receiver.Snapshot(); snapshot.Stored != 1 {
+		t.Fatalf("prior receiver stored = %d, want 1", snapshot.Stored)
+	}
+
+	moveNode, done := startMoveSCP(t, ctx, source, receiver)
+	outcome, err := RetrieveStudy(ctx, catalog, moveNode, testMoveStudyInstanceUID, Options{
+		CallingAETitle:  "MOVESCU",
+		MoveDestination: "MOVEDEST",
+		Receiver:        receiver,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Stored != 0 || outcome.Duplicates != 1 {
+		t.Fatalf("operation stored/duplicates = %d/%d, want 0/1 delta", outcome.Stored, outcome.Duplicates)
+	}
+	if outcome.Receiver.Stored != 0 || outcome.Receiver.Duplicates != 1 {
+		t.Fatalf("receiver delta stored/duplicates = %d/%d, want 0/1", outcome.Receiver.Stored, outcome.Receiver.Duplicates)
+	}
+	if snapshot := receiver.Snapshot(); snapshot.Stored != 1 || snapshot.Duplicates != 1 {
+		t.Fatalf("lifetime receiver stored/duplicates = %d/%d, want 1/1", snapshot.Stored, snapshot.Duplicates)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("move SCP error = %v", err)
+	}
+}
+
 func TestRetrieveMethodPreferenceNormalizes(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -302,6 +359,31 @@ func TestShouldTryGetFallbackRespectsMoveOnlyPreference(t *testing.T) {
 	}
 	if shouldTryGetFallback(context.Background(), catalog, outcome, Options{Method: MethodMove}) {
 		t.Fatal("C-MOVE preference should disable C-GET fallback")
+	}
+}
+
+func TestShouldTryGetFallbackUsesOperationStoredCounts(t *testing.T) {
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	priorTraffic := Outcome{
+		StatusClass: dimse.CMoveStatusFailure,
+		Receiver:    receive.Snapshot{Stored: 9, Duplicates: 4},
+	}
+	if !shouldTryGetFallback(context.Background(), catalog, priorTraffic, Options{}) {
+		t.Fatal("fallback should ignore receiver lifetime traffic when operation stored nothing")
+	}
+
+	currentStore := Outcome{
+		StatusClass: dimse.CMoveStatusFailure,
+		Stored:      1,
+		Receiver:    receive.Snapshot{Stored: 9, Duplicates: 4},
+	}
+	if shouldTryGetFallback(context.Background(), catalog, currentStore, Options{}) {
+		t.Fatal("fallback should stop when the current C-MOVE stored data")
 	}
 }
 
@@ -867,20 +949,13 @@ func testMovePart10File(t *testing.T) []byte {
 func testMoveDataSet(t *testing.T) *object.Object {
 	t.Helper()
 	return object.FromElements([]core.Element{
-		stringElement(core.NewTag(0x0008, 0x0016), core.VRUI, testMoveStorageSOPClassUID),
-		stringElement(core.NewTag(0x0008, 0x0018), core.VRUI, testMoveSOPInstanceUID),
-		stringElement(core.NewTag(0x0010, 0x0010), core.VRPN, "MOVE^PATIENT"),
-		stringElement(core.NewTag(0x0010, 0x0020), core.VRLO, "M001"),
-		stringElement(core.NewTag(0x0008, 0x0020), core.VRDA, "20260604"),
-		stringElement(core.NewTag(0x0008, 0x0060), core.VRCS, "CT"),
-		stringElement(core.NewTag(0x0020, 0x000D), core.VRUI, testMoveStudyInstanceUID),
-		stringElement(core.NewTag(0x0020, 0x000E), core.VRUI, testMoveSeriesInstanceUID),
+		testutil.StringElement(core.NewTag(0x0008, 0x0016), core.VRUI, testMoveStorageSOPClassUID),
+		testutil.StringElement(core.NewTag(0x0008, 0x0018), core.VRUI, testMoveSOPInstanceUID),
+		testutil.StringElement(core.NewTag(0x0010, 0x0010), core.VRPN, "MOVE^PATIENT"),
+		testutil.StringElement(core.NewTag(0x0010, 0x0020), core.VRLO, "M001"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0020), core.VRDA, "20260604"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0060), core.VRCS, "CT"),
+		testutil.StringElement(core.NewTag(0x0020, 0x000D), core.VRUI, testMoveStudyInstanceUID),
+		testutil.StringElement(core.NewTag(0x0020, 0x000E), core.VRUI, testMoveSeriesInstanceUID),
 	}, std.Dictionary)
-}
-
-func stringElement(tag core.Tag, vr core.VR, value string) core.Element {
-	return core.Element{
-		Header: core.ElementHeader{Tag: tag, VR: vr},
-		Value:  core.StringValue{value},
-	}
 }

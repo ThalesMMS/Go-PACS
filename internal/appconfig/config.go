@@ -31,6 +31,9 @@ type Config struct {
 	LocalAETitle                     string                    `json:"localAETitle"`
 	ReceiverAddress                  string                    `json:"receiverAddress"`
 	ReceiverAutoStart                bool                      `json:"receiverAutoStart"`
+	ReceiverUseTLS                   bool                      `json:"receiverUseTLS,omitempty"`
+	ReceiverTLSCertFile              string                    `json:"receiverTLSCertFile,omitempty"`
+	ReceiverTLSKeyFile               string                    `json:"receiverTLSKeyFile,omitempty"`
 	AdditionalAETitles               []string                  `json:"additionalAETitles,omitempty"`
 	ReceivePreferredTransferSyntax   string                    `json:"receivePreferredTransferSyntax"`
 	DICOMCommunicationTimeoutSeconds int                       `json:"dicomCommunicationTimeoutSeconds"`
@@ -132,6 +135,14 @@ func Normalize(cfg Config) (Config, error) {
 	}
 	if _, _, err := net.SplitHostPort(cfg.ReceiverAddress); err != nil {
 		return Config{}, fmt.Errorf("receiver address: %w", err)
+	}
+	cfg.ReceiverTLSCertFile = strings.TrimSpace(cfg.ReceiverTLSCertFile)
+	cfg.ReceiverTLSKeyFile = strings.TrimSpace(cfg.ReceiverTLSKeyFile)
+	if (cfg.ReceiverTLSCertFile == "") != (cfg.ReceiverTLSKeyFile == "") {
+		return Config{}, fmt.Errorf("receiver TLS certificate and key must be provided together")
+	}
+	if cfg.ReceiverUseTLS && cfg.ReceiverTLSCertFile == "" {
+		return Config{}, fmt.Errorf("receiver TLS certificate and key are required when receiver TLS is enabled")
 	}
 	additional, err := normalizeAdditionalAETitles(cfg.LocalAETitle, cfg.AdditionalAETitles)
 	if err != nil {

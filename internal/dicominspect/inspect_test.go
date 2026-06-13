@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/ThalesMMS/Go-PACS/internal/testutil"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/object"
@@ -84,23 +85,23 @@ func hasElement(elements []ElementSummary, tag, keyword, value string) bool {
 func testPart10File(t *testing.T) []byte {
 	t.Helper()
 	dataset := []core.Element{
-		stringElement(tagSOPClassUID, core.VRUI, "1.2.840.10008.5.1.4.1.1.2"),
-		stringElement(tagSOPInstanceUID, core.VRUI, "1.2.826.0.1.3680043.10.543.1001"),
-		stringElement(tagPatientName, core.VRPN, "PORT^PATIENT"),
-		stringElement(tagPatientID, core.VRLO, "PORT001"),
-		stringElement(tagPatientBirthDate, core.VRDA, "19700102"),
-		stringElement(tagInstitutionName, core.VRLO, "General Hospital"),
-		stringElement(tagStudyDate, core.VRDA, "20260604"),
-		stringElement(tagStudyTime, core.VRTM, "134501"),
-		stringElement(core.NewTag(0x0008, 0x0021), core.VRDA, "20260605"),
-		stringElement(core.NewTag(0x0008, 0x0031), core.VRTM, "140102"),
-		stringElement(tagModality, core.VRCS, "CT"),
-		stringElement(tagAccessionNumber, core.VRSH, "ACC-001"),
-		stringElement(tagSeriesDescription, core.VRLO, "Axial"),
-		stringElement(tagStudyInstanceUID, core.VRUI, "1.2.826.0.1.3680043.10.543.2001"),
-		stringElement(tagSeriesUID, core.VRUI, "1.2.826.0.1.3680043.10.543.3001"),
-		stringElement(tagSeriesNumber, core.VRIS, "7"),
-		stringElement(tagInstanceNumber, core.VRIS, "3"),
+		testutil.StringElement(tagSOPClassUID, core.VRUI, "1.2.840.10008.5.1.4.1.1.2"),
+		testutil.StringElement(tagSOPInstanceUID, core.VRUI, "1.2.826.0.1.3680043.10.543.1001"),
+		testutil.StringElement(tagPatientName, core.VRPN, "PORT^PATIENT"),
+		testutil.StringElement(tagPatientID, core.VRLO, "PORT001"),
+		testutil.StringElement(tagPatientBirthDate, core.VRDA, "19700102"),
+		testutil.StringElement(tagInstitutionName, core.VRLO, "General Hospital"),
+		testutil.StringElement(tagStudyDate, core.VRDA, "20260604"),
+		testutil.StringElement(tagStudyTime, core.VRTM, "134501"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0021), core.VRDA, "20260605"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0031), core.VRTM, "140102"),
+		testutil.StringElement(tagModality, core.VRCS, "CT"),
+		testutil.StringElement(tagAccessionNumber, core.VRSH, "ACC-001"),
+		testutil.StringElement(tagSeriesDescription, core.VRLO, "Axial"),
+		testutil.StringElement(tagStudyInstanceUID, core.VRUI, "1.2.826.0.1.3680043.10.543.2001"),
+		testutil.StringElement(tagSeriesUID, core.VRUI, "1.2.826.0.1.3680043.10.543.3001"),
+		testutil.StringElement(tagSeriesNumber, core.VRIS, "7"),
+		testutil.StringElement(tagInstanceNumber, core.VRIS, "3"),
 	}
 	file := &object.File{
 		Dataset:        object.FromElements(dataset, std.Dictionary),
@@ -111,11 +112,4 @@ func testPart10File(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
-}
-
-func stringElement(tag core.Tag, vr core.VR, value string) core.Element {
-	return core.Element{
-		Header: core.ElementHeader{Tag: tag, VR: vr},
-		Value:  core.StringValue{value},
-	}
 }

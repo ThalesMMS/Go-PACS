@@ -2089,6 +2089,106 @@ func TestQueryDateTimePresetRangeWithLastHoursRejectsInvalidHours(t *testing.T) 
 	}
 }
 
+func TestStudyQueryCriteriaWindowsSplitCrossingMidnightTimeRange(t *testing.T) {
+	criteria := query.Criteria{
+		PatientName:   "DOE^JANE",
+		StudyDateFrom: "20260603",
+		StudyDateTo:   "20260604",
+		StudyTimeFrom: "230000",
+		StudyTimeTo:   "010000",
+		MaxResults:    25,
+	}
+
+	got := studyQueryCriteriaWindows(criteria)
+	want := []query.Criteria{
+		{
+			PatientName:   "DOE^JANE",
+			StudyDateFrom: "20260603",
+			StudyDateTo:   "20260603",
+			StudyTimeFrom: "230000",
+			StudyTimeTo:   "235959",
+			MaxResults:    25,
+		},
+		{
+			PatientName:   "DOE^JANE",
+			StudyDateFrom: "20260604",
+			StudyDateTo:   "20260604",
+			StudyTimeFrom: "000000",
+			StudyTimeTo:   "010000",
+			MaxResults:    25,
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("studyQueryCriteriaWindows() = %#v, want %#v", got, want)
+	}
+}
+
+func TestStudyQueryCriteriaWindowsDoesNotSplitNonCrossingMultiDayTimeRange(t *testing.T) {
+	criteria := query.Criteria{
+		PatientName:   "DOE^JANE",
+		StudyDateFrom: "20260601",
+		StudyDateTo:   "20260604",
+		StudyTimeFrom: "080000",
+		StudyTimeTo:   "160000",
+		MaxResults:    25,
+	}
+
+	got := studyQueryCriteriaWindows(criteria)
+	want := []query.Criteria{criteria}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("studyQueryCriteriaWindows() = %#v, want %#v", got, want)
+	}
+}
+
+func TestStudyQueryCriteriaWindowsUseFullMiddleDays(t *testing.T) {
+	criteria := query.Criteria{
+		StudyDateFrom: "20260601",
+		StudyDateTo:   "20260604",
+		StudyTimeFrom: "230000",
+		StudyTimeTo:   "010000",
+	}
+
+	got := studyQueryCriteriaWindows(criteria)
+	want := []query.Criteria{
+		{StudyDateFrom: "20260601", StudyDateTo: "20260601", StudyTimeFrom: "230000", StudyTimeTo: "235959"},
+		{StudyDateFrom: "20260602", StudyDateTo: "20260603"},
+		{StudyDateFrom: "20260604", StudyDateTo: "20260604", StudyTimeFrom: "000000", StudyTimeTo: "010000"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("studyQueryCriteriaWindows() = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunStudyQueryCriteriaWindowsMergesSplitWindowMatches(t *testing.T) {
+	source := nodes.Node{Name: "REMOTE", AETitle: "REMOTE", Host: "127.0.0.1", Port: 104}
+	criteria := query.Criteria{
+		StudyDateFrom: "20260603",
+		StudyDateTo:   "20260604",
+		StudyTimeFrom: "230000",
+		StudyTimeTo:   "010000",
+	}
+	var calls []query.Criteria
+
+	result, err := runStudyQueryCriteriaWindowsWithFind(context.Background(), source, studyQueryCriteriaWindows(criteria), "LOCAL", func(_ context.Context, _ nodes.Node, criteria query.Criteria, _ string) (query.Result, error) {
+		calls = append(calls, criteria)
+		if criteria.StudyTimeFrom > criteria.StudyTimeTo {
+			t.Fatalf("emitted inverted StudyTime range %q-%q", criteria.StudyTimeFrom, criteria.StudyTimeTo)
+		}
+		return query.Result{Matches: []query.Match{{StudyDate: criteria.StudyDateFrom}}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("C-FIND calls = %d (%#v), want 2", len(calls), calls)
+	}
+	gotDates := []string{result.Matches[0].StudyDate, result.Matches[1].StudyDate}
+	wantDates := []string{"20260603", "20260604"}
+	if !slices.Equal(gotDates, wantDates) {
+		t.Fatalf("merged match dates = %#v, want %#v", gotDates, wantDates)
+	}
+}
+
 func TestQueryActionButtonLabelsMatchWorkbenchActionBar(t *testing.T) {
 	labels := queryActionButtonLabels()
 	want := []string{"Query", "Query Patient", "Retrieve", "Verify"}
@@ -7294,7 +7394,14 @@ func TestNodeHeaderSortGlyphUsesTrailingHeaderSlot(t *testing.T) {
 }
 
 func TestNodeDraftFromFormStateMapsOperationalFields(t *testing.T) {
-	draft := nodeDraftFromFormState("pacs", "REMOTE", "localhost", 11112, false, true, "C-MOVE", false, nodes.SendTransferSyntaxExplicitVRLittleEndian, "LOCAL", "notes")
+	tlsSettings := nodeTLSSettingsState{
+		SkipVerify: true,
+		ServerName: "pacs.local",
+		CAFile:     "/tmp/ca.pem",
+		CertFile:   "/tmp/client.pem",
+		KeyFile:    "/tmp/client.key",
+	}
+	draft := nodeDraftFromFormState("pacs", "REMOTE", "localhost", 11112, false, true, "C-MOVE", false, nodes.SendTransferSyntaxExplicitVRLittleEndian, true, tlsSettings, "LOCAL", "notes")
 
 	if !draft.Disabled {
 		t.Fatalf("disabled checkbox state produced draft %+v", draft)
@@ -7310,6 +7417,12 @@ func TestNodeDraftFromFormStateMapsOperationalFields(t *testing.T) {
 	}
 	if draft.SendTransferSyntax != nodes.SendTransferSyntaxExplicitVRLittleEndian {
 		t.Fatalf("SendTransferSyntax = %q, want %q", draft.SendTransferSyntax, nodes.SendTransferSyntaxExplicitVRLittleEndian)
+	}
+	if !draft.UseTLS {
+		t.Fatal("UseTLS = false, want true")
+	}
+	if !draft.TLSSkipVerify || draft.TLSServerName != "pacs.local" || draft.TLSCAFile != "/tmp/ca.pem" || draft.TLSCertFile != "/tmp/client.pem" || draft.TLSKeyFile != "/tmp/client.key" {
+		t.Fatalf("TLS settings = %+v", draft)
 	}
 	if draft.Name != "pacs" || draft.AETitle != "REMOTE" || draft.Host != "localhost" || draft.Port != 11112 || draft.PreferredMoveDestination != "LOCAL" || draft.Notes != "notes" {
 		t.Fatalf("draft fields = %+v", draft)
@@ -7344,10 +7457,11 @@ func TestNodeDialogFormItemsUseReferenceFieldLabels(t *testing.T) {
 	}
 }
 
-func TestNodeTLSControlsExposeDisabledTLSAffordance(t *testing.T) {
+func TestNodeTLSControlsExposeEnabledTLSAffordance(t *testing.T) {
 	fynetest.NewApp()
 
-	controls := newNodeTLSControls()
+	tls := widget.NewCheck("Use TLS", nil)
+	controls := newNodeTLSControls(tls, nil)
 	texts := collectWidgetTexts(controls)
 	if !slices.Contains(texts, "Use TLS") || !slices.Contains(texts, "TLS Settings") {
 		t.Fatalf("TLS controls texts = %#v", texts)
@@ -7356,15 +7470,15 @@ func TestNodeTLSControlsExposeDisabledTLSAffordance(t *testing.T) {
 	if tlsCheck == nil {
 		t.Fatal("node TLS controls should expose a Use TLS checkbox")
 	}
-	if !tlsCheck.Disabled() {
-		t.Fatal("node TLS checkbox should stay disabled until TLS support exists")
+	if tlsCheck.Disabled() {
+		t.Fatal("node TLS checkbox should be enabled when DIMSE TLS support exists")
 	}
 	settings := findButtonWithText(controls, "TLS Settings")
 	if settings == nil {
 		t.Fatal("node TLS controls should expose TLS Settings")
 	}
-	if !settings.Disabled() {
-		t.Fatal("node TLS Settings should stay disabled until TLS support exists")
+	if settings.Disabled() {
+		t.Fatal("node TLS Settings should be enabled when DIMSE TLS support exists")
 	}
 }
 
@@ -7459,19 +7573,30 @@ func TestToggleNodeOperationalCellCyclesAndPersistsRetrieveMethod(t *testing.T) 
 	}
 }
 
-func TestToggleNodeOperationalCellIgnoresNonEditableColumns(t *testing.T) {
-	state := &uiState{nodes: []nodes.Node{{Name: "radiant"}}}
-
-	changed, err := toggleNodeOperationalCell(state, 0, nodeTableColumnTLS)
-
+func TestToggleNodeOperationalCellPersistsTLS(t *testing.T) {
+	store := nodes.NewStore(filepath.Join(t.TempDir(), "nodes.json"))
+	node, err := store.Add(nodes.Draft{Name: "radiant", AETitle: "RADIANT", Host: "localhost", Port: 11112})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed {
-		t.Fatal("TLS column should not toggle without TLS support")
+	state := &uiState{nodeStore: store, nodes: []nodes.Node{node}}
+
+	changed, err := toggleNodeOperationalCell(state, 0, nodeTableColumnTLS)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if state.nodes[0].Disabled || state.nodes[0].QueryDisabled || state.nodes[0].SendDisabled || state.nodes[0].RetrieveMethod != "" {
-		t.Fatalf("node changed = %+v", state.nodes[0])
+	if !changed {
+		t.Fatal("TLS column toggle did not report change")
+	}
+	if !state.nodes[0].UseTLS {
+		t.Fatal("UseTLS = false, want true")
+	}
+	list, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || !list[0].UseTLS {
+		t.Fatalf("persisted nodes = %+v, want UseTLS", list)
 	}
 }
 
@@ -7889,6 +8014,39 @@ func TestReceiverAddressFromPartsValidatesAndJoins(t *testing.T) {
 	}
 }
 
+func TestParsePortRejectsInvalidValuesBeforeUint16Conversion(t *testing.T) {
+	tests := []struct {
+		value   string
+		want    uint16
+		wantErr bool
+	}{
+		{value: "-5", wantErr: true},
+		{value: "0", wantErr: true},
+		{value: "65536", wantErr: true},
+		{value: "not-a-port", wantErr: true},
+		{value: "1", want: 1},
+		{value: "65535", want: 65535},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := parsePort(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parsePort(%q) error = nil, want error", tt.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parsePort(%q) error = %v", tt.value, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parsePort(%q) = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestListenerAddressSummaryTextShowsCommaSeparatedAdvertisedAddresses(t *testing.T) {
 	summary := listenerAddressSummaryText([]string{"192.168.100.10", "10.0.0.5"}, "11113")
 
@@ -7954,7 +8112,7 @@ func TestNewListenerAddressSummaryEntryIsReadOnly(t *testing.T) {
 		t.Fatalf("entry text = %q", entry.Text)
 	}
 	if !entry.Disabled() {
-		t.Fatal("address summary entry should be read-only until address override editing is implemented")
+		t.Fatal("address summary entry should stay read-only")
 	}
 }
 
@@ -7967,44 +8125,20 @@ func TestNewListenerHostNameControlsExposeReadOnlyHostName(t *testing.T) {
 		t.Fatalf("host name text = %q, want trimmed host name", hostName.Text)
 	}
 	if !hostName.Disabled() {
-		t.Fatal("host name entry should be read-only until editing is implemented")
+		t.Fatal("host name entry should stay read-only")
 	}
-	if editButton.Text != "Edit" {
-		t.Fatalf("edit button text = %q, want Edit", editButton.Text)
-	}
-	if !editButton.Disabled() {
-		t.Fatal("host name edit button should be disabled until editing is implemented")
+	if editButton != nil {
+		t.Fatal("host name edit button should be omitted when no edit flow exists")
 	}
 }
 
-func TestNewListenerAddressEditButtonIsDisabledAffordance(t *testing.T) {
+func TestListenerAddressActionControlsOmitDeadEditAffordance(t *testing.T) {
 	fynetest.NewApp()
-
-	editButton := newListenerAddressEditButton()
-
-	if editButton.Text != "Edit" {
-		t.Fatalf("edit button text = %q, want Edit", editButton.Text)
-	}
-	if !editButton.Disabled() {
-		t.Fatal("address edit button should stay disabled until address override editing is implemented")
-	}
-}
-
-func TestListenerSettingsActionButtonsUseReferenceSlots(t *testing.T) {
-	fynetest.NewApp()
-
-	editSlot := listenerSettingsActionButtonSlot(newListenerAddressEditButton())
-	if got := editSlot.MinSize().Width; got != 62 {
-		t.Fatalf("listener settings edit slot width = %.0f, want 62", got)
-	}
 
 	copyButton := compactToolbarButton("Copy", theme.ContentCopyIcon(), nil)
 	actions := newListenerAddressActionControls(copyButton)
-	if !findButtonSlotWithTextAndMinWidth(actions, "Edit", listenerSettingsActionButtonSlotWidth) {
-		t.Fatal("listener address Edit should sit in a stable action slot")
-	}
-	if findButtonWithText(actions, "Copy") != nil {
-		t.Fatal("listener address row should match the reference with only the Edit action visible")
+	if actions != nil {
+		t.Fatal("listener address row should omit the dead Edit action")
 	}
 }
 
@@ -8088,9 +8222,9 @@ func TestListenerAddressHostBindingItemsKeepReferenceOrder(t *testing.T) {
 	fynetest.NewApp()
 
 	items := newListenerAddressHostBindingItems(
-		container.NewHBox(widget.NewButton("Edit", nil)),
+		nil,
 		widget.NewEntry(),
-		widget.NewButton("Host Edit", nil),
+		nil,
 		widget.NewEntry(),
 		widget.NewAccordion(widget.NewAccordionItem(listenerAdvancedBindingTitle, widget.NewLabel("advanced"))),
 	)
@@ -8116,9 +8250,9 @@ func TestListenerAddressHostBindingItemsUseReferenceEntrySlots(t *testing.T) {
 	hostNameEntry := widget.NewEntry()
 	hostNameEntry.SetText("Thaless-Mac-mini.local")
 	items := newListenerAddressHostBindingItems(
-		container.NewHBox(widget.NewButton("Edit", nil)),
+		nil,
 		addressEntry,
-		widget.NewButton("Host Edit", nil),
+		nil,
 		hostNameEntry,
 		widget.NewAccordion(widget.NewAccordionItem(listenerAdvancedBindingTitle, widget.NewLabel("advanced"))),
 	)
@@ -8129,11 +8263,11 @@ func TestListenerAddressHostBindingItemsUseReferenceEntrySlots(t *testing.T) {
 	if !findEntrySlotWithTextAndMinWidth(items[1].Widget, hostNameEntry.Text, 760) {
 		t.Fatal("Host Name entry should sit in a long stable reference-width slot")
 	}
-	if findButtonWithText(items[0].Widget, "Edit") == nil {
-		t.Fatal("Address(es) row should preserve its reference-visible Edit affordance")
+	if findButtonWithText(items[0].Widget, "Edit") != nil {
+		t.Fatal("Address(es) row should omit dead Edit affordance")
 	}
-	if findButtonWithText(items[1].Widget, "Host Edit") == nil {
-		t.Fatal("Host Name row should preserve its Edit affordance")
+	if findButtonWithText(items[1].Widget, "Host Edit") != nil {
+		t.Fatal("Host Name row should omit dead Edit affordance")
 	}
 }
 
@@ -8518,13 +8652,13 @@ func TestListenerAdvancedSafetyLimitsControlsDefaultCollapsed(t *testing.T) {
 func TestListenerTLSControlsUseReferenceSettingsSlot(t *testing.T) {
 	fynetest.NewApp()
 
-	check, settings, controls := newListenerTLSControls()
+	check, settings, controls := newListenerTLSControls(nil, nil)
 
 	if check.Text != "Activate DICOM TLS Listener" {
 		t.Fatalf("TLS listener check text = %q", check.Text)
 	}
-	if !check.Disabled() {
-		t.Fatal("TLS listener check should stay disabled until TLS support exists")
+	if check.Disabled() {
+		t.Fatal("TLS listener check should be enabled when listener TLS support exists")
 	}
 	if settings.Text != "TLS Settings" {
 		t.Fatalf("TLS settings button text = %q", settings.Text)
@@ -8532,8 +8666,8 @@ func TestListenerTLSControlsUseReferenceSettingsSlot(t *testing.T) {
 	if settings.Icon != nil {
 		t.Fatal("TLS Settings should be a text-only listener action like the reference")
 	}
-	if !settings.Disabled() {
-		t.Fatal("TLS settings button should stay disabled until TLS support exists")
+	if settings.Disabled() {
+		t.Fatal("TLS settings button should be enabled when listener TLS support exists")
 	}
 	if !findButtonSlotWithTextAndMinWidth(controls, "TLS Settings", listenerTLSSettingsButtonSlotWidth) {
 		t.Fatal("TLS Settings should sit in a stable reference-width slot")
@@ -8543,7 +8677,7 @@ func TestListenerTLSControlsUseReferenceSettingsSlot(t *testing.T) {
 func TestListenerTLSSectionAvoidsExtraFormLabel(t *testing.T) {
 	fynetest.NewApp()
 
-	_, _, controls := newListenerTLSControls()
+	_, _, controls := newListenerTLSControls(nil, nil)
 	section := newListenerTLSSection(controls)
 	texts := collectWidgetTexts(section)
 
@@ -9874,6 +10008,112 @@ func TestDeleteSelectedStudyRemovesStudyAndRefreshesArchive(t *testing.T) {
 	}
 	if len(studies) != 1 || studies[0].StudyInstanceUID != keepStudyUID {
 		t.Fatalf("catalog studies after delete = %#v", studies)
+	}
+}
+
+func TestDeleteSelectedStudyRemovesDisplayedMissingStudy(t *testing.T) {
+	fynetest.NewApp()
+	ctx := context.Background()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	missingStudyUID := "(missing)"
+	seriesUID := "1.2.3.missing.series"
+	sopUID := "1.2.3.missing.instance"
+	importTestArchiveObject(t, catalog, "network://missing", "MISSING^TARGET", "M001", "CT", "", seriesUID, sopUID)
+
+	status := widget.NewLabel("")
+	state := &uiState{
+		catalog:             catalog,
+		studies:             []archive.Study{{StudyInstanceUID: missingStudyUID, StudyDescription: "Missing UID"}},
+		selectedStudyRow:    0,
+		series:              []archive.Series{{StudyInstanceUID: missingStudyUID, SeriesInstanceUID: seriesUID}},
+		selectedSeriesRow:   0,
+		instances:           []archive.Instance{{StudyInstanceUID: missingStudyUID, SeriesInstanceUID: seriesUID, SOPInstanceUID: sopUID}},
+		selectedInstanceRow: 0,
+		archiveSummary:      widget.NewLabel("old summary"),
+		archiveSeriesByStudy: map[string][]archive.Series{
+			missingStudyUID: {{StudyInstanceUID: missingStudyUID, SeriesInstanceUID: seriesUID}},
+		},
+		archiveInstancesBySeries: map[string][]archive.Instance{
+			seriesUID: {{StudyInstanceUID: missingStudyUID, SeriesInstanceUID: seriesUID, SOPInstanceUID: sopUID}},
+		},
+		collapsedArchiveStudies: map[string]bool{missingStudyUID: true},
+		collapsedArchiveSeries:  map[string]bool{seriesUID: true},
+	}
+	tables := archiveTables{
+		studies:   widget.NewTable(func() (int, int) { return 1, 1 }, func() fyne.CanvasObject { return widget.NewLabel("") }, func(widget.TableCellID, fyne.CanvasObject) {}),
+		series:    widget.NewTable(func() (int, int) { return 1, 1 }, func() fyne.CanvasObject { return widget.NewLabel("") }, func(widget.TableCellID, fyne.CanvasObject) {}),
+		instances: widget.NewTable(func() (int, int) { return 1, 1 }, func() fyne.CanvasObject { return widget.NewLabel("") }, func(widget.TableCellID, fyne.CanvasObject) {}),
+	}
+
+	deleted, err := deleteSelectedStudy(ctx, status, tables, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	if len(state.studies) != 0 {
+		t.Fatalf("studies after delete = %#v", state.studies)
+	}
+	if state.selectedStudyRow != -1 || state.selectedSeriesRow != -1 || state.selectedInstanceRow != -1 {
+		t.Fatalf("selection after delete = study %d series %d instance %d", state.selectedStudyRow, state.selectedSeriesRow, state.selectedInstanceRow)
+	}
+	if _, ok := state.archiveSeriesByStudy[missingStudyUID]; ok {
+		t.Fatalf("archiveSeriesByStudy still has missing study key: %#v", state.archiveSeriesByStudy)
+	}
+	if _, ok := state.archiveInstancesBySeries[seriesUID]; ok {
+		t.Fatalf("archiveInstancesBySeries still has deleted series key: %#v", state.archiveInstancesBySeries)
+	}
+	if state.collapsedArchiveStudies[missingStudyUID] || state.collapsedArchiveSeries[seriesUID] {
+		t.Fatalf("collapsed archive state still references deleted study: studies=%#v series=%#v", state.collapsedArchiveStudies, state.collapsedArchiveSeries)
+	}
+	if status.Text != "Deleted study (missing) (1 object)" {
+		t.Fatalf("status = %q", status.Text)
+	}
+	instances, err := catalog.InstancesForStudy(ctx, missingStudyUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 0 {
+		t.Fatalf("catalog missing-study instances after delete = %#v", instances)
+	}
+}
+
+func TestDeleteSelectedStudyReportsNoOpWithoutSuccess(t *testing.T) {
+	fynetest.NewApp()
+	ctx := context.Background()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	status := widget.NewLabel("Ready")
+	state := &uiState{
+		catalog:          catalog,
+		studies:          []archive.Study{{StudyInstanceUID: "1.2.3.stale", StudyDescription: "Stale"}},
+		selectedStudyRow: 0,
+		archiveSummary:   widget.NewLabel("old summary"),
+	}
+
+	deleted, err := deleteSelectedStudy(ctx, status, archiveTables{}, state)
+	if err == nil {
+		t.Fatal("deleteSelectedStudy returned nil error for a no-op delete")
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", deleted)
+	}
+	if strings.Contains(status.Text, "Deleted study") {
+		t.Fatalf("status reports success for no-op delete: %q", status.Text)
+	}
+	if len(state.studies) != 1 || state.studies[0].StudyInstanceUID != "1.2.3.stale" {
+		t.Fatalf("studies after no-op delete = %#v", state.studies)
 	}
 }
 
@@ -13485,9 +13725,9 @@ func TestNodeSendSyntaxTableCellShowsBlankAutoLikeReference(t *testing.T) {
 	}
 }
 
-func TestNodeTLSTableCellUsesDisabledNativeDropdown(t *testing.T) {
+func TestNodeTLSTableCellUsesEnabledNativeDropdown(t *testing.T) {
 	cell := newNodeTableCell()
-	dropdown, value := nodeDropdownState(nodes.Node{}, nodeTableColumnTLS)
+	dropdown, value := nodeDropdownState(nodes.Node{UseTLS: true}, nodeTableColumnTLS)
 
 	if !dropdown {
 		t.Fatal("TLS node cell should use the native dropdown affordance from the reference")
@@ -13497,14 +13737,14 @@ func TestNodeTLSTableCellUsesDisabledNativeDropdown(t *testing.T) {
 	if !cell.retrieveSelect.Visible() {
 		t.Fatal("TLS node cell should show native dropdown")
 	}
-	if !slices.Equal(cell.retrieveSelect.Options, []string{"No"}) {
-		t.Fatalf("TLS dropdown options = %v, want [No]", cell.retrieveSelect.Options)
+	if !slices.Equal(cell.retrieveSelect.Options, []string{"No", "Yes"}) {
+		t.Fatalf("TLS dropdown options = %v, want [No Yes]", cell.retrieveSelect.Options)
 	}
-	if cell.retrieveSelect.Selected != "No" {
-		t.Fatalf("TLS dropdown selected = %q, want No", cell.retrieveSelect.Selected)
+	if cell.retrieveSelect.Selected != "Yes" {
+		t.Fatalf("TLS dropdown selected = %q, want Yes", cell.retrieveSelect.Selected)
 	}
-	if !cell.retrieveSelect.Disabled() {
-		t.Fatal("TLS dropdown should stay disabled until DIMSE TLS is implemented")
+	if cell.retrieveSelect.Disabled() {
+		t.Fatal("TLS dropdown should be enabled when DIMSE TLS is implemented")
 	}
 }
 

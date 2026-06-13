@@ -188,10 +188,15 @@ func retrieveWithMove(ctx context.Context, node nodes.Node, identifier *object.O
 
 	address := net.JoinHostPort(node.Host, strconv.Itoa(int(node.Port)))
 	start := time.Now()
+	tlsConfig, err := netverify.TLSConfigForNode(node)
+	if err != nil {
+		return Outcome{}, err
+	}
 	assoc, err := ul.DialContext(moveCtx, address, ul.DialOptions{
 		CalledAETitle:  node.AETitle,
 		CallingAETitle: opts.CallingAETitle,
 		Contexts:       []ul.PresentationContext{dimse.StudyRootMovePresentationContext()},
+		TLSConfig:      tlsConfig,
 	})
 	if err != nil {
 		return Outcome{}, fmt.Errorf("associate with %s (%s): %w", node.Name, address, err)
@@ -208,6 +213,7 @@ func retrieveWithMove(ctx context.Context, node nodes.Node, identifier *object.O
 		return Outcome{}, fmt.Errorf("no accepted Study Root MOVE presentation context: %w", err)
 	}
 
+	receiverBefore := receiver.Snapshot()
 	progress, err := dimse.SendCMoveWithProgress(moveCtx, assoc, pc.ID, dimse.CMoveRequest{
 		AffectedSOPClassUID: dimse.StudyRootMoveSOPClassUID,
 		MessageID:           1,
@@ -247,7 +253,7 @@ func retrieveWithMove(ctx context.Context, node nodes.Node, identifier *object.O
 	outcome := outcomeFromResponse(final)
 	outcome.Progress = updates
 	outcome.Duration = time.Since(start)
-	outcome.Receiver = receiver.Snapshot()
+	outcome.Receiver = receiverSnapshotDelta(receiverBefore, receiver.Snapshot())
 	outcome.Stored = outcome.Receiver.Stored
 	outcome.Duplicates = outcome.Receiver.Duplicates
 	switch outcome.StatusClass {
@@ -269,7 +275,26 @@ func shouldTryGetFallback(ctx context.Context, catalog *archive.Catalog, moveOut
 	if moveOutcome.StatusClass == dimse.CMoveStatusSuccess || moveOutcome.StatusClass == dimse.CMoveStatusWarning {
 		return false
 	}
-	return moveOutcome.Receiver.Stored+moveOutcome.Receiver.Duplicates == 0
+	return moveOutcome.Stored+moveOutcome.Duplicates == 0
+}
+
+func receiverSnapshotDelta(before receive.Snapshot, after receive.Snapshot) receive.Snapshot {
+	return receive.Snapshot{
+		Address:      after.Address,
+		AETitle:      after.AETitle,
+		Associations: counterDelta(before.Associations, after.Associations),
+		Rejected:     counterDelta(before.Rejected, after.Rejected),
+		Stored:       counterDelta(before.Stored, after.Stored),
+		Duplicates:   counterDelta(before.Duplicates, after.Duplicates),
+		Failed:       counterDelta(before.Failed, after.Failed),
+	}
+}
+
+func counterDelta(before int64, after int64) int64 {
+	if after <= before {
+		return 0
+	}
+	return after - before
 }
 
 func retrieveWithGet(ctx context.Context, catalog *archive.Catalog, node nodes.Node, identifier *object.Object, opts Options) (Outcome, error) {
@@ -282,11 +307,16 @@ func retrieveWithGet(ctx context.Context, catalog *archive.Catalog, node nodes.N
 	contexts, roles := cGetPresentationContexts()
 	address := net.JoinHostPort(node.Host, strconv.Itoa(int(node.Port)))
 	start := time.Now()
+	tlsConfig, err := netverify.TLSConfigForNode(node)
+	if err != nil {
+		return Outcome{}, err
+	}
 	assoc, err := ul.DialContext(getCtx, address, ul.DialOptions{
 		CalledAETitle:  node.AETitle,
 		CallingAETitle: opts.CallingAETitle,
 		Contexts:       contexts,
 		RoleSelections: roles,
+		TLSConfig:      tlsConfig,
 	})
 	if err != nil {
 		return Outcome{}, fmt.Errorf("associate C-GET with %s (%s): %w", node.Name, address, err)

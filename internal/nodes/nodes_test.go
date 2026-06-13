@@ -1,7 +1,11 @@
 package nodes
 
 import (
+	"errors"
+	"net"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +61,84 @@ func TestNewNodeCanDisableQueryAndSend(t *testing.T) {
 	}
 	if node.SendEnabled() {
 		t.Fatal("send-disabled draft produced send-enabled node")
+	}
+}
+
+func TestRemoteHostAllowlistResolvesHostnameNodes(t *testing.T) {
+	nodeList := []Node{
+		{Name: "literal", Host: "192.0.2.10"},
+		{Name: "hostname", Host: "pacs.example.test"},
+		{Name: "duplicate", Host: "192.0.2.10"},
+	}
+
+	got := remoteHostAllowlist(nodeList, func(host string) ([]net.IP, error) {
+		if host != "pacs.example.test" {
+			t.Fatalf("resolver called for %q, want hostname only", host)
+		}
+		return []net.IP{net.ParseIP("192.0.2.20"), net.ParseIP("2001:db8::20")}, nil
+	})
+	want := []string{"192.0.2.10", "192.0.2.20", "2001:db8::20"}
+	if !slices.Equal(got.Hosts, want) {
+		t.Fatalf("RemoteHostAllowlist hosts = %#v, want %#v", got.Hosts, want)
+	}
+	if len(got.Warnings) != 0 {
+		t.Fatalf("RemoteHostAllowlist warnings = %#v, want none", got.Warnings)
+	}
+}
+
+func TestRemoteHostAllowlistSkipsUnresolvedHostname(t *testing.T) {
+	nodeList := []Node{
+		{Name: "literal", Host: "192.0.2.10"},
+		{Name: "hostname", Host: "missing.example.test"},
+	}
+	got := remoteHostAllowlist(nodeList, func(string) ([]net.IP, error) {
+		return nil, errors.New("no such host")
+	})
+	want := []string{"192.0.2.10"}
+	if !slices.Equal(got.Hosts, want) {
+		t.Fatalf("RemoteHostAllowlist hosts = %#v, want %#v", got.Hosts, want)
+	}
+	if len(got.Warnings) != 1 {
+		t.Fatalf("RemoteHostAllowlist warnings = %#v, want one warning", got.Warnings)
+	}
+	if !strings.Contains(got.Warnings[0], "missing.example.test") || !strings.Contains(got.Warnings[0], "no such host") {
+		t.Fatalf("RemoteHostAllowlist warning = %q, want hostname and resolver error", got.Warnings[0])
+	}
+}
+
+func TestNewNodeStoresTLSSettings(t *testing.T) {
+	node, err := NewNode(Draft{
+		Name:          "pacs",
+		AETitle:       "PACS",
+		Host:          "localhost",
+		Port:          11112,
+		UseTLS:        true,
+		TLSSkipVerify: true,
+		TLSServerName: " pacs.local ",
+		TLSCAFile:     " /tmp/ca.pem ",
+		TLSCertFile:   " /tmp/client.pem ",
+		TLSKeyFile:    " /tmp/client.key ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.UseTLS {
+		t.Fatal("UseTLS = false, want true")
+	}
+	if !node.TLSSkipVerify {
+		t.Fatal("TLSSkipVerify = false, want true")
+	}
+	if node.TLSServerName != "pacs.local" || node.TLSCAFile != "/tmp/ca.pem" || node.TLSCertFile != "/tmp/client.pem" || node.TLSKeyFile != "/tmp/client.key" {
+		t.Fatalf("TLS fields = %+v", node)
+	}
+}
+
+func TestNewNodeRejectsPartialTLSClientCertificate(t *testing.T) {
+	if _, err := NewNode(Draft{Name: "pacs", AETitle: "PACS", Host: "localhost", Port: 11112, UseTLS: true, TLSCertFile: "/tmp/client.pem"}); err == nil {
+		t.Fatal("NewNode accepted TLS cert without key")
+	}
+	if _, err := NewNode(Draft{Name: "pacs", AETitle: "PACS", Host: "localhost", Port: 11112, UseTLS: true, TLSKeyFile: "/tmp/client.key"}); err == nil {
+		t.Fatal("NewNode accepted TLS key without cert")
 	}
 }
 

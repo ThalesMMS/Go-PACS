@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,12 @@ type Node struct {
 	SendDisabled             bool   `json:"sendDisabled,omitempty"`
 	RetrieveMethod           string `json:"retrieveMethod,omitempty"`
 	SendTransferSyntax       string `json:"sendTransferSyntax,omitempty"`
+	UseTLS                   bool   `json:"useTLS,omitempty"`
+	TLSSkipVerify            bool   `json:"tlsSkipVerify,omitempty"`
+	TLSServerName            string `json:"tlsServerName,omitempty"`
+	TLSCAFile                string `json:"tlsCAFile,omitempty"`
+	TLSCertFile              string `json:"tlsCertFile,omitempty"`
+	TLSKeyFile               string `json:"tlsKeyFile,omitempty"`
 	PreferredMoveDestination string `json:"preferredMoveDestination,omitempty"`
 	Notes                    string `json:"notes,omitempty"`
 	CreatedAt                string `json:"createdAt"`
@@ -39,6 +46,12 @@ type Draft struct {
 	SendDisabled             bool
 	RetrieveMethod           string
 	SendTransferSyntax       string
+	UseTLS                   bool
+	TLSSkipVerify            bool
+	TLSServerName            string
+	TLSCAFile                string
+	TLSCertFile              string
+	TLSKeyFile               string
 	PreferredMoveDestination string
 	Notes                    string
 }
@@ -193,6 +206,11 @@ func NewNode(draft Draft) (Node, error) {
 	if err != nil {
 		return Node{}, err
 	}
+	tlsCertFile := strings.TrimSpace(draft.TLSCertFile)
+	tlsKeyFile := strings.TrimSpace(draft.TLSKeyFile)
+	if (tlsCertFile == "") != (tlsKeyFile == "") {
+		return Node{}, errors.New("TLS client certificate and key must be provided together")
+	}
 
 	if name == "" {
 		return Node{}, errors.New("node name cannot be empty")
@@ -223,6 +241,12 @@ func NewNode(draft Draft) (Node, error) {
 		SendDisabled:             draft.SendDisabled,
 		RetrieveMethod:           retrieveMethod,
 		SendTransferSyntax:       sendTransferSyntax,
+		UseTLS:                   draft.UseTLS,
+		TLSSkipVerify:            draft.TLSSkipVerify,
+		TLSServerName:            strings.TrimSpace(draft.TLSServerName),
+		TLSCAFile:                strings.TrimSpace(draft.TLSCAFile),
+		TLSCertFile:              tlsCertFile,
+		TLSKeyFile:               tlsKeyFile,
 		PreferredMoveDestination: moveDestination,
 		Notes:                    strings.TrimSpace(draft.Notes),
 		CreatedAt:                now,
@@ -256,6 +280,58 @@ func (n Node) SendTransferSyntaxOrDefault() string {
 		return SendTransferSyntaxAuto
 	}
 	return syntax
+}
+
+type RemoteHostAllowlistResult struct {
+	Hosts    []string
+	Warnings []string
+}
+
+func RemoteHostAllowlist(nodeList []Node) RemoteHostAllowlistResult {
+	return remoteHostAllowlist(nodeList, net.LookupIP)
+}
+
+func remoteHostAllowlist(nodeList []Node, lookupIP func(string) ([]net.IP, error)) RemoteHostAllowlistResult {
+	if lookupIP == nil {
+		lookupIP = net.LookupIP
+	}
+	seen := map[string]bool{}
+	var result RemoteHostAllowlistResult
+	for _, node := range nodeList {
+		host := strings.Trim(strings.TrimSpace(node.Host), "[]")
+		if host == "" {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			result.Hosts = appendRemoteHost(result.Hosts, seen, ip)
+			continue
+		}
+		ips, err := lookupIP(host)
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("resolve node host %q: %v", host, err))
+			continue
+		}
+		if len(ips) == 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("resolve node host %q: no IP addresses", host))
+			continue
+		}
+		for _, ip := range ips {
+			result.Hosts = appendRemoteHost(result.Hosts, seen, ip)
+		}
+	}
+	return result
+}
+
+func appendRemoteHost(hosts []string, seen map[string]bool, ip net.IP) []string {
+	if ip == nil {
+		return hosts
+	}
+	host := ip.String()
+	if host == "<nil>" || seen[host] {
+		return hosts
+	}
+	seen[host] = true
+	return append(hosts, host)
 }
 
 func NormalizeNodeName(name string) string {

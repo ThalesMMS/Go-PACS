@@ -212,10 +212,15 @@ func find(ctx context.Context, node nodes.Node, callingAETitle string, model fin
 
 	address := net.JoinHostPort(node.Host, strconv.Itoa(int(node.Port)))
 	start := time.Now()
+	tlsConfig, err := netverify.TLSConfigForNode(node)
+	if err != nil {
+		return Result{}, err
+	}
 	assoc, err := ul.DialContext(ctx, address, ul.DialOptions{
 		CalledAETitle:  node.AETitle,
 		CallingAETitle: callingAETitle,
 		Contexts:       []ul.PresentationContext{model.presentationContext},
+		TLSConfig:      tlsConfig,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("associate with %s (%s): %w", node.Name, address, err)

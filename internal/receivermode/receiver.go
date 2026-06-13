@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"path/filepath"
 	"strings"
 	"time"
@@ -29,6 +28,7 @@ type Plan struct {
 	AllowedCalledAETitles  []string
 	AllowedCallingAETitles []string
 	AllowedRemoteHosts     []string
+	AllowlistWarnings      []string
 	MaxStoreObjectBytes    int64
 }
 
@@ -66,7 +66,9 @@ func PlanFromArchiveDir(opts Options) (Plan, error) {
 		return Plan{}, err
 	}
 	plan.AllowedCallingAETitles = configuredNodeAETitles(nodeList)
-	plan.AllowedRemoteHosts = configuredNodeIPHosts(nodeList)
+	remoteAllowlist := nodes.RemoteHostAllowlist(nodeList)
+	plan.AllowedRemoteHosts = remoteAllowlist.Hosts
+	plan.AllowlistWarnings = remoteAllowlist.Warnings
 	return plan, nil
 }
 
@@ -74,6 +76,11 @@ func Run(ctx context.Context, opts Options, out io.Writer) error {
 	plan, err := PlanFromArchiveDir(opts)
 	if err != nil {
 		return err
+	}
+	if out != nil {
+		for _, warning := range plan.AllowlistWarnings {
+			fmt.Fprintf(out, "Warning: %s\n", warning)
+		}
 	}
 	catalog, err := archive.Open(plan.ArchiveDir)
 	if err != nil {
@@ -121,23 +128,4 @@ func configuredNodeAETitles(nodeList []nodes.Node) []string {
 		aeTitles = append(aeTitles, aeTitle)
 	}
 	return aeTitles
-}
-
-func configuredNodeIPHosts(nodeList []nodes.Node) []string {
-	seen := map[string]bool{}
-	var hosts []string
-	for _, node := range nodeList {
-		host := strings.TrimSpace(node.Host)
-		ip := net.ParseIP(host)
-		if ip == nil {
-			continue
-		}
-		host = ip.String()
-		if seen[host] {
-			continue
-		}
-		seen[host] = true
-		hosts = append(hosts, host)
-	}
-	return hosts
 }

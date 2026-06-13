@@ -64,6 +64,9 @@ func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
 		LocalAETitle:                     " local ",
 		ReceiverAddress:                  "127.0.0.1:12345",
 		ReceiverAutoStart:                true,
+		ReceiverUseTLS:                   true,
+		ReceiverTLSCertFile:              " /tmp/receiver.crt ",
+		ReceiverTLSKeyFile:               " /tmp/receiver.key ",
 		AdditionalAETitles:               []string{" alias ", "LOCAL"},
 		ReceivePreferredTransferSyntax:   receive.PreferredTransferSyntaxExplicitVRLittleEndian,
 		DICOMCommunicationTimeoutSeconds: 55,
@@ -93,6 +96,9 @@ func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
 	}
 	if !loaded.ReceiverAutoStart {
 		t.Fatal("ReceiverAutoStart = false, want true")
+	}
+	if !loaded.ReceiverUseTLS || loaded.ReceiverTLSCertFile != "/tmp/receiver.crt" || loaded.ReceiverTLSKeyFile != "/tmp/receiver.key" {
+		t.Fatalf("receiver TLS config = use:%t cert:%q key:%q", loaded.ReceiverUseTLS, loaded.ReceiverTLSCertFile, loaded.ReceiverTLSKeyFile)
 	}
 	if got, want := loaded.AdditionalAETitles, []string{"ALIAS"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("AdditionalAETitles = %#v, want %#v", got, want)

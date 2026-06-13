@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ThalesMMS/Go-PACS/internal/testutil"
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/object"
@@ -249,6 +251,68 @@ func TestDeleteStudyRemovesInstancesMetadataAndObjectFiles(t *testing.T) {
 	}
 }
 
+func TestDeleteStudyRemovesMissingStudyUIDInstances(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "missing-study.dcm"), testPart10FileWithDetails(t, "MISSING^STUDY", "M001", "CT", "", "1.2.3.missing.series", "1.2.3.missing.instance", "1", "Missing Study", "1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.SetStudyMetadata(ctx, "(missing)", StudyMetadata{Status: "Reviewed", Comments: "Missing UID bucket"}); err != nil {
+		t.Fatal(err)
+	}
+
+	instances, err := catalog.InstancesForStudy(ctx, "(missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("InstancesForStudy(missing) returned %d instances, want 1", len(instances))
+	}
+	storedPath := instances[0].StoredPath
+
+	deleted, err := catalog.DeleteStudy(ctx, "(missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("DeleteStudy deleted = %d, want 1", deleted)
+	}
+
+	instances, err = catalog.InstancesForStudy(ctx, "(missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 0 {
+		t.Fatalf("missing study instances after delete = %#v", instances)
+	}
+	if _, err := os.Stat(storedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing study object %q exists after delete: %v", storedPath, err)
+	}
+	metadata, err := catalog.StudyMetadata(ctx, "(missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Status != "" || metadata.Comments != "" {
+		t.Fatalf("metadata after delete = %#v", metadata)
+	}
+	studies, err := catalog.Studies(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies) != 0 {
+		t.Fatalf("studies after delete = %#v", studies)
+	}
+}
+
 func TestStudyExistsDetectsImportedStudyUID(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
@@ -318,6 +382,267 @@ func TestCatalogTracksSchemaMigrations(t *testing.T) {
 	}
 	if len(migrations) != 1 {
 		t.Fatalf("len(migrations) after reopen = %d, want 1", len(migrations))
+	}
+}
+
+func TestCatalogSchemaCreatesSHA256Index(t *testing.T) {
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	if !catalogHasIndex(t, catalog, "idx_instances_sha256") {
+		t.Fatal("instances sha256 index not found")
+	}
+}
+
+func TestCatalogSchemaCreatesSOPInstanceUIDIndex(t *testing.T) {
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	if !catalogHasIndex(t, catalog, "idx_instances_sop") {
+		t.Fatal("instances SOP instance UID index not found")
+	}
+}
+
+func TestCatalogSchemaCreatesPatientSoundexTable(t *testing.T) {
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	if !catalogHasTable(t, catalog, "instance_patient_soundex") {
+		t.Fatal("instance_patient_soundex table not found")
+	}
+	if !catalogHasIndexOnTable(t, catalog, "instance_patient_soundex", "idx_instance_patient_soundex_code") {
+		t.Fatal("instance_patient_soundex code index not found")
+	}
+}
+
+func TestCatalogSchemaCreatesCaseInsensitiveStudyFilterIndexes(t *testing.T) {
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	if !catalogHasIndex(t, catalog, "idx_instances_modality_nocase") {
+		t.Fatal("modality NOCASE index not found")
+	}
+}
+
+func catalogHasIndex(t testing.TB, catalog *Catalog, name string) bool {
+	t.Helper()
+	return catalogHasIndexOnTable(t, catalog, "instances", name)
+}
+
+func catalogHasIndexOnTable(t testing.TB, catalog *Catalog, table string, name string) bool {
+	t.Helper()
+	rows, err := catalog.db.Query(`PRAGMA index_list('` + table + `')`)
+	if err != nil {
+		t.Fatalf("query index list: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var seq, unique, partial int
+		var indexName, origin string
+		if err := rows.Scan(&seq, &indexName, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index list: %v", err)
+		}
+		if indexName == name {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate index list: %v", err)
+	}
+	return false
+}
+
+func catalogHasTable(t testing.TB, catalog *Catalog, name string) bool {
+	t.Helper()
+	var found string
+	err := catalog.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		return false
+	}
+	return found == name
+}
+
+func TestCatalogUIDLookupsPreserveMissingSentinel(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	if err := catalog.upsertInstance(ctx, Instance{
+		SHA256:     "missing-uids",
+		StoredPath: "objects/missing.dcm",
+		SourcePath: "missing.dcm",
+		FileSize:   1,
+		ImportedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	studyInstances, err := catalog.InstancesForStudy(ctx, "(missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studyInstances) != 1 {
+		t.Fatalf("InstancesForStudy(missing) returned %d instances, want 1", len(studyInstances))
+	}
+
+	series, err := catalog.SeriesForStudy(ctx, "(missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series) != 1 || series[0].SeriesInstanceUID != "(missing)" {
+		t.Fatalf("SeriesForStudy(missing) = %#v, want one missing series", series)
+	}
+
+	seriesInstances, err := catalog.InstancesForSeries(ctx, "(missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seriesInstances) != 1 {
+		t.Fatalf("InstancesForSeries(missing) returned %d instances, want 1", len(seriesInstances))
+	}
+
+	instance, err := catalog.InstanceBySOPInstanceUID(ctx, "(missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.SHA256 != "missing-uids" {
+		t.Fatalf("InstanceBySOPInstanceUID(missing) = %#v", instance)
+	}
+}
+
+func TestCatalogBackfillsPatientSoundexCodes(t *testing.T) {
+	ctx := context.Background()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	catalog, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "one.dcm"), testPart10File(t, "SOUNDEX^PATIENT", "SX001", "CT", "1.2.3.soundex"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.db.Exec(`DELETE FROM instance_patient_soundex`); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, err = Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	studies, err := catalog.StudiesWithFilters(ctx, StudyFilters{PatientName: "SOUNDEX", PatientNameSoundex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies) != 1 || studies[0].StudyInstanceUID != "1.2.3.soundex" {
+		t.Fatalf("soundex studies after backfill = %#v, want imported study", studies)
+	}
+}
+
+func TestStudiesWithSoundexUsesPersistedCodes(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "one.dcm"), testPart10File(t, "PERSISTED^CODES", "SX002", "CT", "1.2.3.persisted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.db.Exec(`DELETE FROM instance_patient_soundex`); err != nil {
+		t.Fatal(err)
+	}
+
+	studies, err := catalog.StudiesWithFilters(ctx, StudyFilters{PatientName: "PERSISTED", PatientNameSoundex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies) != 0 {
+		t.Fatalf("soundex studies with deleted persisted codes = %#v, want none", studies)
+	}
+}
+
+func TestStudyAndSeriesFilterWhereAvoidCaseFoldingWrappers(t *testing.T) {
+	studyWhere, studyArgs := studyFilterWhere(StudyFilters{
+		PatientName:      " Alice ",
+		PatientID:        "a001",
+		AccessionNumber:  "acc-1",
+		StudyDescription: "head",
+		SourcePath:       "ALICE.DCM",
+		Status:           "interesting",
+		Modalities:       []string{"mr", " CT "},
+	})
+	if strings.Contains(studyWhere, "LOWER(") || strings.Contains(studyWhere, "UPPER(") {
+		t.Fatalf("study filter WHERE uses SQL case-folding wrapper: %s", studyWhere)
+	}
+	for _, want := range []string{
+		"patient_name COLLATE NOCASE LIKE ?",
+		"patient_id COLLATE NOCASE LIKE ?",
+		"accession_number COLLATE NOCASE LIKE ?",
+		"study_description COLLATE NOCASE LIKE ?",
+		"source_path COLLATE NOCASE LIKE ?",
+		"sm.status COLLATE NOCASE LIKE ?",
+		"modality COLLATE NOCASE IN (?, ?)",
+	} {
+		if !strings.Contains(studyWhere, want) {
+			t.Fatalf("study filter WHERE = %q, missing %q", studyWhere, want)
+		}
+	}
+	if len(studyArgs) != 8 {
+		t.Fatalf("study filter args = %#v, want 8 args", studyArgs)
+	}
+
+	seriesWhere, seriesArgs := seriesFilterWhere("1.2.3", SeriesFilters{
+		Modality:          "mr",
+		SeriesNumber:      "1",
+		SeriesDescription: "axial",
+	})
+	if strings.Contains(seriesWhere, "LOWER(") || strings.Contains(seriesWhere, "UPPER(") {
+		t.Fatalf("series filter WHERE uses SQL case-folding wrapper: %s", seriesWhere)
+	}
+	for _, want := range []string{
+		"series_number COLLATE NOCASE LIKE ?",
+		"series_description COLLATE NOCASE LIKE ?",
+		"modality COLLATE NOCASE = ?",
+	} {
+		if !strings.Contains(seriesWhere, want) {
+			t.Fatalf("series filter WHERE = %q, missing %q", seriesWhere, want)
+		}
+	}
+	if len(seriesArgs) != 4 {
+		t.Fatalf("series filter args = %#v, want 4 args", seriesArgs)
 	}
 }
 
@@ -1008,32 +1333,32 @@ func testPart10FileWithSeriesDetails(t *testing.T, patientName, patientID, modal
 func testPart10FileWithStudyDateTimeAndSeries(t *testing.T, patientName, patientID, modality, studyUID, seriesUID, sopUID, seriesNumber, seriesDescription, instanceNumber, studyDate, studyTime, seriesDate, seriesTime string) []byte {
 	t.Helper()
 	dataset := []core.Element{
-		stringElement(core.NewTag(0x0008, 0x0016), core.VRUI, "1.2.840.10008.5.1.4.1.1.2"),
-		stringElement(core.NewTag(0x0008, 0x0018), core.VRUI, sopUID),
-		stringElement(core.NewTag(0x0010, 0x0010), core.VRPN, patientName),
-		stringElement(core.NewTag(0x0010, 0x0020), core.VRLO, patientID),
-		stringElement(core.NewTag(0x0010, 0x0030), core.VRDA, "19700102"),
-		stringElement(core.NewTag(0x0008, 0x0080), core.VRLO, "General Hospital"),
-		stringElement(core.NewTag(0x0008, 0x0020), core.VRDA, studyDate),
-		stringElement(core.NewTag(0x0008, 0x0030), core.VRTM, studyTime),
-		stringElement(core.NewTag(0x0008, 0x0060), core.VRCS, modality),
-		stringElement(core.NewTag(0x0020, 0x000D), core.VRUI, studyUID),
-		stringElement(core.NewTag(0x0020, 0x000E), core.VRUI, seriesUID),
+		testutil.StringElement(core.NewTag(0x0008, 0x0016), core.VRUI, "1.2.840.10008.5.1.4.1.1.2"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0018), core.VRUI, sopUID),
+		testutil.StringElement(core.NewTag(0x0010, 0x0010), core.VRPN, patientName),
+		testutil.StringElement(core.NewTag(0x0010, 0x0020), core.VRLO, patientID),
+		testutil.StringElement(core.NewTag(0x0010, 0x0030), core.VRDA, "19700102"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0080), core.VRLO, "General Hospital"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0020), core.VRDA, studyDate),
+		testutil.StringElement(core.NewTag(0x0008, 0x0030), core.VRTM, studyTime),
+		testutil.StringElement(core.NewTag(0x0008, 0x0060), core.VRCS, modality),
+		testutil.StringElement(core.NewTag(0x0020, 0x000D), core.VRUI, studyUID),
+		testutil.StringElement(core.NewTag(0x0020, 0x000E), core.VRUI, seriesUID),
 	}
 	if seriesNumber != "" {
-		dataset = append(dataset, stringElement(core.NewTag(0x0020, 0x0011), core.VRIS, seriesNumber))
+		dataset = append(dataset, testutil.StringElement(core.NewTag(0x0020, 0x0011), core.VRIS, seriesNumber))
 	}
 	if seriesDescription != "" {
-		dataset = append(dataset, stringElement(core.NewTag(0x0008, 0x103E), core.VRLO, seriesDescription))
+		dataset = append(dataset, testutil.StringElement(core.NewTag(0x0008, 0x103E), core.VRLO, seriesDescription))
 	}
 	if seriesDate != "" {
-		dataset = append(dataset, stringElement(core.NewTag(0x0008, 0x0021), core.VRDA, seriesDate))
+		dataset = append(dataset, testutil.StringElement(core.NewTag(0x0008, 0x0021), core.VRDA, seriesDate))
 	}
 	if seriesTime != "" {
-		dataset = append(dataset, stringElement(core.NewTag(0x0008, 0x0031), core.VRTM, seriesTime))
+		dataset = append(dataset, testutil.StringElement(core.NewTag(0x0008, 0x0031), core.VRTM, seriesTime))
 	}
 	if instanceNumber != "" {
-		dataset = append(dataset, stringElement(core.NewTag(0x0020, 0x0013), core.VRIS, instanceNumber))
+		dataset = append(dataset, testutil.StringElement(core.NewTag(0x0020, 0x0013), core.VRIS, instanceNumber))
 	}
 	file := &object.File{
 		Dataset:        object.FromElements(dataset, std.Dictionary),
@@ -1044,11 +1369,4 @@ func testPart10FileWithStudyDateTimeAndSeries(t *testing.T, patientName, patient
 		t.Fatal(err)
 	}
 	return buf.Bytes()
-}
-
-func stringElement(tag core.Tag, vr core.VR, value string) core.Element {
-	return core.Element{
-		Header: core.ElementHeader{Tag: tag, VR: vr},
-		Value:  core.StringValue{value},
-	}
 }
