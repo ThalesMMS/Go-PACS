@@ -47,4 +47,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/ThalesMMS/dicom-go => ../dicom-go-dev
+replace github.com/ThalesMMS/dicom-go => ../dicom-go

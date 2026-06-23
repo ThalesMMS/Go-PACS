@@ -1,6 +1,6 @@
 # go-pacs
 
-Go desktop GUI port of `rusty-dicom-node`, built on the local `../dicom-go-dev` module.
+Go desktop GUI port of `rusty-dicom-node`, built on the local `../dicom-go` module.
 
 Current slice:
 
