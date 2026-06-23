@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -16,9 +17,15 @@ import (
 type Node struct {
 	ID                       string `json:"id"`
 	Name                     string `json:"name"`
-	AETitle                  string `json:"aeTitle"`
-	Host                     string `json:"host"`
-	Port                     uint16 `json:"port"`
+	Protocol                 string `json:"protocol,omitempty"`
+	AETitle                  string `json:"aeTitle,omitempty"`
+	Host                     string `json:"host,omitempty"`
+	Port                     uint16 `json:"port,omitempty"`
+	BaseURL                  string `json:"baseURL,omitempty"`
+	QIDOPathPrefix           string `json:"qidoPathPrefix,omitempty"`
+	WADOPathPrefix           string `json:"wadoPathPrefix,omitempty"`
+	STOWPathPrefix           string `json:"stowPathPrefix,omitempty"`
+	CredentialRef            string `json:"credentialRef,omitempty"`
 	Disabled                 bool   `json:"disabled,omitempty"`
 	QueryDisabled            bool   `json:"queryDisabled,omitempty"`
 	SendDisabled             bool   `json:"sendDisabled,omitempty"`
@@ -38,9 +45,15 @@ type Node struct {
 
 type Draft struct {
 	Name                     string
+	Protocol                 string
 	AETitle                  string
 	Host                     string
 	Port                     uint16
+	BaseURL                  string
+	QIDOPathPrefix           string
+	WADOPathPrefix           string
+	STOWPathPrefix           string
+	CredentialRef            string
 	Disabled                 bool
 	QueryDisabled            bool
 	SendDisabled             bool
@@ -57,6 +70,13 @@ type Draft struct {
 }
 
 const (
+	ProtocolDIMSE    = "dimse"
+	ProtocolDICOMweb = "dicomweb"
+
+	DICOMwebPathQIDO = "qido"
+	DICOMwebPathWADO = "wado"
+	DICOMwebPathSTOW = "stow"
+
 	RetrieveMethodAuto = "Auto"
 	RetrieveMethodMove = "C-MOVE"
 	RetrieveMethodGet  = "C-GET"
@@ -191,6 +211,16 @@ func (s *Store) RecoverFromBackup() error {
 
 func NewNode(draft Draft) (Node, error) {
 	name := NormalizeNodeName(draft.Name)
+	protocol, err := NormalizeProtocol(draft.Protocol)
+	if err != nil {
+		return Node{}, err
+	}
+	if name == "" {
+		return Node{}, errors.New("node name cannot be empty")
+	}
+	if protocol == ProtocolDICOMweb {
+		return newDICOMwebNode(draft, name, protocol)
+	}
 	aeTitle := NormalizeAETitle(draft.AETitle)
 	host := strings.TrimSpace(draft.Host)
 	moveDestination := NormalizeAETitle(draft.PreferredMoveDestination)
@@ -208,9 +238,6 @@ func NewNode(draft Draft) (Node, error) {
 		return Node{}, errors.New("TLS client certificate and key must be provided together")
 	}
 
-	if name == "" {
-		return Node{}, errors.New("node name cannot be empty")
-	}
 	if err := ValidateAETitle(aeTitle); err != nil {
 		return Node{}, err
 	}
@@ -229,6 +256,7 @@ func NewNode(draft Draft) (Node, error) {
 	return Node{
 		ID:                       uuid.NewString(),
 		Name:                     name,
+		Protocol:                 protocol,
 		AETitle:                  aeTitle,
 		Host:                     host,
 		Port:                     draft.Port,
@@ -250,6 +278,30 @@ func NewNode(draft Draft) (Node, error) {
 	}, nil
 }
 
+func newDICOMwebNode(draft Draft, name string, protocol string) (Node, error) {
+	baseURL, err := NormalizeDICOMwebBaseURL(draft.BaseURL)
+	if err != nil {
+		return Node{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return Node{
+		ID:             uuid.NewString(),
+		Name:           name,
+		Protocol:       protocol,
+		BaseURL:        baseURL,
+		QIDOPathPrefix: NormalizeDICOMwebPathPrefix(draft.QIDOPathPrefix),
+		WADOPathPrefix: NormalizeDICOMwebPathPrefix(draft.WADOPathPrefix),
+		STOWPathPrefix: NormalizeDICOMwebPathPrefix(draft.STOWPathPrefix),
+		CredentialRef:  strings.TrimSpace(draft.CredentialRef),
+		Disabled:       draft.Disabled,
+		QueryDisabled:  draft.QueryDisabled,
+		SendDisabled:   draft.SendDisabled,
+		Notes:          strings.TrimSpace(draft.Notes),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}, nil
+}
+
 // Key returns a stable identity string for the node, preferring its ID and
 // falling back to its endpoint. It is the canonical key for indexing per-node
 // state (verify statuses, query-source failures, …) so every frontend keys the
@@ -258,7 +310,44 @@ func (n Node) Key() string {
 	if id := strings.TrimSpace(n.ID); id != "" {
 		return "id:" + id
 	}
+	if n.IsDICOMweb() {
+		return fmt.Sprintf("dicomweb:%s:%s", strings.TrimSpace(n.Name), strings.TrimSpace(n.BaseURL))
+	}
 	return fmt.Sprintf("endpoint:%s:%s:%d", strings.TrimSpace(n.Name), strings.TrimSpace(n.Host), n.Port)
+}
+
+func (n Node) ProtocolOrDefault() string {
+	protocol, err := NormalizeProtocol(n.Protocol)
+	if err != nil || protocol == "" {
+		return ProtocolDIMSE
+	}
+	return protocol
+}
+
+func (n Node) IsDIMSE() bool {
+	return n.ProtocolOrDefault() == ProtocolDIMSE
+}
+
+func (n Node) IsDICOMweb() bool {
+	return n.ProtocolOrDefault() == ProtocolDICOMweb
+}
+
+func (n Node) DICOMwebEndpoint(pathType string) string {
+	base := strings.TrimRight(strings.TrimSpace(n.BaseURL), "/")
+	path := ""
+	switch strings.ToLower(strings.TrimSpace(pathType)) {
+	case DICOMwebPathQIDO:
+		path = n.QIDOPathPrefix
+	case DICOMwebPathWADO:
+		path = n.WADOPathPrefix
+	case DICOMwebPathSTOW:
+		path = n.STOWPathPrefix
+	}
+	path = strings.Trim(NormalizeDICOMwebPathPrefix(path), "/")
+	if path == "" {
+		return base
+	}
+	return base + "/" + path
 }
 
 func (n Node) Enabled() bool {
@@ -365,6 +454,39 @@ func appendRemoteHost(hosts []string, seen map[string]bool, ip net.IP) []string 
 	}
 	seen[host] = true
 	return append(hosts, host)
+}
+
+func NormalizeProtocol(protocol string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "", ProtocolDIMSE:
+		return ProtocolDIMSE, nil
+	case ProtocolDICOMweb, "dicom-web", "dicom web":
+		return ProtocolDICOMweb, nil
+	default:
+		return "", fmt.Errorf("node protocol must be %q or %q", ProtocolDIMSE, ProtocolDICOMweb)
+	}
+}
+
+func NormalizeDICOMwebBaseURL(raw string) (string, error) {
+	baseURL := strings.TrimSpace(raw)
+	if baseURL == "" {
+		return "", errors.New("DICOMweb base URL cannot be empty")
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("DICOMweb base URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("DICOMweb base URL must use http or https")
+	}
+	if parsed.Host == "" {
+		return "", errors.New("DICOMweb base URL must include a host")
+	}
+	return strings.TrimRight(baseURL, "/"), nil
+}
+
+func NormalizeDICOMwebPathPrefix(path string) string {
+	return strings.TrimRight(strings.TrimSpace(path), "/")
 }
 
 func NormalizeNodeName(name string) string {

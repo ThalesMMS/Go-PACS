@@ -12,11 +12,15 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/autoquery"
 	"github.com/ThalesMMS/Go-PACS/internal/dicominspect"
+	"github.com/ThalesMMS/Go-PACS/internal/netverify"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	ops "github.com/ThalesMMS/Go-PACS/internal/operations"
+	"github.com/ThalesMMS/Go-PACS/internal/qido"
 	"github.com/ThalesMMS/Go-PACS/internal/query"
 	"github.com/ThalesMMS/Go-PACS/internal/retrieve"
 	"github.com/ThalesMMS/Go-PACS/internal/send"
+	"github.com/ThalesMMS/Go-PACS/internal/wadors"
+	"github.com/ThalesMMS/dicom-go/net/dicomweb"
 )
 
 // callingAETitle returns the effective Calling AE title from configuration.
@@ -40,29 +44,50 @@ func (s *Session) QueryEnabledNodes() ([]nodes.Node, error) {
 	return out, nil
 }
 
-// QueryStudies runs a Study Root study-level C-FIND across the given sources,
-// merging and annotating results and reporting progress to obs (may be nil).
+// QueryStudies runs a study-level query across the given sources, merging and
+// annotating results and reporting progress to obs (may be nil).
 func (s *Session) QueryStudies(ctx context.Context, sources []nodes.Node, criteria query.Criteria, obs QueryObserver) (query.Result, error) {
 	ae := s.callingAETitle()
 	return RunQueryAcrossSources(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
-		return query.StudyRootFind(ctx, node, criteria, ae)
+		return QueryStudySource(ctx, node, criteria, ae)
 	}, obs)
 }
 
-// QuerySeries runs a Study Root series-level C-FIND across the given sources.
+// QuerySeries runs a series-level query across the given sources.
 func (s *Session) QuerySeries(ctx context.Context, sources []nodes.Node, criteria query.SeriesCriteria, obs QueryObserver) (query.Result, error) {
 	ae := s.callingAETitle()
 	return RunQueryAcrossSources(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
-		return query.StudyRootSeriesFind(ctx, node, criteria, ae)
+		return QuerySeriesSource(ctx, node, criteria, ae)
 	}, obs)
 }
 
-// QueryImages runs a Study Root image-level C-FIND across the given sources.
+// QueryImages runs an image-level query across the given sources.
 func (s *Session) QueryImages(ctx context.Context, sources []nodes.Node, criteria query.ImageCriteria, obs QueryObserver) (query.Result, error) {
 	ae := s.callingAETitle()
 	return RunQueryAcrossSources(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
-		return query.StudyRootImageFind(ctx, node, criteria, ae)
+		return QueryImageSource(ctx, node, criteria, ae)
 	}, obs)
+}
+
+func QueryStudySource(ctx context.Context, node nodes.Node, criteria query.Criteria, callingAETitle string) (query.Result, error) {
+	if node.IsDICOMweb() {
+		return qido.StudyQuery(ctx, node, criteria)
+	}
+	return query.StudyRootFind(ctx, node, criteria, callingAETitle)
+}
+
+func QuerySeriesSource(ctx context.Context, node nodes.Node, criteria query.SeriesCriteria, callingAETitle string) (query.Result, error) {
+	if node.IsDICOMweb() {
+		return qido.SeriesQuery(ctx, node, criteria)
+	}
+	return query.StudyRootSeriesFind(ctx, node, criteria, callingAETitle)
+}
+
+func QueryImageSource(ctx context.Context, node nodes.Node, criteria query.ImageCriteria, callingAETitle string) (query.Result, error) {
+	if node.IsDICOMweb() {
+		return qido.ImageQuery(ctx, node, criteria)
+	}
+	return query.StudyRootImageFind(ctx, node, criteria, callingAETitle)
 }
 
 // RetrieveObserver receives retrieve progress. A nil observer ignores progress.
@@ -110,6 +135,14 @@ func (s *Session) Retrieve(ctx context.Context, node nodes.Node, level, studyUID
 		opts.OnProgress = obs.RetrieveProgress
 	}
 
+	if node.IsDICOMweb() {
+		outcome, err := s.retrieveDICOMweb(ctx, node, level, studyUID, seriesUID, sopUID, opts.MaxStoreObjectBytes, obs)
+		if history, herr := s.LoadHistory(); herr == nil {
+			_ = s.SaveHistory(ops.Prepend(history, ops.RetrieveSummary(outcome, node.ID, level, studyUID, seriesUID, sopUID)))
+		}
+		return outcome, err
+	}
+
 	var outcome retrieve.Outcome
 	switch level {
 	case "IMAGE":
@@ -124,6 +157,30 @@ func (s *Session) Retrieve(ctx context.Context, node nodes.Node, level, studyUID
 		_ = s.SaveHistory(ops.Prepend(history, ops.RetrieveSummary(outcome, node.ID, level, studyUID, seriesUID, sopUID)))
 	}
 	return outcome, err
+}
+
+func (s *Session) retrieveDICOMweb(ctx context.Context, node nodes.Node, level, studyUID, seriesUID, sopUID string, maxObjectBytes int64, obs RetrieveObserver) (retrieve.Outcome, error) {
+	tlsConfig, err := netverify.TLSConfigForNode(node)
+	if err != nil {
+		return retrieve.Outcome{}, err
+	}
+	client := wadors.ClientForNode(node, tlsConfig)
+	opts := wadors.Options{MaxObjectBytes: maxObjectBytes}
+	if obs != nil {
+		opts.OnProgress = func(p wadors.Progress) {
+			obs.RetrieveProgress(wadors.ToRetrieveProgress(p))
+		}
+	}
+	var outcome wadors.Outcome
+	switch level {
+	case "IMAGE":
+		outcome, err = wadors.RetrieveInstance(ctx, s.catalog, client, dicomweb.InstanceRef{StudyInstanceUID: studyUID, SeriesInstanceUID: seriesUID, SOPInstanceUID: sopUID}, opts)
+	case "SERIES":
+		outcome, err = wadors.RetrieveSeries(ctx, s.catalog, client, studyUID, seriesUID, opts)
+	default:
+		outcome, err = wadors.RetrieveStudy(ctx, s.catalog, client, studyUID, opts)
+	}
+	return wadors.ToRetrieveOutcome(outcome), err
 }
 
 // AutoQueryCriteria maps an auto-query profile's criteria to a study-level
@@ -350,7 +407,7 @@ func (s *Session) RetryTask(ctx context.Context, historyIndex int) error {
 		_, err = s.ImportPath(ctx, input.Path, nil)
 	case ops.KindSendStore:
 		_, err = s.Send(ctx, node, input.Level, input.StudyUID, input.SeriesUID, input.SOPUID, nil)
-	case ops.KindRetrieveMove:
+	case ops.KindRetrieveMove, ops.KindRetrieveWADORS:
 		_, err = s.Retrieve(ctx, node, input.Level, input.StudyUID, input.SeriesUID, input.SOPUID, nil)
 	default:
 		err = fmt.Errorf("task kind %q cannot be retried", summary.Kind)
@@ -380,7 +437,7 @@ func retryStaticError(summary ops.Summary) error {
 		return ErrTaskNotRetryable
 	}
 	switch summary.Kind {
-	case ops.KindImport, ops.KindSendStore, ops.KindRetrieveMove:
+	case ops.KindImport, ops.KindSendStore, ops.KindRetrieveMove, ops.KindRetrieveWADORS:
 		return nil
 	default:
 		return fmt.Errorf("task kind %q cannot be retried", summary.Kind)
@@ -404,7 +461,7 @@ func (s *Session) validateRetryInput(ctx context.Context, summary ops.Summary) (
 			return nodes.Node{}, errors.New("node send is disabled")
 		}
 		return node, s.validateSendRetryInput(ctx, input)
-	case ops.KindRetrieveMove:
+	case ops.KindRetrieveMove, ops.KindRetrieveWADORS:
 		node, err := s.retryNode(input.NodeID)
 		if err != nil {
 			return nodes.Node{}, err

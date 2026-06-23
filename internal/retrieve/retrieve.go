@@ -60,12 +60,15 @@ type Outcome struct {
 	Method      string
 	FinalStatus uint16
 	StatusClass dimse.CMoveStatus
+	Requested   int64
 	Remaining   uint16
 	Completed   uint16
 	Failed      uint16
 	Warnings    uint16
 	Stored      int64
 	Duplicates  int64
+	Rejected    int64
+	Failures    []string
 	Receiver    receive.Snapshot
 	Progress    []Progress
 	Duration    time.Duration

@@ -52,8 +52,8 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]string{"deleted": r.PathValue("id")})
 }
 
-// handleEcho performs a C-ECHO against a configured node, proving a real DICOM
-// operation runs entirely through core from a non-Fyne frontend.
+// handleEcho verifies a configured node with the protocol-specific lightweight
+// operation: C-ECHO for DIMSE, QIDO probe for DICOMweb.
 func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		NodeID string `json:"nodeID"`
@@ -69,6 +69,15 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		writeJSON(w, http.StatusNotFound, apiResponse{Error: "node not found"})
+		return
+	}
+	if node.IsDICOMweb() {
+		result, err := netverify.VerifyDICOMweb(r.Context(), node, netverify.NoOpCredentialResolver{})
+		if err != nil {
+			writeJSON(w, http.StatusOK, apiResponse{OK: false, Error: err.Error(), Data: result})
+			return
+		}
+		writeData(w, result)
 		return
 	}
 	cfg, err := s.session.LoadConfig()

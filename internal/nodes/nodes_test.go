@@ -1,8 +1,10 @@
 package nodes
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -61,6 +63,141 @@ func TestNewNodeCanDisableQueryAndSend(t *testing.T) {
 	}
 	if node.SendEnabled() {
 		t.Fatal("send-disabled draft produced send-enabled node")
+	}
+}
+
+func TestNewNodeSupportsDICOMwebProfile(t *testing.T) {
+	node, err := NewNode(Draft{
+		Name:           "  Web PACS ",
+		Protocol:       " DICOMweb ",
+		BaseURL:        " https://pacs.example.test/dicom-web/ ",
+		QIDOPathPrefix: " /qido-rs/ ",
+		WADOPathPrefix: " /wado-rs/ ",
+		STOWPathPrefix: " /stow-rs/ ",
+		CredentialRef:  " bearer-prod ",
+		Disabled:       true,
+		QueryDisabled:  true,
+		SendDisabled:   true,
+		Notes:          " DICOMweb node ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Protocol != ProtocolDICOMweb || node.ProtocolOrDefault() != ProtocolDICOMweb {
+		t.Fatalf("Protocol = %q, ProtocolOrDefault = %q, want %q", node.Protocol, node.ProtocolOrDefault(), ProtocolDICOMweb)
+	}
+	if !node.IsDICOMweb() || node.IsDIMSE() {
+		t.Fatalf("protocol helpers classify node incorrectly: %+v", node)
+	}
+	if node.BaseURL != "https://pacs.example.test/dicom-web" {
+		t.Fatalf("BaseURL = %q", node.BaseURL)
+	}
+	if node.DICOMwebEndpoint(DICOMwebPathQIDO) != "https://pacs.example.test/dicom-web/qido-rs" {
+		t.Fatalf("QIDO endpoint = %q", node.DICOMwebEndpoint(DICOMwebPathQIDO))
+	}
+	if node.DICOMwebEndpoint(DICOMwebPathWADO) != "https://pacs.example.test/dicom-web/wado-rs" {
+		t.Fatalf("WADO endpoint = %q", node.DICOMwebEndpoint(DICOMwebPathWADO))
+	}
+	if node.DICOMwebEndpoint(DICOMwebPathSTOW) != "https://pacs.example.test/dicom-web/stow-rs" {
+		t.Fatalf("STOW endpoint = %q", node.DICOMwebEndpoint(DICOMwebPathSTOW))
+	}
+	if node.AETitle != "" || node.Host != "" || node.Port != 0 || node.UseTLS {
+		t.Fatalf("DICOMweb node should not retain DIMSE-only fields: %+v", node)
+	}
+	if node.CredentialRef != "bearer-prod" || node.Notes != "DICOMweb node" {
+		t.Fatalf("DICOMweb metadata = %+v", node)
+	}
+	if node.Enabled() || node.QueryEnabled() || node.SendEnabled() {
+		t.Fatalf("disabled flags were not preserved: %+v", node)
+	}
+}
+
+func TestLegacyNodeDefaultsToDIMSE(t *testing.T) {
+	node := Node{Name: "legacy", AETitle: "LEGACY", Host: "127.0.0.1", Port: 104}
+	if node.ProtocolOrDefault() != ProtocolDIMSE {
+		t.Fatalf("ProtocolOrDefault = %q, want %q", node.ProtocolOrDefault(), ProtocolDIMSE)
+	}
+	if !node.IsDIMSE() || node.IsDICOMweb() {
+		t.Fatalf("legacy node classified incorrectly: %+v", node)
+	}
+	if got, want := node.Key(), "endpoint:legacy:127.0.0.1:104"; got != want {
+		t.Fatalf("legacy Key() = %q, want %q", got, want)
+	}
+}
+
+func TestNewNodeRejectsInvalidDICOMwebBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+	}{
+		{name: "empty", baseURL: ""},
+		{name: "missing scheme", baseURL: "pacs.example.test/dicom-web"},
+		{name: "unsupported scheme", baseURL: "ftp://pacs.example.test/dicom-web"},
+		{name: "missing host", baseURL: "https:///dicom-web"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewNode(Draft{Name: "web", Protocol: ProtocolDICOMweb, BaseURL: tt.baseURL})
+			if err == nil {
+				t.Fatalf("NewNode accepted DICOMweb BaseURL %q", tt.baseURL)
+			}
+		})
+	}
+}
+
+func TestStoreDICOMwebRoundTripAndLegacyCompatibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.json")
+	store := NewStore(path)
+	added, err := store.Add(Draft{
+		Name:           "web",
+		Protocol:       ProtocolDICOMweb,
+		BaseURL:        "https://pacs.example.test/dicom-web/",
+		QIDOPathPrefix: "/qido",
+		CredentialRef:  "token-ref",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("len(list) = %d, want 1", len(list))
+	}
+	if list[0].ID != added.ID || list[0].ProtocolOrDefault() != ProtocolDICOMweb || list[0].BaseURL != "https://pacs.example.test/dicom-web" || list[0].CredentialRef != "token-ref" {
+		t.Fatalf("round-trip DICOMweb node = %+v, added %+v", list[0], added)
+	}
+
+	legacyRaw := []map[string]any{{
+		"id":        "legacy-id",
+		"name":      "legacy",
+		"aeTitle":   "LEGACY",
+		"host":      "127.0.0.1",
+		"port":      104,
+		"createdAt": "2026-01-01T00:00:00Z",
+		"updatedAt": "2026-01-01T00:00:00Z",
+	}}
+	data, err := json.Marshal(legacyRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, err = store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Protocol != "" || list[0].ProtocolOrDefault() != ProtocolDIMSE || list[0].AETitle != "LEGACY" {
+		t.Fatalf("legacy nodes.json loaded as %+v", list)
+	}
+}
+
+func TestDICOMwebKeyIncludesProtocolWhenIDIsMissing(t *testing.T) {
+	node := Node{Protocol: ProtocolDICOMweb, Name: "web", BaseURL: "https://pacs.example.test/dicom-web"}
+	if got, want := node.Key(), "dicomweb:web:https://pacs.example.test/dicom-web"; got != want {
+		t.Fatalf("Key() = %q, want %q", got, want)
 	}
 }
 

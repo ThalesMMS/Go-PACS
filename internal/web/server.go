@@ -18,6 +18,7 @@ import (
 	"net/http"
 
 	"github.com/ThalesMMS/Go-PACS/internal/core"
+	"github.com/ThalesMMS/Go-PACS/internal/tokens"
 )
 
 //go:embed static
@@ -104,6 +105,20 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/receiver/start", s.handleReceiverStart)
 	s.mux.HandleFunc("POST /api/receiver/stop", s.handleReceiverStop)
 	s.mux.HandleFunc("POST /api/receiver/restart", s.handleReceiverRestart)
+
+	// Authenticated DICOMweb service routes. These are intentionally separate
+	// from /api, and use DICOMweb response media types instead of apiResponse
+	// envelopes on successful requests.
+	dicomwebRead := Chain(AuditMiddleware(s.session.Catalog()), BearerAuth(s.session.TokenStore(), tokens.RoleRead))
+	s.mux.Handle("GET /dicomweb/studies", dicomwebRead(http.HandlerFunc(s.handleDICOMwebStudies)))
+	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series", dicomwebRead(http.HandlerFunc(s.handleDICOMwebSeries)))
+	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series/{seriesUID}/instances", dicomwebRead(http.HandlerFunc(s.handleDICOMwebInstances)))
+	s.mux.Handle("GET /dicomweb/studies/{studyUID}/metadata", dicomwebRead(http.HandlerFunc(s.handleDICOMwebStudyMetadata)))
+	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series/{seriesUID}/metadata", dicomwebRead(http.HandlerFunc(s.handleDICOMwebSeriesMetadata)))
+	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series/{seriesUID}/instances/{sopUID}/metadata", dicomwebRead(http.HandlerFunc(s.handleDICOMwebInstanceMetadata)))
+	s.mux.Handle("GET /dicomweb/studies/{studyUID}", dicomwebRead(http.HandlerFunc(s.handleDICOMwebStudyObjects)))
+	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series/{seriesUID}", dicomwebRead(http.HandlerFunc(s.handleDICOMwebSeriesObjects)))
+	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series/{seriesUID}/instances/{sopUID}", dicomwebRead(http.HandlerFunc(s.handleDICOMwebInstanceObject)))
 
 	// Unknown /api/* routes get a JSON 404 instead of the static 404 page.
 	s.mux.HandleFunc("/api/", s.handleAPINotFound)

@@ -134,6 +134,43 @@ func TestEchoUnknownNodeReturns404(t *testing.T) {
 	}
 }
 
+func TestEchoVerifiesDICOMwebNode(t *testing.T) {
+	dicomwebServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/dicom-web/qido-rs/studies" {
+			t.Fatalf("path = %q, want /dicom-web/qido-rs/studies", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/dicom+json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer dicomwebServer.Close()
+
+	s := newTestServer(t)
+	node, err := nodes.NewNode(nodes.Draft{
+		Name:           "web",
+		Protocol:       nodes.ProtocolDICOMweb,
+		BaseURL:        dicomwebServer.URL + "/dicom-web",
+		QIDOPathPrefix: "/qido-rs",
+	})
+	if err != nil {
+		t.Fatalf("NewNode: %v", err)
+	}
+	if err := s.session.SaveNodes([]nodes.Node{node}); err != nil {
+		t.Fatalf("SaveNodes: %v", err)
+	}
+
+	rec, env := do(t, s, http.MethodPost, "/api/echo", `{"nodeID":"web"}`)
+	if rec.Code != http.StatusOK || env["ok"] != true {
+		t.Fatalf("DICOMweb echo: code=%d env=%v", rec.Code, env)
+	}
+	data, _ := env["data"].(map[string]any)
+	if data["statusCode"].(float64) != http.StatusOK {
+		t.Fatalf("statusCode = %v, want 200", data["statusCode"])
+	}
+	if data["success"] != true {
+		t.Fatalf("success = %v, want true", data["success"])
+	}
+}
+
 func TestEchoRequiresPost(t *testing.T) {
 	// Echo is registered POST-only; a GET must not perform an echo. With the
 	// method-routed mux it falls through to the JSON /api 404 handler.

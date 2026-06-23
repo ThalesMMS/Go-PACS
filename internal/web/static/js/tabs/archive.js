@@ -438,7 +438,8 @@ window.TABS.archive = (function () {
   function openSend() {
     if (!selectedStudy) return;
     const enabled = sendNodes.filter((n) => !n.sendDisabled && !n.disabled);
-    const sel = el("select", null, ...(enabled.length ? enabled.map((n) => el("option", { value: n.id }, `${n.name} (${n.aeTitle})`)) : [el("option", { value: "" }, "no send nodes")]));
+    const sendLabel = (n) => n.protocol === "dicomweb" ? `${n.name} (STOW-RS)` : `${n.name} (C-STORE ${n.aeTitle || ""})`;
+    const sel = el("select", null, ...(enabled.length ? enabled.map((n) => el("option", { value: n.id }, sendLabel(n))) : [el("option", { value: "" }, "no send nodes")]));
     openModal(el("div", null,
       el("h2", null, "Send study"),
       modalRow("Destination", sel),
@@ -453,7 +454,7 @@ window.TABS.archive = (function () {
     if (!r.ok || !r.data || !r.data.jobID) { setStatus(`Send failed to start: ${r.error || "no job"}`, "error"); return; }
     streamJob(r.data.jobID, {
       onProgress: (p) => setStatus(`Sending… ${(p.Sent ?? 0)}/${(p.Total ?? 0)}`),
-      onDone: (o) => setStatus(`Send complete: sent ${(o && o.Sent) ?? 0}, failed ${(o && o.Failed) ?? 0}`, "ok"),
+      onDone: (o) => setStatus(`${(o && o.Method) || "Send"} complete: sent ${(o && o.Sent) ?? 0}, failed ${(o && o.Failed) ?? 0}`, "ok"),
       onError: (msg) => setStatus(`Send failed: ${msg}`, "error"),
     });
   }

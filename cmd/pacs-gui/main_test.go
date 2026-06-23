@@ -7437,7 +7437,7 @@ func TestNodeDraftFromFormStateMapsOperationalFields(t *testing.T) {
 		CertFile:   "/tmp/client.pem",
 		KeyFile:    "/tmp/client.key",
 	}
-	draft := nodeDraftFromFormState("pacs", "REMOTE", "localhost", 11112, false, true, "C-MOVE", false, nodes.SendTransferSyntaxExplicitVRLittleEndian, true, tlsSettings, "LOCAL", "notes")
+	draft := nodeDraftFromFormState(nodes.ProtocolDIMSE, "pacs", "REMOTE", "localhost", 11112, "", "", "", "", "", false, true, "C-MOVE", false, nodes.SendTransferSyntaxExplicitVRLittleEndian, true, tlsSettings, "LOCAL", "notes")
 
 	if !draft.Disabled {
 		t.Fatalf("disabled checkbox state produced draft %+v", draft)
@@ -7463,34 +7463,70 @@ func TestNodeDraftFromFormStateMapsOperationalFields(t *testing.T) {
 	if draft.Name != "pacs" || draft.AETitle != "REMOTE" || draft.Host != "localhost" || draft.Port != 11112 || draft.PreferredMoveDestination != "LOCAL" || draft.Notes != "notes" {
 		t.Fatalf("draft fields = %+v", draft)
 	}
+
+	webDraft := nodeDraftFromFormState(nodes.ProtocolDICOMweb, "web", "", "", 0, "https://pacs.example.test/dicom-web", "qido", "wado", "stow", "credential", true, false, "", true, "", false, nodeTLSSettingsState{}, "", "web notes")
+	if webDraft.Protocol != nodes.ProtocolDICOMweb || webDraft.BaseURL != "https://pacs.example.test/dicom-web" || webDraft.QIDOPathPrefix != "qido" || webDraft.WADOPathPrefix != "wado" || webDraft.STOWPathPrefix != "stow" || webDraft.CredentialRef != "credential" {
+		t.Fatalf("DICOMweb draft fields = %+v", webDraft)
+	}
+	if !webDraft.QueryDisabled || webDraft.SendDisabled {
+		t.Fatalf("DICOMweb draft flags = %+v", webDraft)
+	}
 }
 
 func TestNodeDialogFormItemsUseReferenceFieldLabels(t *testing.T) {
 	fynetest.NewApp()
 
-	items := newNodeDialogFormItems(
-		widget.NewCheck("", nil),
-		widget.NewCheck("", nil),
+	dimseFields := newNodeDIMSEFields(
 		widget.NewSelect(retrieveMethodOptions(), nil),
-		widget.NewCheck("", nil),
 		widget.NewLabel("tls"),
 		widget.NewSelect(sendSyntaxOptions(), nil),
 		widget.NewEntry(),
 		widget.NewEntry(),
 		widget.NewEntry(),
 		widget.NewEntry(),
+	)
+	dicomwebFields := newNodeDICOMwebFields(
 		widget.NewEntry(),
+		widget.NewEntry(),
+		widget.NewEntry(),
+		widget.NewEntry(),
+		widget.NewEntry(),
+	)
+	items := newNodeDialogFormItems(
+		widget.NewSelect(nodeProtocolOptions(), nil),
+		widget.NewCheck("", nil),
+		widget.NewCheck("", nil),
+		widget.NewCheck("", nil),
+		widget.NewEntry(),
+		dimseFields,
+		dicomwebFields,
 		widget.NewMultiLineEntry(),
 	)
 	labels := make([]string, 0, len(items))
 	for _, item := range items {
 		labels = append(labels, item.Text)
 	}
-	want := []string{"Enabled", "Query", "Retrieve", "Send", "TLS", "Send Syntax", "Name", "AETitle", "Address", "Port", "Move Destination", "Notes"}
+	want := []string{"Protocol", "Enabled", "Query", "Send", "Name", "", "", "Notes"}
 
 	if !slices.Equal(labels, want) {
 		t.Fatalf("node dialog labels = %#v, want %#v", labels, want)
 	}
+	dimseForm := dimseFields.(*widget.Form)
+	if got, want := formItemLabels(dimseForm), []string{"Retrieve", "TLS", "Send Syntax", "AETitle", "Address", "Port", "Move Destination"}; !slices.Equal(got, want) {
+		t.Fatalf("DIMSE labels = %#v, want %#v", got, want)
+	}
+	dicomwebForm := dicomwebFields.(*widget.Form)
+	if got, want := formItemLabels(dicomwebForm), []string{"Base URL", "QIDO Path", "WADO Path", "STOW Path", "Credential Ref"}; !slices.Equal(got, want) {
+		t.Fatalf("DICOMweb labels = %#v, want %#v", got, want)
+	}
+}
+
+func formItemLabels(form *widget.Form) []string {
+	labels := make([]string, 0, len(form.Items))
+	for _, item := range form.Items {
+		labels = append(labels, item.Text)
+	}
+	return labels
 }
 
 func TestNodeTLSControlsExposeEnabledTLSAffordance(t *testing.T) {

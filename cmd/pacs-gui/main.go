@@ -41,6 +41,8 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/receive"
 	"github.com/ThalesMMS/Go-PACS/internal/retrieve"
 	"github.com/ThalesMMS/Go-PACS/internal/send"
+	"github.com/ThalesMMS/Go-PACS/internal/wadors"
+	"github.com/ThalesMMS/dicom-go/net/dicomweb"
 )
 
 const maxTaskHistory = ops.MaxHistoryEntries
@@ -7318,6 +7320,9 @@ func retrieveOptionsForNode(status *widget.Label, state *uiState, node nodes.Nod
 }
 
 func requireReceiverRunningForMove(w fyne.Window, status *widget.Label, state *uiState, node nodes.Node) bool {
+	if node.IsDICOMweb() {
+		return true
+	}
 	if retrieveOptionMethod(node) == retrieve.MethodGet {
 		return true
 	}
@@ -7343,6 +7348,9 @@ func retrieveOptionMethod(node nodes.Node) string {
 }
 
 func retrieveMethodSummary(node nodes.Node) string {
+	if node.IsDICOMweb() {
+		return wadors.MethodWADORS
+	}
 	switch node.RetrieveMethodOrDefault() {
 	case nodes.RetrieveMethodMove:
 		return retrieve.MethodMove
@@ -7354,6 +7362,9 @@ func retrieveMethodSummary(node nodes.Node) string {
 }
 
 func retrieveReceiverAddressIssue(state *uiState, node nodes.Node) string {
+	if node.IsDICOMweb() {
+		return ""
+	}
 	if isLoopbackHost(node.Host) {
 		return ""
 	}
@@ -8353,12 +8364,41 @@ type nodeTLSSettingsState struct {
 	KeyFile    string
 }
 
-func nodeDraftFromFormState(name string, aeTitle string, host string, port uint16, enabled bool, queryEnabled bool, retrieveMethod string, sendEnabled bool, sendTransferSyntax string, useTLS bool, tlsSettings nodeTLSSettingsState, moveDestination string, notes string) nodes.Draft {
+const (
+	nodeProtocolDIMSELabel    = "DIMSE"
+	nodeProtocolDICOMwebLabel = "DICOMweb"
+)
+
+func nodeProtocolOptions() []string {
+	return []string{nodeProtocolDIMSELabel, nodeProtocolDICOMwebLabel}
+}
+
+func nodeProtocolLabel(protocol string) string {
+	if strings.EqualFold(strings.TrimSpace(protocol), nodes.ProtocolDICOMweb) {
+		return nodeProtocolDICOMwebLabel
+	}
+	return nodeProtocolDIMSELabel
+}
+
+func nodeProtocolValue(label string) string {
+	if strings.EqualFold(strings.TrimSpace(label), nodeProtocolDICOMwebLabel) {
+		return nodes.ProtocolDICOMweb
+	}
+	return nodes.ProtocolDIMSE
+}
+
+func nodeDraftFromFormState(protocol string, name string, aeTitle string, host string, port uint16, baseURL string, qidoPath string, wadoPath string, stowPath string, credentialRef string, enabled bool, queryEnabled bool, retrieveMethod string, sendEnabled bool, sendTransferSyntax string, useTLS bool, tlsSettings nodeTLSSettingsState, moveDestination string, notes string) nodes.Draft {
 	return nodes.Draft{
 		Name:                     name,
+		Protocol:                 protocol,
 		AETitle:                  aeTitle,
 		Host:                     host,
 		Port:                     port,
+		BaseURL:                  baseURL,
+		QIDOPathPrefix:           qidoPath,
+		WADOPathPrefix:           wadoPath,
+		STOWPathPrefix:           stowPath,
+		CredentialRef:            credentialRef,
 		Disabled:                 !enabled,
 		QueryDisabled:            !queryEnabled,
 		SendDisabled:             !sendEnabled,
@@ -8375,20 +8415,48 @@ func nodeDraftFromFormState(name string, aeTitle string, host string, port uint1
 	}
 }
 
-func newNodeDialogFormItems(enabled *widget.Check, queryEnabled *widget.Check, retrieveMethod *widget.Select, sendEnabled *widget.Check, tlsControls fyne.CanvasObject, sendSyntax *widget.Select, name *widget.Entry, aeTitle *widget.Entry, host *widget.Entry, port *widget.Entry, moveDestination *widget.Entry, notes *widget.Entry) []*widget.FormItem {
+func newNodeDialogFormItems(protocol *widget.Select, enabled *widget.Check, queryEnabled *widget.Check, sendEnabled *widget.Check, name *widget.Entry, dimseFields fyne.CanvasObject, dicomwebFields fyne.CanvasObject, notes *widget.Entry) []*widget.FormItem {
 	return []*widget.FormItem{
+		widget.NewFormItem("Protocol", protocol),
 		widget.NewFormItem("Enabled", enabled),
 		widget.NewFormItem("Query", queryEnabled),
-		widget.NewFormItem("Retrieve", retrieveMethod),
 		widget.NewFormItem("Send", sendEnabled),
+		widget.NewFormItem("Name", name),
+		widget.NewFormItem("", dimseFields),
+		widget.NewFormItem("", dicomwebFields),
+		widget.NewFormItem("Notes", notes),
+	}
+}
+
+func newNodeDIMSEFields(retrieveMethod *widget.Select, tlsControls fyne.CanvasObject, sendSyntax *widget.Select, aeTitle *widget.Entry, host *widget.Entry, port *widget.Entry, moveDestination *widget.Entry) fyne.CanvasObject {
+	return widget.NewForm(
+		widget.NewFormItem("Retrieve", retrieveMethod),
 		widget.NewFormItem("TLS", tlsControls),
 		widget.NewFormItem("Send Syntax", sendSyntax),
-		widget.NewFormItem("Name", name),
 		widget.NewFormItem("AETitle", aeTitle),
 		widget.NewFormItem("Address", host),
 		widget.NewFormItem("Port", port),
 		widget.NewFormItem("Move Destination", moveDestination),
-		widget.NewFormItem("Notes", notes),
+	)
+}
+
+func newNodeDICOMwebFields(baseURL *widget.Entry, qidoPath *widget.Entry, wadoPath *widget.Entry, stowPath *widget.Entry, credentialRef *widget.Entry) fyne.CanvasObject {
+	return widget.NewForm(
+		widget.NewFormItem("Base URL", baseURL),
+		widget.NewFormItem("QIDO Path", qidoPath),
+		widget.NewFormItem("WADO Path", wadoPath),
+		widget.NewFormItem("STOW Path", stowPath),
+		widget.NewFormItem("Credential Ref", credentialRef),
+	)
+}
+
+func updateNodeProtocolFields(protocol string, dimseFields fyne.CanvasObject, dicomwebFields fyne.CanvasObject) {
+	if nodeProtocolValue(protocol) == nodes.ProtocolDICOMweb {
+		dimseFields.Hide()
+		dicomwebFields.Show()
+	} else {
+		dicomwebFields.Hide()
+		dimseFields.Show()
 	}
 }
 
@@ -8797,6 +8865,8 @@ func newNetworkTab(w fyne.Window, status *widget.Label, nodeTable *widget.Table,
 }
 
 func showAddNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState) {
+	protocol := widget.NewSelect(nodeProtocolOptions(), nil)
+	protocol.SetSelected(nodeProtocolDIMSELabel)
 	enabled := widget.NewCheck("", nil)
 	enabled.SetChecked(true)
 	queryEnabled := widget.NewCheck("", nil)
@@ -8824,20 +8894,41 @@ func showAddNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table,
 	port.SetPlaceHolder("104")
 	moveDestination := widget.NewEntry()
 	moveDestination.SetPlaceHolder(localAETitle(state))
+	baseURL := widget.NewEntry()
+	baseURL.SetPlaceHolder("https://host/dicom-web")
+	qidoPath := widget.NewEntry()
+	qidoPath.SetPlaceHolder("qido-rs")
+	wadoPath := widget.NewEntry()
+	wadoPath.SetPlaceHolder("wado-rs")
+	stowPath := widget.NewEntry()
+	stowPath.SetPlaceHolder("stow-rs")
+	credentialRef := widget.NewEntry()
+	credentialRef.SetPlaceHolder("Optional credential reference")
 	notes := widget.NewMultiLineEntry()
 	notes.SetPlaceHolder("Optional notes")
+	dimseFields := newNodeDIMSEFields(retrieveMethod, tlsControls, sendSyntax, aeTitle, host, port, moveDestination)
+	dicomwebFields := newNodeDICOMwebFields(baseURL, qidoPath, wadoPath, stowPath, credentialRef)
+	protocol.OnChanged = func(value string) {
+		updateNodeProtocolFields(value, dimseFields, dicomwebFields)
+	}
+	updateNodeProtocolFields(protocol.Selected, dimseFields, dicomwebFields)
 
-	form := dialog.NewForm("Add Remote Node", "Add", "Cancel", newNodeDialogFormItems(enabled, queryEnabled, retrieveMethod, sendEnabled, tlsControls, sendSyntax, name, aeTitle, host, port, moveDestination, notes), func(ok bool) {
+	form := dialog.NewForm("Add Remote Node", "Add", "Cancel", newNodeDialogFormItems(protocol, enabled, queryEnabled, sendEnabled, name, dimseFields, dicomwebFields, notes), func(ok bool) {
 		if !ok {
 			return
 		}
-		portValue, err := parsePort(port.Text)
-		if err != nil {
-			status.SetText("Add node failed")
-			dialog.ShowError(err, w)
-			return
+		protocolValue := nodeProtocolValue(protocol.Selected)
+		var portValue uint16
+		if protocolValue == nodes.ProtocolDIMSE {
+			parsed, err := parsePort(port.Text)
+			if err != nil {
+				status.SetText("Add node failed")
+				dialog.ShowError(err, w)
+				return
+			}
+			portValue = parsed
 		}
-		node, err := state.nodeStore.Add(nodeDraftFromFormState(name.Text, aeTitle.Text, host.Text, portValue, enabled.Checked, queryEnabled.Checked, retrieveMethod.Selected, sendEnabled.Checked, sendSyntaxValue(sendSyntax.Selected), useTLS.Checked, tlsSettings, moveDestination.Text, notes.Text))
+		node, err := state.nodeStore.Add(nodeDraftFromFormState(protocolValue, name.Text, aeTitle.Text, host.Text, portValue, baseURL.Text, qidoPath.Text, wadoPath.Text, stowPath.Text, credentialRef.Text, enabled.Checked, queryEnabled.Checked, retrieveMethod.Selected, sendEnabled.Checked, sendSyntaxValue(sendSyntax.Selected), useTLS.Checked, tlsSettings, moveDestination.Text, notes.Text))
 		if err != nil {
 			status.SetText("Add node failed")
 			dialog.ShowError(err, w)
@@ -8863,6 +8954,8 @@ func showEditNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table
 		return
 	}
 	row := state.selectedNodeRow
+	protocol := widget.NewSelect(nodeProtocolOptions(), nil)
+	protocol.SetSelected(nodeProtocolLabel(node.ProtocolOrDefault()))
 	enabled := widget.NewCheck("", nil)
 	enabled.SetChecked(node.Enabled())
 	queryEnabled := widget.NewCheck("", nil)
@@ -8894,23 +8987,51 @@ func showEditNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table
 	host := widget.NewEntry()
 	host.SetText(node.Host)
 	port := widget.NewEntry()
-	port.SetText(strconv.Itoa(int(node.Port)))
+	if node.Port > 0 {
+		port.SetText(strconv.Itoa(int(node.Port)))
+	}
 	moveDestination := widget.NewEntry()
 	moveDestination.SetText(node.PreferredMoveDestination)
+	baseURL := widget.NewEntry()
+	baseURL.SetText(node.BaseURL)
+	baseURL.SetPlaceHolder("https://host/dicom-web")
+	qidoPath := widget.NewEntry()
+	qidoPath.SetText(node.QIDOPathPrefix)
+	qidoPath.SetPlaceHolder("qido-rs")
+	wadoPath := widget.NewEntry()
+	wadoPath.SetText(node.WADOPathPrefix)
+	wadoPath.SetPlaceHolder("wado-rs")
+	stowPath := widget.NewEntry()
+	stowPath.SetText(node.STOWPathPrefix)
+	stowPath.SetPlaceHolder("stow-rs")
+	credentialRef := widget.NewEntry()
+	credentialRef.SetText(node.CredentialRef)
+	credentialRef.SetPlaceHolder("Optional credential reference")
 	notes := widget.NewMultiLineEntry()
 	notes.SetText(node.Notes)
+	dimseFields := newNodeDIMSEFields(retrieveMethod, tlsControls, sendSyntax, aeTitle, host, port, moveDestination)
+	dicomwebFields := newNodeDICOMwebFields(baseURL, qidoPath, wadoPath, stowPath, credentialRef)
+	protocol.OnChanged = func(value string) {
+		updateNodeProtocolFields(value, dimseFields, dicomwebFields)
+	}
+	updateNodeProtocolFields(protocol.Selected, dimseFields, dicomwebFields)
 
-	form := dialog.NewForm("Edit Remote Node", "Save", "Cancel", newNodeDialogFormItems(enabled, queryEnabled, retrieveMethod, sendEnabled, tlsControls, sendSyntax, name, aeTitle, host, port, moveDestination, notes), func(ok bool) {
+	form := dialog.NewForm("Edit Remote Node", "Save", "Cancel", newNodeDialogFormItems(protocol, enabled, queryEnabled, sendEnabled, name, dimseFields, dicomwebFields, notes), func(ok bool) {
 		if !ok {
 			return
 		}
-		portValue, err := parsePort(port.Text)
-		if err != nil {
-			status.SetText("Edit node failed")
-			dialog.ShowError(err, w)
-			return
+		protocolValue := nodeProtocolValue(protocol.Selected)
+		var portValue uint16
+		if protocolValue == nodes.ProtocolDIMSE {
+			parsed, err := parsePort(port.Text)
+			if err != nil {
+				status.SetText("Edit node failed")
+				dialog.ShowError(err, w)
+				return
+			}
+			portValue = parsed
 		}
-		updated, err := state.nodeStore.Update(node.ID, nodeDraftFromFormState(name.Text, aeTitle.Text, host.Text, portValue, enabled.Checked, queryEnabled.Checked, retrieveMethod.Selected, sendEnabled.Checked, sendSyntaxValue(sendSyntax.Selected), useTLS.Checked, tlsSettings, moveDestination.Text, notes.Text))
+		updated, err := state.nodeStore.Update(node.ID, nodeDraftFromFormState(protocolValue, name.Text, aeTitle.Text, host.Text, portValue, baseURL.Text, qidoPath.Text, wadoPath.Text, stowPath.Text, credentialRef.Text, enabled.Checked, queryEnabled.Checked, retrieveMethod.Selected, sendEnabled.Checked, sendSyntaxValue(sendSyntax.Selected), useTLS.Checked, tlsSettings, moveDestination.Text, notes.Text))
 		if err != nil {
 			status.SetText("Edit node failed")
 			dialog.ShowError(err, w)
@@ -9004,6 +9125,25 @@ func verifySelectedNode(w fyne.Window, status *widget.Label, table *widget.Table
 	go func() {
 		ctx, cancel := withDICOMConnectionTimeout(context.Background(), state)
 		defer cancel()
+		if node.IsDICOMweb() {
+			result, err := netverify.VerifyDICOMweb(ctx, node, netverify.NoOpCredentialResolver{})
+			fyne.Do(func() {
+				if err != nil {
+					recordNodeVerifyStatus(state, node, nodeVerifyFail)
+					status.SetText("DICOMweb verification failed for " + node.Name)
+					refreshQuerySourceList(state)
+					dialog.ShowError(err, w)
+					return
+				}
+				recordNodeVerifyStatus(state, node, nodeVerifyOK)
+				status.SetText(fmt.Sprintf("DICOMweb %s HTTP %d in %s", result.NodeName, result.StatusCode, result.Duration.Round(time.Millisecond)))
+				refreshQuerySourceList(state)
+				if table != nil {
+					table.Refresh()
+				}
+			})
+			return
+		}
 		result, err := netverify.Echo(ctx, node, callingAE)
 		fyne.Do(func() {
 			if err != nil {
@@ -9162,8 +9302,9 @@ func sendSelectedStudy(w fyne.Window, status *widget.Label, state *uiState) {
 		return
 	}
 	callingAE := localAETitle(state)
-	status.SetText(fmt.Sprintf("Sending study %s to %s", study.StudyInstanceUID, node.Name))
-	beginSendActivity(state, "Study C-STORE "+node.Name)
+	method := sendMethodSummary(node)
+	status.SetText(fmt.Sprintf("Sending study %s to %s via %s", study.StudyInstanceUID, node.Name, method))
+	beginSendActivity(state, "Study "+method+" "+node.Name)
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
@@ -9173,14 +9314,17 @@ func sendSelectedStudy(w fyne.Window, status *widget.Label, state *uiState) {
 		})
 		fyne.Do(func() {
 			clearActiveSendActivity(state)
+			if outcome.Attempted > 0 || outcome.Duration > 0 {
+				recordOperation(state, ops.SendSummary(outcome, node.ID, "STUDY", study.StudyInstanceUID, "", ""))
+			}
 			if err != nil {
-				status.SetText("C-STORE failed for " + node.Name)
+				status.SetText(method + " failed for " + node.Name)
 				dialog.ShowError(err, w)
 				return
 			}
-			recordOperation(state, ops.SendSummary(outcome, node.ID, "STUDY", study.StudyInstanceUID, "", ""))
 			status.SetText(fmt.Sprintf(
-				"C-STORE %s: attempted %d, sent %d, warnings %d, failed %d in %s",
+				"%s %s: attempted %d, sent %d, warnings %d, failed %d in %s",
+				method,
 				node.Name,
 				outcome.Attempted,
 				outcome.Sent,
@@ -9193,6 +9337,13 @@ func sendSelectedStudy(w fyne.Window, status *widget.Label, state *uiState) {
 			}
 		})
 	}()
+}
+
+func sendMethodSummary(node nodes.Node) string {
+	if node.IsDICOMweb() {
+		return send.MethodSTOWRS
+	}
+	return send.MethodCStore
 }
 
 func sendSelectedSeries(w fyne.Window, status *widget.Label, state *uiState) {
@@ -9211,8 +9362,9 @@ func sendSelectedSeries(w fyne.Window, status *widget.Label, state *uiState) {
 		return
 	}
 	callingAE := localAETitle(state)
-	status.SetText(fmt.Sprintf("Sending series %s to %s", series.SeriesInstanceUID, node.Name))
-	beginSendActivity(state, "Series C-STORE "+node.Name)
+	method := sendMethodSummary(node)
+	status.SetText(fmt.Sprintf("Sending series %s to %s via %s", series.SeriesInstanceUID, node.Name, method))
+	beginSendActivity(state, "Series "+method+" "+node.Name)
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
@@ -9222,14 +9374,17 @@ func sendSelectedSeries(w fyne.Window, status *widget.Label, state *uiState) {
 		})
 		fyne.Do(func() {
 			clearActiveSendActivity(state)
+			if outcome.Attempted > 0 || outcome.Duration > 0 {
+				recordOperation(state, ops.SendSummary(outcome, node.ID, "SERIES", series.StudyInstanceUID, series.SeriesInstanceUID, ""))
+			}
 			if err != nil {
-				status.SetText("C-STORE failed for " + node.Name)
+				status.SetText(method + " failed for " + node.Name)
 				dialog.ShowError(err, w)
 				return
 			}
-			recordOperation(state, ops.SendSummary(outcome, node.ID, "SERIES", series.StudyInstanceUID, series.SeriesInstanceUID, ""))
 			status.SetText(fmt.Sprintf(
-				"C-STORE %s: attempted %d, sent %d, warnings %d, failed %d in %s",
+				"%s %s: attempted %d, sent %d, warnings %d, failed %d in %s",
+				method,
 				node.Name,
 				outcome.Attempted,
 				outcome.Sent,
@@ -9260,8 +9415,9 @@ func sendSelectedInstance(w fyne.Window, status *widget.Label, state *uiState) {
 		return
 	}
 	callingAE := localAETitle(state)
-	status.SetText(fmt.Sprintf("Sending image %s to %s", instance.SOPInstanceUID, node.Name))
-	beginSendActivity(state, "Image C-STORE "+node.Name)
+	method := sendMethodSummary(node)
+	status.SetText(fmt.Sprintf("Sending image %s to %s via %s", instance.SOPInstanceUID, node.Name, method))
+	beginSendActivity(state, "Image "+method+" "+node.Name)
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
@@ -9271,14 +9427,17 @@ func sendSelectedInstance(w fyne.Window, status *widget.Label, state *uiState) {
 		})
 		fyne.Do(func() {
 			clearActiveSendActivity(state)
+			if outcome.Attempted > 0 || outcome.Duration > 0 {
+				recordOperation(state, ops.SendSummary(outcome, node.ID, "IMAGE", instance.StudyInstanceUID, instance.SeriesInstanceUID, instance.SOPInstanceUID))
+			}
 			if err != nil {
-				status.SetText("C-STORE failed for " + node.Name)
+				status.SetText(method + " failed for " + node.Name)
 				dialog.ShowError(err, w)
 				return
 			}
-			recordOperation(state, ops.SendSummary(outcome, node.ID, "IMAGE", instance.StudyInstanceUID, instance.SeriesInstanceUID, instance.SOPInstanceUID))
 			status.SetText(fmt.Sprintf(
-				"C-STORE %s: attempted %d, sent %d, warnings %d, failed %d in %s",
+				"%s %s: attempted %d, sent %d, warnings %d, failed %d in %s",
+				method,
 				node.Name,
 				outcome.Attempted,
 				outcome.Sent,
@@ -9327,7 +9486,7 @@ func retrieveSelectedSeries(w fyne.Window, status *widget.Label, tables archiveT
 	go func() {
 		defer timeoutCancel()
 		defer cancel()
-		outcome, err := retrieve.RetrieveSeries(ctx, state.catalog, node, series.StudyInstanceUID, series.SeriesInstanceUID, opts)
+		outcome, err := runRetrieveWithNode(ctx, state, node, "SERIES", series.StudyInstanceUID, series.SeriesInstanceUID, "", opts)
 		studies, studyErr := loadStudies(context.Background(), state)
 		fyne.Do(func() {
 			clearActiveRetrieve(state)
@@ -9400,7 +9559,7 @@ func retrieveSelectedInstance(w fyne.Window, status *widget.Label, tables archiv
 	go func() {
 		defer timeoutCancel()
 		defer cancel()
-		outcome, err := retrieve.RetrieveImage(ctx, state.catalog, node, instance.StudyInstanceUID, instance.SeriesInstanceUID, instance.SOPInstanceUID, opts)
+		outcome, err := runRetrieveWithNode(ctx, state, node, "IMAGE", instance.StudyInstanceUID, instance.SeriesInstanceUID, instance.SOPInstanceUID, opts)
 		studies, studyErr := loadStudies(context.Background(), state)
 		fyne.Do(func() {
 			clearActiveRetrieve(state)
@@ -13533,13 +13692,40 @@ func queryRetrieveFailureRowStatus(request queryRetrieveRequest) string {
 }
 
 func runQueryRetrieveRequest(ctx context.Context, state *uiState, request queryRetrieveRequest) (retrieve.Outcome, error) {
-	switch request.level {
+	return runRetrieveWithNode(ctx, state, request.node, request.level, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.match.SOPInstanceUID, request.opts)
+}
+
+func runRetrieveWithNode(ctx context.Context, state *uiState, node nodes.Node, level, studyUID, seriesUID, sopUID string, opts retrieve.Options) (retrieve.Outcome, error) {
+	if node.IsDICOMweb() {
+		tlsConfig, err := netverify.TLSConfigForNode(node)
+		if err != nil {
+			return retrieve.Outcome{}, err
+		}
+		client := wadors.ClientForNode(node, tlsConfig)
+		wadoOpts := wadors.Options{MaxObjectBytes: opts.MaxStoreObjectBytes}
+		if opts.OnProgress != nil {
+			wadoOpts.OnProgress = func(p wadors.Progress) {
+				opts.OnProgress(wadors.ToRetrieveProgress(p))
+			}
+		}
+		var outcome wadors.Outcome
+		switch level {
+		case "IMAGE":
+			outcome, err = wadors.RetrieveInstance(ctx, state.catalog, client, dicomweb.InstanceRef{StudyInstanceUID: studyUID, SeriesInstanceUID: seriesUID, SOPInstanceUID: sopUID}, wadoOpts)
+		case "SERIES":
+			outcome, err = wadors.RetrieveSeries(ctx, state.catalog, client, studyUID, seriesUID, wadoOpts)
+		default:
+			outcome, err = wadors.RetrieveStudy(ctx, state.catalog, client, studyUID, wadoOpts)
+		}
+		return wadors.ToRetrieveOutcome(outcome), err
+	}
+	switch level {
 	case "IMAGE":
-		return retrieve.RetrieveImage(ctx, state.catalog, request.node, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.match.SOPInstanceUID, request.opts)
+		return retrieve.RetrieveImage(ctx, state.catalog, node, studyUID, seriesUID, sopUID, opts)
 	case "SERIES":
-		return retrieve.RetrieveSeries(ctx, state.catalog, request.node, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.opts)
+		return retrieve.RetrieveSeries(ctx, state.catalog, node, studyUID, seriesUID, opts)
 	default:
-		return retrieve.RetrieveStudy(ctx, state.catalog, request.node, request.match.StudyInstanceUID, request.opts)
+		return retrieve.RetrieveStudy(ctx, state.catalog, node, studyUID, opts)
 	}
 }
 
@@ -13676,7 +13862,7 @@ func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget
 	callingAE := localAETitle(state)
 	criteriaWindows := studyQueryCriteriaWindows(criteria)
 	sourceLabel := querySourcesLabel(sources)
-	beginQueryActivity(state, "Study C-FIND "+sourceLabel)
+	beginQueryActivity(state, "Study query "+sourceLabel)
 	status.SetText("Querying " + sourceLabel)
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
@@ -13698,7 +13884,7 @@ func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget
 				return
 			}
 			recordOperation(state, ops.QuerySummary(result))
-			status.SetText(queryCompletionStatus("C-FIND", sourceLabel, result, err))
+			status.SetText(queryCompletionStatus("Query", sourceLabel, result, err))
 			if afterMatches != nil {
 				afterMatches()
 			}
@@ -13707,7 +13893,7 @@ func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget
 }
 
 func runStudyQueryCriteriaWindows(ctx context.Context, node nodes.Node, criteriaWindows []query.Criteria, callingAE string) (query.Result, error) {
-	return runStudyQueryCriteriaWindowsWithFind(ctx, node, criteriaWindows, callingAE, query.StudyRootFind)
+	return runStudyQueryCriteriaWindowsWithFind(ctx, node, criteriaWindows, callingAE, core.QueryStudySource)
 }
 
 func runStudyQueryCriteriaWindowsWithFind(ctx context.Context, node nodes.Node, criteriaWindows []query.Criteria, callingAE string, find func(context.Context, nodes.Node, query.Criteria, string) (query.Result, error)) (query.Result, error) {
@@ -13785,13 +13971,13 @@ func runSeriesQuery(w fyne.Window, status *widget.Label, table *widget.Table, st
 	}
 	callingAE := localAETitle(state)
 	sourceLabel := querySourcesLabel(sources)
-	beginQueryActivity(state, "Series C-FIND "+sourceLabel)
+	beginQueryActivity(state, "Series query "+sourceLabel)
 	status.SetText("Querying series on " + sourceLabel)
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
 		result, err := runQueryAcrossSourcesWithProgress(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
-			return query.StudyRootSeriesFind(ctx, node, criteria, callingAE)
+			return core.QuerySeriesSource(ctx, node, criteria, callingAE)
 		}, queryProgressCallback(state))
 		fyne.Do(func() {
 			clearActiveQueryActivity(state)
@@ -13807,7 +13993,7 @@ func runSeriesQuery(w fyne.Window, status *widget.Label, table *widget.Table, st
 				return
 			}
 			recordOperation(state, ops.QuerySummary(result))
-			status.SetText(queryCompletionStatus("Series C-FIND", sourceLabel, result, err))
+			status.SetText(queryCompletionStatus("Series query", sourceLabel, result, err))
 		})
 	}()
 }
@@ -13820,13 +14006,13 @@ func runImageQuery(w fyne.Window, status *widget.Label, table *widget.Table, sta
 	}
 	callingAE := localAETitle(state)
 	sourceLabel := querySourcesLabel(sources)
-	beginQueryActivity(state, "Image C-FIND "+sourceLabel)
+	beginQueryActivity(state, "Image query "+sourceLabel)
 	status.SetText("Querying images on " + sourceLabel)
 	go func() {
 		ctx, cancel := withDICOMCommunicationTimeout(context.Background(), state)
 		defer cancel()
 		result, err := runQueryAcrossSourcesWithProgress(ctx, sources, func(ctx context.Context, node nodes.Node) (query.Result, error) {
-			return query.StudyRootImageFind(ctx, node, criteria, callingAE)
+			return core.QueryImageSource(ctx, node, criteria, callingAE)
 		}, queryProgressCallback(state))
 		fyne.Do(func() {
 			clearActiveQueryActivity(state)
@@ -13842,7 +14028,7 @@ func runImageQuery(w fyne.Window, status *widget.Label, table *widget.Table, sta
 				return
 			}
 			recordOperation(state, ops.QuerySummary(result))
-			status.SetText(queryCompletionStatus("Image C-FIND", sourceLabel, result, err))
+			status.SetText(queryCompletionStatus("Image query", sourceLabel, result, err))
 		})
 	}()
 }

@@ -19,11 +19,12 @@ const (
 type Kind string
 
 const (
-	KindQueryFind    Kind = "query_find"
-	KindRetrieveMove Kind = "retrieve_move"
-	KindSendStore    Kind = "send_store"
-	KindImport       Kind = "import"
-	KindStorageSCP   Kind = "storage_scp"
+	KindQueryFind      Kind = "query_find"
+	KindRetrieveMove   Kind = "retrieve_move"
+	KindRetrieveWADORS Kind = "retrieve_wado_rs"
+	KindSendStore      Kind = "send_store"
+	KindImport         Kind = "import"
+	KindStorageSCP     Kind = "storage_scp"
 )
 
 type Status string
@@ -42,6 +43,7 @@ type Counts struct {
 	Received   *uint64 `json:"received,omitempty"`
 	Stored     *uint64 `json:"stored,omitempty"`
 	Failed     *uint64 `json:"failed,omitempty"`
+	Rejected   *uint64 `json:"rejected,omitempty"`
 	Duplicates *uint64 `json:"duplicates,omitempty"`
 	Skipped    *uint64 `json:"skipped,omitempty"`
 }
@@ -88,6 +90,7 @@ type RetryInput struct {
 type Summary struct {
 	Version    uint32           `json:"version"`
 	Kind       Kind             `json:"kind"`
+	Method     string           `json:"method,omitempty"`
 	DurationMS uint64           `json:"duration_ms"`
 	Status     Status           `json:"status"`
 	Counts     Counts           `json:"counts,omitempty"`
@@ -154,6 +157,7 @@ func SendSummary(outcome send.Outcome, nodeID, level, studyUID, seriesUID, sopUI
 	summary := Summary{
 		Version:    SummaryVersion,
 		Kind:       KindSendStore,
+		Method:     outcome.Method,
 		DurationMS: uint64(outcome.Duration / time.Millisecond),
 		Status:     statusFromCounts(outcome.Sent, outcome.Warnings, outcome.Failed),
 		Counts: Counts{
@@ -181,6 +185,9 @@ func SendSummary(outcome send.Outcome, nodeID, level, studyUID, seriesUID, sopUI
 }
 
 func RetrieveSummary(outcome retrieve.Outcome, nodeID, level, studyUID, seriesUID, sopUID string) Summary {
+	if outcome.Method == "WADO-RS" {
+		return retrieveWADORSSummary(outcome, nodeID, level, studyUID, seriesUID, sopUID)
+	}
 	stored := outcome.Stored
 	duplicates := outcome.Duplicates
 	if stored == 0 && duplicates == 0 {
@@ -224,6 +231,42 @@ func RetrieveSummary(outcome retrieve.Outcome, nodeID, level, studyUID, seriesUI
 	if outcome.Receiver.Rejected > 0 {
 		summary.Failures = append(summary.Failures, FailureDetail{
 			Message: fmt.Sprintf("local receiver rejected %d inbound association(s)", outcome.Receiver.Rejected),
+		})
+	}
+	return summary
+}
+
+func retrieveWADORSSummary(outcome retrieve.Outcome, nodeID, level, studyUID, seriesUID, sopUID string) Summary {
+	completed := outcome.Stored + outcome.Duplicates
+	failed := int(outcome.Failed) + int(outcome.Rejected)
+	if outcome.Failed > 0 && outcome.Rejected > 0 && int(outcome.Failed) >= int(outcome.Rejected) {
+		failed = int(outcome.Failed)
+	}
+	summary := Summary{
+		Version:    SummaryVersion,
+		Kind:       KindRetrieveWADORS,
+		DurationMS: uint64(outcome.Duration / time.Millisecond),
+		Status:     statusFromCounts(int(completed), int(outcome.Warnings), failed),
+		Counts: Counts{
+			Requested:  uint64Ptr(uint64(maxInt64(outcome.Requested, completed+int64(failed)))),
+			Received:   uint64Ptr(uint64(completed)),
+			Stored:     uint64Ptr(uint64(outcome.Stored)),
+			Duplicates: uint64Ptr(uint64(outcome.Duplicates)),
+			Failed:     uint64Ptr(uint64(outcome.Failed)),
+			Rejected:   uint64Ptr(uint64(outcome.Rejected)),
+		},
+		RetryInput: retryInputForScopedOperation(nodeID, level, studyUID, seriesUID, sopUID),
+	}
+	for _, failure := range outcome.Failures {
+		summary.Failures = append(summary.Failures, FailureDetail{Message: failure})
+	}
+	for _, progress := range outcome.Progress {
+		summary.Progress = append(summary.Progress, ProgressDetail{
+			StatusCode: fmt.Sprintf("0x%04X", progress.FinalStatus),
+			Remaining:  progress.Remaining,
+			Completed:  progress.Completed,
+			Failed:     progress.Failed,
+			Warnings:   progress.Warnings,
 		})
 	}
 	return summary
@@ -313,6 +356,13 @@ func cloneRetryInput(input *RetryInput) *RetryInput {
 }
 
 func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxInt64(a, b int64) int64 {
 	if a > b {
 		return a
 	}

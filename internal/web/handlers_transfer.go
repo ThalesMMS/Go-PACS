@@ -15,8 +15,8 @@ var (
 	errNoFlush = errors.New("streaming unsupported")
 )
 
-// handleArchiveSend transmits an archived study/series/image to a node via
-// C-STORE.
+// handleArchiveSend transmits an archived study/series/image to a node via the
+// node's configured protocol.
 func (s *Server) handleArchiveSend(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		NodeID    string `json:"nodeID"`

@@ -125,6 +125,7 @@ func TestQuerySummaryCountsMatches(t *testing.T) {
 
 func TestSendSummaryCountsFailures(t *testing.T) {
 	summary := SendSummary(send.Outcome{
+		Method:    send.MethodSTOWRS,
 		Attempted: 3,
 		Sent:      1,
 		Warnings:  1,
@@ -144,6 +145,9 @@ func TestSendSummaryCountsFailures(t *testing.T) {
 
 	if summary.Kind != KindSendStore {
 		t.Fatalf("Kind = %q, want %q", summary.Kind, KindSendStore)
+	}
+	if summary.Method != send.MethodSTOWRS {
+		t.Fatalf("Method = %q, want %q", summary.Method, send.MethodSTOWRS)
 	}
 	if summary.Status != StatusWarning {
 		t.Fatalf("Status = %q, want %q", summary.Status, StatusWarning)
@@ -262,6 +266,52 @@ func TestRetrieveSummaryCountsDirectGetStores(t *testing.T) {
 	}
 	if len(summary.Failures) != 0 {
 		t.Fatalf("Failures = %#v, want none", summary.Failures)
+	}
+}
+
+func TestRetrieveSummaryRecordsWADORSMethodAndCounts(t *testing.T) {
+	summary := RetrieveSummary(retrieve.Outcome{
+		Method:     "WADO-RS",
+		Requested:  3,
+		Completed:  2,
+		Failed:     1,
+		Stored:     1,
+		Duplicates: 1,
+		Rejected:   1,
+		Failures:   []string{"1.2.3: malformed DICOM object"},
+		Progress: []retrieve.Progress{
+			{FinalStatus: 0x0000, Remaining: 2, Completed: 1},
+			{FinalStatus: 0xB000, Remaining: 0, Completed: 2, Failed: 1},
+		},
+		Duration: 4 * time.Second,
+	}, "web-node", "IMAGE", "1.2.study", "1.2.series", "1.2.3")
+
+	if summary.Kind != KindRetrieveWADORS {
+		t.Fatalf("Kind = %q, want %q", summary.Kind, KindRetrieveWADORS)
+	}
+	if summary.Status != StatusWarning {
+		t.Fatalf("Status = %q, want %q", summary.Status, StatusWarning)
+	}
+	if summary.Counts.Requested == nil || *summary.Counts.Requested != 3 {
+		t.Fatalf("Requested = %#v, want 3", summary.Counts.Requested)
+	}
+	if summary.Counts.Stored == nil || *summary.Counts.Stored != 1 {
+		t.Fatalf("Stored = %#v, want 1", summary.Counts.Stored)
+	}
+	if summary.Counts.Duplicates == nil || *summary.Counts.Duplicates != 1 {
+		t.Fatalf("Duplicates = %#v, want 1", summary.Counts.Duplicates)
+	}
+	if summary.Counts.Failed == nil || *summary.Counts.Failed != 1 {
+		t.Fatalf("Failed = %#v, want 1", summary.Counts.Failed)
+	}
+	if summary.Counts.Rejected == nil || *summary.Counts.Rejected != 1 {
+		t.Fatalf("Rejected = %#v, want 1", summary.Counts.Rejected)
+	}
+	if len(summary.Failures) != 1 || summary.Failures[0].Message != "1.2.3: malformed DICOM object" {
+		t.Fatalf("Failures = %#v", summary.Failures)
+	}
+	if summary.RetryInput == nil || summary.RetryInput.NodeID != "web-node" || summary.RetryInput.SOPUID != "1.2.3" {
+		t.Fatalf("RetryInput = %#v, want WADO retrieve scope", summary.RetryInput)
 	}
 }
 

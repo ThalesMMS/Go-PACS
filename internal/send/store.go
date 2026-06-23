@@ -2,9 +2,14 @@ package send
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
@@ -12,6 +17,7 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/netverify"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/dicom-go/core"
+	"github.com/ThalesMMS/dicom-go/net/dicomweb"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/net/ul"
 	"github.com/ThalesMMS/dicom-go/object"
@@ -19,6 +25,11 @@ import (
 )
 
 const DefaultTimeout = 30 * time.Second
+
+const (
+	MethodCStore = "C-STORE"
+	MethodSTOWRS = "STOW-RS"
+)
 
 var (
 	tagMediaStorageSOPClassUID    = core.NewTag(0x0002, 0x0002)
@@ -29,6 +40,7 @@ var (
 )
 
 type Outcome struct {
+	Method    string
 	Attempted int
 	Sent      int
 	Warnings  int
@@ -117,6 +129,9 @@ func SendFiles(ctx context.Context, node nodes.Node, paths []string, callingAETi
 }
 
 func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, opts Options) (Outcome, error) {
+	if node.IsDICOMweb() {
+		return sendFilesWithSTOW(ctx, node, paths, opts)
+	}
 	callingAETitle := opts.CallingAETitle
 	if callingAETitle == "" {
 		callingAETitle = netverify.DefaultCallingAETitle
@@ -157,7 +172,7 @@ func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, 
 		}
 	}()
 
-	outcome := Outcome{Attempted: len(files)}
+	outcome := Outcome{Method: MethodCStore, Attempted: len(files)}
 	for i, file := range files {
 		if err := ctx.Err(); err != nil {
 			outcome.Duration = time.Since(start)
@@ -200,6 +215,187 @@ func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, 
 	released = true
 	outcome.Duration = time.Since(start)
 	return outcome, nil
+}
+
+func sendFilesWithSTOW(ctx context.Context, node nodes.Node, paths []string, opts Options) (Outcome, error) {
+	if len(paths) == 0 {
+		return Outcome{}, nil
+	}
+	start := time.Now()
+	outcome := Outcome{Method: MethodSTOWRS, Attempted: len(paths)}
+	files, err := inspectFiles(paths)
+	if err != nil {
+		outcome.Failed = len(paths)
+		outcome.Failures = append(outcome.Failures, err.Error())
+		outcome.Duration = time.Since(start)
+		return outcome, err
+	}
+	for _, file := range files {
+		_ = file.file.Close()
+	}
+
+	ctx, cancel := nettimeout.WithDefault(ctx, DefaultTimeout)
+	defer cancel()
+	tlsConfig, err := netverify.TLSConfigForNode(node)
+	if err != nil {
+		outcome.Failed = len(files)
+		outcome.Failures = append(outcome.Failures, err.Error())
+		outcome.Duration = time.Since(start)
+		return outcome, err
+	}
+	client := stowClientForNode(node, tlsConfig)
+	result, err := client.StoreInstances(ctx, stowInstances(files))
+	outcome.Duration = time.Since(start)
+	mapSTOWResult(&outcome, files, result, err, opts.OnProgress)
+	return outcome, err
+}
+
+func stowClientForNode(node nodes.Node, tlsConfig *tls.Config) dicomweb.Client {
+	opts := dicomweb.Options{Timeout: DefaultTimeout}
+	if tlsConfig != nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSClientConfig = tlsConfig
+		opts.HTTPClient = &http.Client{Transport: transport}
+	}
+	return dicomweb.Client{
+		Endpoint: dicomweb.Endpoint{
+			BaseURL:  strings.TrimSpace(node.BaseURL),
+			QIDOPath: nodes.NormalizeDICOMwebPathPrefix(node.QIDOPathPrefix),
+			WADOPath: nodes.NormalizeDICOMwebPathPrefix(node.WADOPathPrefix),
+			STOWPath: nodes.NormalizeDICOMwebPathPrefix(node.STOWPathPrefix),
+		},
+		Options: opts,
+	}
+}
+
+func stowInstances(files []storeFile) []dicomweb.StoreInstance {
+	instances := make([]dicomweb.StoreInstance, 0, len(files))
+	for _, file := range files {
+		path := file.path
+		instances = append(instances, dicomweb.StoreInstance{
+			SOPClassUID:    file.sopClassUID,
+			SOPInstanceUID: file.sopInstanceUID,
+			Path:           path,
+			Open: func() (io.ReadCloser, error) {
+				return os.Open(path)
+			},
+		})
+	}
+	return instances
+}
+
+func mapSTOWResult(outcome *Outcome, files []storeFile, result dicomweb.StoreResult, storeErr error, onProgress func(Progress)) {
+	bySOP := map[string]storeFile{}
+	for _, file := range files {
+		bySOP[file.sopInstanceUID] = file
+	}
+	accounted := map[string]bool{}
+	for _, item := range result.Stored {
+		file := stowFileForItem(bySOP, item)
+		accounted[item.SOPInstanceUID] = true
+		status := dimse.StatusSuccess
+		resultError := ""
+		if item.WarningReason != 0 {
+			status = item.WarningReason
+			outcome.Warnings++
+			resultError = fmt.Sprintf("STOW-RS warning reason 0x%04X", item.WarningReason)
+		}
+		outcome.Sent++
+		result := Result{
+			Path:                       file.path,
+			SOPClassUID:                firstNonEmpty(item.SOPClassUID, file.sopClassUID),
+			SOPInstanceUID:             firstNonEmpty(item.SOPInstanceUID, file.sopInstanceUID),
+			RequestedTransferSyntaxUID: file.transferSyntaxUID,
+			Status:                     status,
+			Error:                      resultError,
+		}
+		outcome.Results = append(outcome.Results, result)
+		reportSendProgress(onProgress, *outcome, len(files), file.path, status, resultError)
+	}
+	for _, item := range result.Failed {
+		file := stowFileForItem(bySOP, item)
+		accounted[item.SOPInstanceUID] = true
+		status := item.FailureReason
+		message := fmt.Sprintf("STOW-RS failed SOP %s", firstNonEmpty(item.SOPInstanceUID, file.sopInstanceUID))
+		if status != 0 {
+			message += fmt.Sprintf(" with reason 0x%04X", status)
+		}
+		outcome.Failed++
+		outcome.Failures = append(outcome.Failures, message)
+		outcome.Results = append(outcome.Results, Result{
+			Path:                       file.path,
+			SOPClassUID:                firstNonEmpty(item.SOPClassUID, file.sopClassUID),
+			SOPInstanceUID:             firstNonEmpty(item.SOPInstanceUID, file.sopInstanceUID),
+			RequestedTransferSyntaxUID: file.transferSyntaxUID,
+			Status:                     status,
+			Error:                      message,
+		})
+		reportSendProgress(onProgress, *outcome, len(files), file.path, status, message)
+	}
+	if len(result.Stored) == 0 && len(result.Failed) == 0 {
+		if storeErr != nil {
+			for _, file := range files {
+				markSTOWFailure(outcome, file, 0, storeErr.Error(), len(files), onProgress)
+			}
+			return
+		}
+		for _, file := range files {
+			markSTOWSuccess(outcome, file, len(files), onProgress)
+		}
+		return
+	}
+	for _, file := range files {
+		if accounted[file.sopInstanceUID] {
+			continue
+		}
+		if storeErr != nil {
+			markSTOWFailure(outcome, file, 0, storeErr.Error(), len(files), onProgress)
+			continue
+		}
+		markSTOWSuccess(outcome, file, len(files), onProgress)
+	}
+}
+
+func markSTOWSuccess(outcome *Outcome, file storeFile, total int, onProgress func(Progress)) {
+	outcome.Sent++
+	outcome.Results = append(outcome.Results, Result{
+		Path:                       file.path,
+		SOPClassUID:                file.sopClassUID,
+		SOPInstanceUID:             file.sopInstanceUID,
+		RequestedTransferSyntaxUID: file.transferSyntaxUID,
+		Status:                     dimse.StatusSuccess,
+	})
+	reportSendProgress(onProgress, *outcome, total, file.path, dimse.StatusSuccess, "")
+}
+
+func markSTOWFailure(outcome *Outcome, file storeFile, status uint16, message string, total int, onProgress func(Progress)) {
+	outcome.Failed++
+	outcome.Failures = append(outcome.Failures, fmt.Sprintf("%s: %s", file.path, message))
+	outcome.Results = append(outcome.Results, Result{
+		Path:                       file.path,
+		SOPClassUID:                file.sopClassUID,
+		SOPInstanceUID:             file.sopInstanceUID,
+		RequestedTransferSyntaxUID: file.transferSyntaxUID,
+		Status:                     status,
+		Error:                      message,
+	})
+	reportSendProgress(onProgress, *outcome, total, file.path, status, message)
+}
+
+func stowFileForItem(files map[string]storeFile, item dicomweb.StoreItem) storeFile {
+	if file, ok := files[item.SOPInstanceUID]; ok {
+		return file
+	}
+	return storeFile{sopClassUID: item.SOPClassUID, sopInstanceUID: item.SOPInstanceUID}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func reportSendProgress(onProgress func(Progress), outcome Outcome, total int, path string, status uint16, resultError string) {

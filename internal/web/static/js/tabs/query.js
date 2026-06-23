@@ -342,9 +342,8 @@ window.TABS.query = (function () {
     retrieveMatch(selected.match, selected.level);
   }
 
-  // retrieveMatch posts a C-MOVE for one match at the given level and streams the
-  // job. Shared by the toolbar "Retrieve" button and the per-row green ↓ buttons
-  // (study and series sub-rows).
+  // retrieveMatch posts a retrieve request for one match and streams the job.
+  // Shared by the toolbar "Retrieve" button and the per-row green ↓ buttons.
   async function retrieveMatch(m, level) {
     if (!m) return;
     const lvl = (level || "study").toUpperCase();

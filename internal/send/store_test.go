@@ -4,9 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -356,6 +363,201 @@ func TestSendInstanceStoresOnlySelectedImageAgainstLocalSCP(t *testing.T) {
 	}
 }
 
+func TestSendDICOMwebStudySeriesAndInstanceUseSTOW(t *testing.T) {
+	ctx := context.Background()
+	baseDir := t.TempDir()
+	catalog, err := archive.Open(filepath.Join(baseDir, "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	incomingDir := filepath.Join(baseDir, "incoming")
+	if err := os.Mkdir(incomingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(incomingDir, "first.dcm")
+	if err := os.WriteFile(first, testStoragePart10FileWithUIDs(t, testStudyInstanceUID, testSeriesInstanceUID, testSOPInstanceUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := filepath.Join(incomingDir, "second.dcm")
+	if err := os.WriteFile(second, testStoragePart10FileWithUIDs(t, testStudyInstanceUID, testOtherSeriesInstanceUID, testOtherSOPInstanceUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := catalog.ImportPath(ctx, incomingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.StoredFiles != 2 {
+		t.Fatalf("StoredFiles = %d, want 2", report.StoredFiles)
+	}
+
+	server, requests := newSTOWTestServer(t, http.StatusOK, nil)
+	defer server.Close()
+	node := stowTestNode(server.URL)
+
+	studyOutcome, err := SendStudy(ctx, catalog, node, testStudyInstanceUID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if studyOutcome.Method != MethodSTOWRS || studyOutcome.Attempted != 2 || studyOutcome.Sent != 2 || studyOutcome.Failed != 0 {
+		t.Fatalf("study outcome = %+v", studyOutcome)
+	}
+
+	seriesOutcome, err := SendSeries(ctx, catalog, node, testSeriesInstanceUID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seriesOutcome.Method != MethodSTOWRS || seriesOutcome.Attempted != 1 || seriesOutcome.Sent != 1 || seriesOutcome.Failed != 0 {
+		t.Fatalf("series outcome = %+v", seriesOutcome)
+	}
+
+	imageOutcome, err := SendInstance(ctx, catalog, node, testOtherSOPInstanceUID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imageOutcome.Method != MethodSTOWRS || imageOutcome.Attempted != 1 || imageOutcome.Sent != 1 || imageOutcome.Failed != 0 {
+		t.Fatalf("image outcome = %+v", imageOutcome)
+	}
+
+	if len(*requests) != 3 {
+		t.Fatalf("STOW requests = %d, want 3", len(*requests))
+	}
+	if got := (*requests)[0].sopInstanceUIDs; !sameStrings(got, []string{testSOPInstanceUID, testOtherSOPInstanceUID}) {
+		t.Fatalf("study STOW SOPs = %v", got)
+	}
+	if got := (*requests)[1].sopInstanceUIDs; !sameStrings(got, []string{testSOPInstanceUID}) {
+		t.Fatalf("series STOW SOPs = %v", got)
+	}
+	if got := (*requests)[2].sopInstanceUIDs; !sameStrings(got, []string{testOtherSOPInstanceUID}) {
+		t.Fatalf("image STOW SOPs = %v", got)
+	}
+}
+
+func TestSendDICOMwebStudyWithNoInstancesIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected STOW-RS request to %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	outcome, err := SendStudy(ctx, catalog, stowTestNode(server.URL), "1.2.3.missing", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Method != "" || outcome.Attempted != 0 || outcome.Sent != 0 || outcome.Failed != 0 {
+		t.Fatalf("outcome = %+v, want no-op", outcome)
+	}
+}
+
+func TestSendDICOMwebMissingStoredFileFailsClearly(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	source := filepath.Join(t.TempDir(), "send.dcm")
+	if err := os.WriteFile(source, testStoragePart10File(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := catalog.InstanceBySOPInstanceUID(ctx, testSOPInstanceUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(instance.StoredPath); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected STOW-RS request after missing stored file")
+	}))
+	defer server.Close()
+
+	outcome, err := SendInstance(ctx, catalog, stowTestNode(server.URL), testSOPInstanceUID, "")
+	if err == nil {
+		t.Fatal("SendInstance succeeded with missing stored file")
+	}
+	if outcome.Method != MethodSTOWRS || outcome.Attempted != 1 || outcome.Failed != 1 || !strings.Contains(err.Error(), "open") {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+}
+
+func TestSendDICOMwebPartialSTOWFailureMapsOutcome(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	incomingDir := filepath.Join(t.TempDir(), "incoming")
+	if err := os.Mkdir(incomingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(incomingDir, "first.dcm"), testStoragePart10FileWithUIDs(t, testStudyInstanceUID, testSeriesInstanceUID, testSOPInstanceUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(incomingDir, "second.dcm"), testStoragePart10FileWithUIDs(t, testStudyInstanceUID, testSeriesInstanceUID, testOtherSOPInstanceUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, incomingDir); err != nil {
+		t.Fatal(err)
+	}
+
+	server, _ := newSTOWTestServer(t, http.StatusOK, map[string]uint16{testOtherSOPInstanceUID: 0x0110})
+	defer server.Close()
+
+	outcome, err := SendStudy(ctx, catalog, stowTestNode(server.URL), testStudyInstanceUID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Attempted != 2 || outcome.Sent != 1 || outcome.Failed != 1 {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	if len(outcome.Failures) != 1 || !strings.Contains(outcome.Failures[0], "0x0110") {
+		t.Fatalf("failures = %+v", outcome.Failures)
+	}
+}
+
+func TestSendDICOMwebHTTPAuthFailureFailsAllObjects(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	source := filepath.Join(t.TempDir(), "send.dcm")
+	if err := os.WriteFile(source, testStoragePart10File(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	outcome, err := SendInstance(ctx, catalog, stowTestNode(server.URL), testSOPInstanceUID, "")
+	if err == nil {
+		t.Fatal("SendInstance succeeded after HTTP 401")
+	}
+	if outcome.Attempted != 1 || outcome.Sent != 0 || outcome.Failed != 1 || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+}
+
 func serveSingleCStore(t *testing.T, ctx context.Context, listener *ul.Listener, done chan<- error) {
 	t.Helper()
 	serveCStoreRequests(t, ctx, listener, done, []string{testSOPInstanceUID})
@@ -462,4 +664,92 @@ func testStringElement(tag core.Tag, vr core.VR, value string) core.Element {
 		Header: core.ElementHeader{Tag: tag, VR: vr},
 		Value:  core.StringValue{value},
 	}
+}
+
+type stowTestRequest struct {
+	sopInstanceUIDs []string
+}
+
+func newSTOWTestServer(t *testing.T, statusCode int, failures map[string]uint16) (*httptest.Server, *[]stowTestRequest) {
+	t.Helper()
+	var requests []stowTestRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/dicom-web/stow/studies"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatalf("parse Content-Type: %v", err)
+		}
+		if mediaType != "multipart/related" || params["type"] != "application/dicom" || params["boundary"] == "" {
+			t.Fatalf("Content-Type = %q params=%v", mediaType, params)
+		}
+		reader := multipart.NewReader(r.Body, params["boundary"])
+		var sops []string
+		for {
+			part, err := reader.NextPart()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("NextPart: %v", err)
+			}
+			if got := part.Header.Get("Content-Type"); got != "application/dicom" {
+				t.Fatalf("part Content-Type = %q, want application/dicom", got)
+			}
+			data, err := io.ReadAll(part)
+			if err != nil {
+				t.Fatalf("read STOW part: %v", err)
+			}
+			file, err := object.ReadFile(bytes.NewReader(data))
+			if err != nil {
+				t.Fatalf("parse STOW part: %v", err)
+			}
+			sop, ok := file.Dataset.GetUID(tagSOPInstanceUID)
+			if !ok || sop == "" {
+				t.Fatalf("STOW part missing SOP Instance UID")
+			}
+			sops = append(sops, sop)
+		}
+		requests = append(requests, stowTestRequest{sopInstanceUIDs: sops})
+		w.Header().Set("Content-Type", "application/dicom+json")
+		w.WriteHeader(statusCode)
+		_, _ = w.Write([]byte(stowResponseJSON(sops, failures)))
+	}))
+	return server, &requests
+}
+
+func stowTestNode(baseURL string) nodes.Node {
+	return nodes.Node{
+		ID:             "stow-node",
+		Name:           "stow-node",
+		Protocol:       nodes.ProtocolDICOMweb,
+		BaseURL:        baseURL + "/dicom-web",
+		STOWPathPrefix: "/stow",
+	}
+}
+
+func stowResponseJSON(sops []string, failures map[string]uint16) string {
+	var stored []string
+	var failed []string
+	for _, sop := range sops {
+		if reason, ok := failures[sop]; ok {
+			failed = append(failed, fmt.Sprintf(`{"00081150":{"vr":"UI","Value":[%q]},"00081155":{"vr":"UI","Value":[%q]},"00081197":{"vr":"US","Value":[%d]}}`, testCTImageStorageSOPClassUID, sop, reason))
+			continue
+		}
+		stored = append(stored, fmt.Sprintf(`{"00081150":{"vr":"UI","Value":[%q]},"00081155":{"vr":"UI","Value":[%q]}}`, testCTImageStorageSOPClassUID, sop))
+	}
+	return fmt.Sprintf(`{"00081199":{"vr":"SQ","Value":[%s]},"00081198":{"vr":"SQ","Value":[%s]}}`, strings.Join(stored, ","), strings.Join(failed, ","))
+}
+
+func sameStrings(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
