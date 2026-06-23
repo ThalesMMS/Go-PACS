@@ -87,6 +87,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) error {
 		return err
 	}
 	defer catalog.Close()
+	nodeStore := nodes.NewStore(filepath.Join(plan.ArchiveDir, "nodes.json"))
 
 	server, err := receive.Start(ctx, receive.Config{
 		Catalog:                catalog,
@@ -96,6 +97,13 @@ func Run(ctx context.Context, opts Options, out io.Writer) error {
 		AllowedCallingAETitles: plan.AllowedCallingAETitles,
 		AllowedRemoteHosts:     plan.AllowedRemoteHosts,
 		MaxStoreObjectBytes:    plan.MaxStoreObjectBytes,
+		NodeLookup: func(aeTitle string) (nodes.Node, bool) {
+			nodeList, err := nodeStore.List()
+			if err != nil {
+				return nodes.Node{}, false
+			}
+			return nodes.FindByAETitle(nodeList, aeTitle)
+		},
 	})
 	if err != nil {
 		return err

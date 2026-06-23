@@ -509,9 +509,14 @@ window.TABS.archive = (function () {
 
   async function deleteStudy() {
     if (!selectedStudy) return;
-    if (!confirm(`Delete study for ${selectedStudy.PatientName || selectedStudy.StudyInstanceUID}?`)) return;
+    if (!confirm(`Move study for ${selectedStudy.PatientName || selectedStudy.StudyInstanceUID} to local trash?`)) return;
     const r = await apiSend(`/api/archive/studies/${encodeURIComponent(selectedStudy.StudyInstanceUID)}`, "DELETE");
-    if (r.ok) { setStatus(`Deleted ${r.data.deletedObjects} objects`, "ok"); select(null); reloadAll(); }
+    if (r.ok) {
+      const count = r.data.trashedObjects ?? r.data.deletedObjects ?? 0;
+      setStatus(`Moved ${count} objects to local trash`, "ok");
+      select(null);
+      reloadAll();
+    }
     else setStatus(`Delete failed: ${r.error}`, "error");
   }
 

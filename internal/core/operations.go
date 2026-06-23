@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -118,7 +121,7 @@ func (s *Session) Retrieve(ctx context.Context, node nodes.Node, level, studyUID
 	}
 
 	if history, herr := s.LoadHistory(); herr == nil {
-		_ = s.SaveHistory(ops.Prepend(history, ops.RetrieveSummary(outcome)))
+		_ = s.SaveHistory(ops.Prepend(history, ops.RetrieveSummary(outcome, node.ID, level, studyUID, seriesUID, sopUID)))
 	}
 	return outcome, err
 }
@@ -220,7 +223,7 @@ func (s *Session) Send(ctx context.Context, node nodes.Node, level, studyUID, se
 		outcome, err = send.SendStudyWithOptions(ctx, s.catalog, node, studyUID, opts)
 	}
 	if history, herr := s.LoadHistory(); herr == nil {
-		_ = s.SaveHistory(ops.Prepend(history, ops.SendSummary(outcome)))
+		_ = s.SaveHistory(ops.Prepend(history, ops.SendSummary(outcome, node.ID, level, studyUID, seriesUID, sopUID)))
 	}
 	return outcome, err
 }
@@ -246,6 +249,13 @@ func (s *Session) StartSendJob(node nodes.Node, level, studyUID, seriesUID, sopU
 func (s *Session) StartImportJob(path string) *Job {
 	return s.startJob("import", func(ctx context.Context, emit func(any)) (any, error) {
 		return s.ImportPath(ctx, path, ImportObserverFunc(func(p archive.ImportProgress) { emit(p) }))
+	})
+}
+
+// StartRetryJob reruns a retry-capable failed or warning task asynchronously.
+func (s *Session) StartRetryJob(historyIndex int) *Job {
+	return s.startJob("retry", func(ctx context.Context, emit func(any)) (any, error) {
+		return nil, s.RetryTask(ctx, historyIndex)
 	})
 }
 
@@ -279,9 +289,237 @@ func (s *Session) ImportPath(ctx context.Context, path string, obs ImportObserve
 	start := time.Now()
 	report, err := s.catalog.ImportPathWithOptions(ctx, path, opts)
 	if history, herr := s.LoadHistory(); herr == nil {
-		_ = s.SaveHistory(ops.Prepend(history, ops.ImportSummary(report, time.Since(start))))
+		_ = s.SaveHistory(ops.Prepend(history, ops.ImportSummary(report, time.Since(start), path)))
 	}
 	return report, err
+}
+
+var (
+	ErrTaskIndexOutOfRange = errors.New("task index out of range")
+	ErrTaskNoRetryInput    = errors.New("task has no retry input")
+	ErrTaskNotRetryable    = errors.New("only failed or warning tasks can be retried")
+)
+
+type RetryEligibility struct {
+	CanRetry bool   `json:"canRetry"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// CanRetryTask checks whether a persisted task-history entry is currently
+// eligible for retry.
+func (s *Session) CanRetryTask(ctx context.Context, historyIndex int) (RetryEligibility, error) {
+	summary, err := s.retryTaskSummary(historyIndex)
+	if err != nil {
+		return RetryEligibility{}, err
+	}
+	return s.CanRetrySummary(ctx, summary)
+}
+
+// CanRetrySummary checks retry eligibility for an already-loaded task summary.
+func (s *Session) CanRetrySummary(ctx context.Context, summary ops.Summary) (RetryEligibility, error) {
+	if err := retryStaticError(summary); err != nil {
+		return RetryEligibility{Reason: err.Error()}, nil
+	}
+	if _, err := s.validateRetryInput(ctx, summary); err != nil {
+		return RetryEligibility{Reason: err.Error()}, nil
+	}
+	return RetryEligibility{CanRetry: true}, nil
+}
+
+// RetryTask reruns a retry-capable failed or warning task. The original import,
+// send, or retrieve method records the new task summary when it finishes.
+func (s *Session) RetryTask(ctx context.Context, historyIndex int) error {
+	summary, err := s.retryTaskSummary(historyIndex)
+	if err != nil {
+		return err
+	}
+	if err := retryStaticError(summary); err != nil {
+		return err
+	}
+
+	start := time.Now()
+	node, err := s.validateRetryInput(ctx, summary)
+	if err != nil {
+		s.recordRetryValidationFailure(summary, err, time.Since(start))
+		return err
+	}
+
+	input := summary.RetryInput
+	switch summary.Kind {
+	case ops.KindImport:
+		_, err = s.ImportPath(ctx, input.Path, nil)
+	case ops.KindSendStore:
+		_, err = s.Send(ctx, node, input.Level, input.StudyUID, input.SeriesUID, input.SOPUID, nil)
+	case ops.KindRetrieveMove:
+		_, err = s.Retrieve(ctx, node, input.Level, input.StudyUID, input.SeriesUID, input.SOPUID, nil)
+	default:
+		err = fmt.Errorf("task kind %q cannot be retried", summary.Kind)
+	}
+	return err
+}
+
+func (s *Session) retryTaskSummary(historyIndex int) (ops.Summary, error) {
+	history, err := s.LoadHistory()
+	if err != nil {
+		return ops.Summary{}, err
+	}
+	if historyIndex < 0 || historyIndex >= len(history) {
+		return ops.Summary{}, ErrTaskIndexOutOfRange
+	}
+	return history[historyIndex], nil
+}
+
+func retryStaticError(summary ops.Summary) error {
+	if summary.RetryInput == nil {
+		return ErrTaskNoRetryInput
+	}
+	if summary.RetryInput.Version != ops.RetryInputVersion {
+		return fmt.Errorf("unsupported retry input version %d", summary.RetryInput.Version)
+	}
+	if summary.Status != ops.StatusFailure && summary.Status != ops.StatusWarning {
+		return ErrTaskNotRetryable
+	}
+	switch summary.Kind {
+	case ops.KindImport, ops.KindSendStore, ops.KindRetrieveMove:
+		return nil
+	default:
+		return fmt.Errorf("task kind %q cannot be retried", summary.Kind)
+	}
+}
+
+func (s *Session) validateRetryInput(ctx context.Context, summary ops.Summary) (nodes.Node, error) {
+	input := summary.RetryInput
+	if input == nil {
+		return nodes.Node{}, ErrTaskNoRetryInput
+	}
+	switch summary.Kind {
+	case ops.KindImport:
+		return nodes.Node{}, validateImportRetryInput(input)
+	case ops.KindSendStore:
+		node, err := s.retryNode(input.NodeID)
+		if err != nil {
+			return nodes.Node{}, err
+		}
+		if !node.SendEnabled() {
+			return nodes.Node{}, errors.New("node send is disabled")
+		}
+		return node, s.validateSendRetryInput(ctx, input)
+	case ops.KindRetrieveMove:
+		node, err := s.retryNode(input.NodeID)
+		if err != nil {
+			return nodes.Node{}, err
+		}
+		if !node.QueryEnabled() {
+			return nodes.Node{}, errors.New("node query/retrieve is disabled")
+		}
+		return node, validateRetrieveRetryInput(input)
+	default:
+		return nodes.Node{}, fmt.Errorf("task kind %q cannot be retried", summary.Kind)
+	}
+}
+
+func validateImportRetryInput(input *ops.RetryInput) error {
+	if strings.TrimSpace(input.Path) == "" {
+		return errors.New("source path is required")
+	}
+	if _, err := os.Stat(input.Path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("source path no longer exists")
+		}
+		return fmt.Errorf("check source path: %w", err)
+	}
+	return nil
+}
+
+func validateRetrieveRetryInput(input *ops.RetryInput) error {
+	level := retryLevel(input.Level)
+	if strings.TrimSpace(input.StudyUID) == "" {
+		return errors.New("study UID is required")
+	}
+	if level == "SERIES" || level == "IMAGE" {
+		if strings.TrimSpace(input.SeriesUID) == "" {
+			return errors.New("series UID is required")
+		}
+	}
+	if level == "IMAGE" && strings.TrimSpace(input.SOPUID) == "" {
+		return errors.New("SOP instance UID is required")
+	}
+	return nil
+}
+
+func (s *Session) validateSendRetryInput(ctx context.Context, input *ops.RetryInput) error {
+	switch retryLevel(input.Level) {
+	case "IMAGE":
+		if strings.TrimSpace(input.SOPUID) == "" {
+			return errors.New("SOP instance UID is required")
+		}
+		if _, err := s.catalog.InstanceBySOPInstanceUID(ctx, input.SOPUID); err != nil {
+			return errors.New("image not found in archive")
+		}
+	case "SERIES":
+		if strings.TrimSpace(input.SeriesUID) == "" {
+			return errors.New("series UID is required")
+		}
+		instances, err := s.catalog.InstancesForSeries(ctx, input.SeriesUID)
+		if err != nil {
+			return err
+		}
+		if len(instances) == 0 {
+			return errors.New("series not found in archive")
+		}
+	default:
+		if strings.TrimSpace(input.StudyUID) == "" {
+			return errors.New("study UID is required")
+		}
+		exists, err := s.catalog.StudyExists(ctx, input.StudyUID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return errors.New("study not found in archive")
+		}
+	}
+	return nil
+}
+
+func (s *Session) retryNode(nodeID string) (nodes.Node, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nodes.Node{}, errors.New("node ID is required")
+	}
+	list, err := s.ListNodes()
+	if err != nil {
+		return nodes.Node{}, err
+	}
+	for _, node := range list {
+		if node.ID == nodeID {
+			if !node.Enabled() {
+				return nodes.Node{}, errors.New("node is disabled")
+			}
+			return node, nil
+		}
+	}
+	return nodes.Node{}, errors.New("node no longer exists")
+}
+
+func retryLevel(level string) string {
+	switch strings.ToUpper(strings.TrimSpace(level)) {
+	case "IMAGE":
+		return "IMAGE"
+	case "SERIES":
+		return "SERIES"
+	default:
+		return "STUDY"
+	}
+}
+
+func (s *Session) recordRetryValidationFailure(original ops.Summary, err error, duration time.Duration) {
+	history, herr := s.LoadHistory()
+	if herr != nil {
+		return
+	}
+	summary := ops.RetryFailureSummary(original, err.Error(), duration)
+	_ = s.SaveHistory(ops.Prepend(history, summary))
 }
 
 func importLimits(cfg appconfig.Config) archive.ImportLimits {

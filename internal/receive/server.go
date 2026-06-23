@@ -39,6 +39,9 @@ type Config struct {
 	PreferredTransferSyntax string
 	DecompressImages        bool
 	TLSConfig               *tls.Config
+	// NodeLookup resolves C-MOVE Move Destination AE titles. When nil, C-MOVE
+	// SCP is disabled and the receiver does not advertise Study Root MOVE.
+	NodeLookup func(aeTitle string) (nodes.Node, bool)
 }
 
 type Snapshot struct {
@@ -64,6 +67,7 @@ type Server struct {
 	supportedTransferSyntaxUIDs []string
 	decompressImages            bool
 	tlsConfig                   *tls.Config
+	nodeLookup                  func(aeTitle string) (nodes.Node, bool)
 	ctx                         context.Context
 	cancel                      context.CancelFunc
 	done                        chan error
@@ -139,6 +143,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 		supportedTransferSyntaxUIDs: supportedTransferSyntaxes,
 		decompressImages:            cfg.DecompressImages,
 		tlsConfig:                   cfg.TLSConfig,
+		nodeLookup:                  cfg.NodeLookup,
 		ctx:                         ctx,
 		cancel:                      cancel,
 		done:                        make(chan error, 1),
@@ -213,8 +218,9 @@ func (s *Server) serve() {
 		assoc, err := s.listener.AcceptAssociation(ul.AcceptOptions{
 			AETitle:                   s.aeTitle,
 			Context:                   s.ctx,
-			SupportedAbstractSyntaxes: acceptedAbstractSyntaxes(),
+			SupportedAbstractSyntaxes: acceptedAbstractSyntaxes(s.nodeLookup != nil),
 			SupportedTransferSyntaxes: s.supportedTransferSyntaxUIDs,
+			RoleSelections:            storageRoleSelections(),
 			TLSConfig:                 s.tlsConfig,
 		})
 		if err != nil {
@@ -271,17 +277,25 @@ func (s *Server) releaseAssociationSlot() {
 
 func (s *Server) handleAssociation(assoc *ul.Association) error {
 	defer assoc.Close()
-	return dimse.ServeStorageAssociation(s.ctx, assoc, dimse.StorageSCPOptions{
-		MaxDataSetBytes: s.maxStoreObjectBytes,
-		StoreHandler: dimse.CStoreHandlerFunc(func(ctx context.Context, req dimse.CStoreRequestContext) (uint16, error) {
-			return s.storeCStore(ctx, assoc, req)
-		}),
-		OnCStoreResponse: func(_ context.Context, _ dimse.CStoreRequestContext, status uint16) {
-			if status != dimse.StatusSuccess {
-				s.failed.Add(1)
-			}
+	opts := dimse.AssociationSCPOptions{
+		StorageSCPOptions: dimse.StorageSCPOptions{
+			MaxDataSetBytes: s.maxStoreObjectBytes,
+			StoreHandler: dimse.CStoreHandlerFunc(func(ctx context.Context, req dimse.CStoreRequestContext) (uint16, error) {
+				return s.storeCStore(ctx, assoc, req)
+			}),
+			OnCStoreResponse: func(_ context.Context, _ dimse.CStoreRequestContext, status uint16) {
+				if status != dimse.StatusSuccess {
+					s.failed.Add(1)
+				}
+			},
 		},
-	})
+		CFindHandler: dimse.CFindHandlerFunc(s.findCFind),
+		CGetHandler:  dimse.CGetHandlerFunc(s.getCGet),
+	}
+	if s.nodeLookup != nil {
+		opts.CMoveHandler = dimse.CMoveHandlerFunc(s.moveCMove)
+	}
+	return dimse.ServeAssociation(s.ctx, assoc, opts)
 }
 
 func normalizeAllowedCalledAETitles(primary string, aeTitles []string) (map[string]struct{}, error) {
@@ -391,10 +405,22 @@ func sourcePath(assoc *ul.Association, req *dimse.CStoreRequest) string {
 	return fmt.Sprintf("dicom://%s/%s", callingAE, req.AffectedSOPInstanceUID)
 }
 
-func acceptedAbstractSyntaxes() []string {
-	uids := []string{dimse.VerificationSOPClassUID}
+func acceptedAbstractSyntaxes(enableMove bool) []string {
+	uids := []string{dimse.VerificationSOPClassUID, dimse.StudyRootFindSOPClassUID, dimse.StudyRootGetSOPClassUID}
+	if enableMove {
+		uids = append(uids, dimse.StudyRootMoveSOPClassUID)
+	}
 	uids = append(uids, storageSOPClassUIDs()...)
 	return uids
+}
+
+func storageRoleSelections() []ul.RoleSelectionItem {
+	uids := storageSOPClassUIDs()
+	roles := make([]ul.RoleSelectionItem, 0, len(uids))
+	for _, uid := range uids {
+		roles = append(roles, ul.RoleSelectionItem{SopClassUID: uid, SCPRole: true})
+	}
+	return roles
 }
 
 // StorageSOPClassUIDs returns the Storage SOP Classes accepted by the receiver.

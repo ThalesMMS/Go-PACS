@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/ThalesMMS/Go-PACS/internal/jsonstore"
 )
 
 const DefaultProfileName = "Default Instance"
@@ -79,7 +80,7 @@ func (s *Store) List() ([]Profile, error) {
 	}
 	var profiles []Profile
 	if err := json.Unmarshal(data, &profiles); err != nil {
-		return nil, fmt.Errorf("parse auto query profiles: %w", err)
+		return nil, &jsonstore.LoadError{Err: fmt.Errorf("parse auto query profiles: %w", err), BackupExists: jsonstore.CheckBackupExists(s.path)}
 	}
 	if len(profiles) == 0 {
 		return []Profile{DefaultProfile()}, nil
@@ -91,21 +92,17 @@ func (s *Store) Save(profiles []Profile) error {
 	if len(profiles) == 0 {
 		profiles = []Profile{DefaultProfile()}
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return fmt.Errorf("create auto query profile directory: %w", err)
-	}
 	data, err := json.MarshalIndent(profiles, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode auto query profiles: %w", err)
 	}
 	data = append(data, '\n')
-	temp := s.path + ".tmp"
-	if err := os.WriteFile(temp, data, 0o644); err != nil {
+	if err := jsonstore.WriteWithBackup(s.path, data); err != nil {
 		return fmt.Errorf("write auto query profiles: %w", err)
 	}
-	if err := os.Rename(temp, s.path); err != nil {
-		_ = os.Remove(temp)
-		return fmt.Errorf("replace auto query profiles: %w", err)
-	}
 	return nil
+}
+
+func (s *Store) RecoverFromBackup() error {
+	return jsonstore.RecoverFromBackup(s.path)
 }

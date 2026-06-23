@@ -22,6 +22,7 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	ops "github.com/ThalesMMS/Go-PACS/internal/operations"
 	"github.com/ThalesMMS/Go-PACS/internal/receive"
+	"github.com/ThalesMMS/Go-PACS/internal/tokens"
 )
 
 // File names for the per-archive stores, kept in one place so every frontend
@@ -31,6 +32,7 @@ const (
 	historyFileName           = "tasks.json"
 	nodesFileName             = "nodes.json"
 	autoQueryProfilesFileName = "auto-query-profiles.json"
+	tokensFileName            = "tokens.json"
 )
 
 // Session is an open application session. It holds the archive catalog plus the
@@ -48,10 +50,11 @@ type Session struct {
 	catalog     *archive.Catalog
 	nodeStore   *nodes.Store
 	autoQuery   *autoquery.Store
+	tokenStore  *tokens.Store
 	configPath  string
 	historyPath string
 
-	// Receiver lifecycle. The running Storage SCP listener is process-scoped
+	// Receiver lifecycle. The running DICOM listener is process-scoped
 	// state shared by every frontend, guarded by receiverMu. See receiver.go.
 	receiverMu        sync.Mutex
 	receiver          *receive.Server
@@ -82,6 +85,7 @@ func Open(archiveDir string) (*Session, error) {
 		catalog:     catalog,
 		nodeStore:   nodes.NewStore(filepath.Join(archiveDir, nodesFileName)),
 		autoQuery:   autoquery.NewStore(filepath.Join(archiveDir, autoQueryProfilesFileName)),
+		tokenStore:  tokens.NewStore(filepath.Join(archiveDir, tokensFileName)),
 		configPath:  filepath.Join(archiveDir, configFileName),
 		historyPath: filepath.Join(archiveDir, historyFileName),
 		jobs:        newJobManager(),
@@ -126,6 +130,9 @@ func (s *Session) NodeStore() *nodes.Store { return s.nodeStore }
 // AutoQueryStore returns the auto-query profile store.
 func (s *Session) AutoQueryStore() *autoquery.Store { return s.autoQuery }
 
+// TokenStore returns the inbound DICOMweb service-token store.
+func (s *Session) TokenStore() *tokens.Store { return s.tokenStore }
+
 // ConfigPath reports the on-disk location of the configuration file.
 func (s *Session) ConfigPath() string { return s.configPath }
 
@@ -144,6 +151,10 @@ func (s *Session) SaveConfig(cfg appconfig.Config) error {
 	return appconfig.Save(s.configPath, cfg)
 }
 
+func (s *Session) RecoverConfigFromBackup() error {
+	return appconfig.RecoverFromBackup(s.configPath)
+}
+
 // --- operation history ---
 
 // LoadHistory reads the persisted operation history.
@@ -156,6 +167,10 @@ func (s *Session) SaveHistory(history []ops.Summary) error {
 	return ops.SaveHistory(s.historyPath, history)
 }
 
+func (s *Session) RecoverHistoryFromBackup() error {
+	return ops.RecoverFromBackup(s.historyPath)
+}
+
 // --- DICOM nodes ---
 
 // ListNodes returns the configured DICOM nodes.
@@ -166,6 +181,10 @@ func (s *Session) ListNodes() ([]nodes.Node, error) {
 // SaveNodes persists the supplied node list.
 func (s *Session) SaveNodes(list []nodes.Node) error {
 	return s.nodeStore.Save(list)
+}
+
+func (s *Session) RecoverNodesFromBackup() error {
+	return s.nodeStore.RecoverFromBackup()
 }
 
 // AddNode validates and persists a new DICOM node.
@@ -193,6 +212,10 @@ func (s *Session) ListAutoQueryProfiles() ([]autoquery.Profile, error) {
 // SaveAutoQueryProfiles persists the supplied auto-query profiles.
 func (s *Session) SaveAutoQueryProfiles(profiles []autoquery.Profile) error {
 	return s.autoQuery.Save(profiles)
+}
+
+func (s *Session) RecoverAutoQueryProfilesFromBackup() error {
+	return s.autoQuery.RecoverFromBackup()
 }
 
 // DefaultArchiveDir returns the platform-appropriate default location for the

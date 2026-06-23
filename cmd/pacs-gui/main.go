@@ -1786,14 +1786,22 @@ func run() {
 	instanceTable := newInstanceTable(state)
 	taskTable := newTaskTable(state)
 	taskDetail := newTaskDetail()
-	state.operationTable = taskTable
-	state.operationDetail = taskDetail
-	updateTaskDetail(state)
 	tables := archiveTables{
 		studies:   studyTable,
 		series:    seriesTable,
 		instances: instanceTable,
 	}
+	taskRetryReason := widget.NewLabel("")
+	taskRetryReason.Wrapping = fyne.TextWrapWord
+	taskRetryButton := widget.NewButtonWithIcon("Retry", theme.ViewRefreshIcon(), func() {
+		retrySelectedTask(w, status, tables, state)
+	})
+	taskRetryButton.Disable()
+	state.operationTable = taskTable
+	state.operationDetail = taskDetail
+	state.operationRetryButton = taskRetryButton
+	state.operationRetryReason = taskRetryReason
+	updateTaskDetail(state)
 	wireArchiveTables(w, status, tables, state)
 	nodeTable := newNodeTable(status, state)
 	queryTab := newQueryTab(w, status, tables, nodeTable, state)
@@ -1908,7 +1916,13 @@ func run() {
 	networkTab := newNetworkTab(w, status, nodeTable, state)
 	tasksBrowser := container.NewVSplit(
 		labeledTable("Tasks", taskTable),
-		container.NewStack(taskDetail),
+		container.NewBorder(
+			container.NewHBox(taskRetryButton, taskRetryReason),
+			nil,
+			nil,
+			nil,
+			container.NewStack(taskDetail),
+		),
 	)
 	tasksBrowser.SetOffset(0.55)
 	tasksTab := container.NewBorder(nil, nil, nil, nil, tasksBrowser)
@@ -1974,6 +1988,8 @@ type uiState struct {
 	operations                      []ops.Summary
 	operationTable                  *widget.Table
 	operationDetail                 *widget.Entry
+	operationRetryButton            *widget.Button
+	operationRetryReason            *widget.Label
 	operationHistoryPath            string
 	archiveAlbumList                *widget.List
 	selectedArchiveAlbum            archiveAlbumID
@@ -2393,12 +2409,127 @@ func updateTaskDetail(state *uiState) {
 	}
 	if len(state.operations) == 0 {
 		state.operationDetail.SetText("")
+		updateTaskRetryControl(state, nil)
 		return
 	}
 	if state.selectedOperationRow < 0 || state.selectedOperationRow >= len(state.operations) {
 		state.selectedOperationRow = 0
 	}
-	state.operationDetail.SetText(taskDetailText(state.operations[state.selectedOperationRow]))
+	summary := state.operations[state.selectedOperationRow]
+	state.operationDetail.SetText(taskDetailText(summary))
+	updateTaskRetryControl(state, &summary)
+}
+
+func updateTaskRetryControl(state *uiState, summary *ops.Summary) {
+	if state == nil || state.operationRetryButton == nil {
+		return
+	}
+	reason := "Select a retryable failed or warning task"
+	if summary != nil && state.session != nil {
+		eligibility, err := state.session.CanRetrySummary(context.Background(), *summary)
+		if err != nil {
+			reason = err.Error()
+		} else if eligibility.CanRetry {
+			state.operationRetryButton.Enable()
+			if state.operationRetryReason != nil {
+				state.operationRetryReason.SetText("")
+			}
+			return
+		} else if strings.TrimSpace(eligibility.Reason) != "" {
+			reason = eligibility.Reason
+		}
+	}
+	state.operationRetryButton.Disable()
+	if state.operationRetryReason != nil {
+		state.operationRetryReason.SetText(reason)
+	}
+}
+
+func retrySelectedTask(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
+	index, err := selectedOperationHistoryIndex(state)
+	if err != nil {
+		setStatusIfPresent(status, "Retry unavailable")
+		if w != nil {
+			dialog.ShowError(err, w)
+		}
+		return
+	}
+	setStatusIfPresent(status, "Retrying task")
+	if state != nil && state.operationRetryButton != nil {
+		state.operationRetryButton.Disable()
+	}
+	go func() {
+		err := state.session.RetryTask(context.Background(), index)
+		history, historyErr := state.session.LoadHistory()
+		studies, studyErr := loadStudies(context.Background(), state)
+		fyne.Do(func() {
+			if historyErr == nil {
+				replaceOperationHistory(state, history)
+			}
+			if studyErr == nil {
+				setStudies(state, tables, studies)
+			}
+			if err != nil {
+				setStatusIfPresent(status, "Retry failed")
+				if w != nil {
+					dialog.ShowError(err, w)
+				}
+			} else {
+				setStatusIfPresent(status, "Retry completed")
+			}
+			if historyErr != nil && w != nil {
+				dialog.ShowError(historyErr, w)
+			}
+			if studyErr != nil && w != nil {
+				dialog.ShowError(studyErr, w)
+			}
+			updateTaskDetail(state)
+			if state != nil && state.operationTable != nil {
+				state.operationTable.Refresh()
+			}
+			refreshArchiveChrome(state)
+		})
+	}()
+}
+
+func selectedOperationHistoryIndex(state *uiState) (int, error) {
+	if state == nil || state.session == nil || state.selectedOperationRow < 0 || state.selectedOperationRow >= len(state.operations) {
+		return 0, errors.New("no task selected")
+	}
+	selected := state.operations[state.selectedOperationRow]
+	history, err := state.session.LoadHistory()
+	if err != nil {
+		return 0, err
+	}
+	index := taskSummaryIndex(history, selected)
+	if index < 0 {
+		return 0, errors.New("selected task no longer exists in history")
+	}
+	return index, nil
+}
+
+func replaceOperationHistory(state *uiState, history []ops.Summary) {
+	if state == nil {
+		return
+	}
+	state.operations = history
+	state.selectedOperationRow = -1
+	if len(history) == 0 {
+		return
+	}
+	selected := history[0]
+	if state.taskSortActive && taskColumnSortable(state.taskSortColumn) {
+		sort.SliceStable(state.operations, func(i, j int) bool {
+			if state.taskSortDescending {
+				return taskSortLess(state.operations[j], state.operations[i], state.taskSortColumn)
+			}
+			return taskSortLess(state.operations[i], state.operations[j], state.taskSortColumn)
+		})
+	}
+	state.selectedOperationRow = taskSummaryIndex(state.operations, selected)
+	if state.selectedOperationRow < 0 {
+		state.selectedOperationRow = 0
+	}
 }
 
 func taskDetailText(summary ops.Summary) string {
@@ -4427,7 +4558,7 @@ func importPathAsync(w fyne.Window, status *widget.Label, tables archiveTables, 
 		opts := importOptionsFromConfig(state.appConfig)
 		opts.OnProgress = importProgressCallback(state)
 		report, err := state.catalog.ImportPathWithOptions(context.Background(), path, opts)
-		summary := ops.ImportSummary(report, time.Since(started))
+		summary := ops.ImportSummary(report, time.Since(started), path)
 		studies, studyErr := loadStudies(context.Background(), state)
 		fyne.Do(func() {
 			clearActiveImportActivity(state)
@@ -5773,7 +5904,7 @@ func deleteSelectedStudy(ctx context.Context, status *widget.Label, tables archi
 	if studyUID == "" {
 		return 0, errors.New("selected study has no Study Instance UID")
 	}
-	deleted, err := state.catalog.DeleteStudy(ctx, studyUID)
+	deleted, err := state.catalog.TrashStudy(ctx, studyUID)
 	if err != nil {
 		return 0, err
 	}
@@ -5804,23 +5935,23 @@ func deleteSelectedStudy(ctx context.Context, status *widget.Label, tables archi
 	studies, err := loadStudies(ctx, state)
 	if err != nil {
 		if status != nil {
-			status.SetText("Study deleted; refresh failed")
+			status.SetText("Study moved to trash; refresh failed")
 		}
 		return deleted, err
 	}
 	setStudies(state, tables, studies)
 	if status != nil {
-		status.SetText(deletedStudyStatusText(studyUID, deleted))
+		status.SetText(trashedStudyStatusText(studyUID, deleted))
 	}
 	return deleted, nil
 }
 
-func deletedStudyStatusText(studyUID string, deleted int) string {
+func trashedStudyStatusText(studyUID string, deleted int) string {
 	noun := "objects"
 	if deleted == 1 {
 		noun = "object"
 	}
-	return fmt.Sprintf("Deleted study %s (%d %s)", studyUID, deleted, noun)
+	return fmt.Sprintf("Moved study %s to local trash (%d %s)", studyUID, deleted, noun)
 }
 
 func localAETitle(state *uiState) string {
@@ -7184,6 +7315,20 @@ func retrieveOptionsForNode(status *widget.Label, state *uiState, node nodes.Nod
 		MaxStoreObjectBytes: optionalInt64Value(state.appConfig.MaxStoreObjectBytes),
 		OnProgress:          retrieveProgressCallback(status, state, node.Name),
 	}
+}
+
+func requireReceiverRunningForMove(w fyne.Window, status *widget.Label, state *uiState, node nodes.Node) bool {
+	if retrieveOptionMethod(node) == retrieve.MethodGet {
+		return true
+	}
+	if state != nil && state.receiver != nil {
+		return true
+	}
+	setStatusIfPresent(status, retrieve.ErrReceiverRequired.Error())
+	if w != nil {
+		dialog.ShowError(retrieve.ErrReceiverRequired, w)
+	}
+	return false
 }
 
 func retrieveOptionMethod(node nodes.Node) string {
@@ -8904,6 +9049,9 @@ func startReceiver(w fyne.Window, status *widget.Label, state *uiState) {
 		PreferredTransferSyntax: state.appConfig.ReceivePreferredTransferSyntax,
 		DecompressImages:        state.appConfig.ReceiveDecompressImages,
 		TLSConfig:               tlsConfig,
+		NodeLookup: func(aeTitle string) (nodes.Node, bool) {
+			return nodes.FindByAETitle(state.nodes, aeTitle)
+		},
 	})
 	if err != nil {
 		status.SetText("Receiver start failed")
@@ -9030,7 +9178,7 @@ func sendSelectedStudy(w fyne.Window, status *widget.Label, state *uiState) {
 				dialog.ShowError(err, w)
 				return
 			}
-			recordOperation(state, ops.SendSummary(outcome))
+			recordOperation(state, ops.SendSummary(outcome, node.ID, "STUDY", study.StudyInstanceUID, "", ""))
 			status.SetText(fmt.Sprintf(
 				"C-STORE %s: attempted %d, sent %d, warnings %d, failed %d in %s",
 				node.Name,
@@ -9079,7 +9227,7 @@ func sendSelectedSeries(w fyne.Window, status *widget.Label, state *uiState) {
 				dialog.ShowError(err, w)
 				return
 			}
-			recordOperation(state, ops.SendSummary(outcome))
+			recordOperation(state, ops.SendSummary(outcome, node.ID, "SERIES", series.StudyInstanceUID, series.SeriesInstanceUID, ""))
 			status.SetText(fmt.Sprintf(
 				"C-STORE %s: attempted %d, sent %d, warnings %d, failed %d in %s",
 				node.Name,
@@ -9128,7 +9276,7 @@ func sendSelectedInstance(w fyne.Window, status *widget.Label, state *uiState) {
 				dialog.ShowError(err, w)
 				return
 			}
-			recordOperation(state, ops.SendSummary(outcome))
+			recordOperation(state, ops.SendSummary(outcome, node.ID, "IMAGE", instance.StudyInstanceUID, instance.SeriesInstanceUID, instance.SOPInstanceUID))
 			status.SetText(fmt.Sprintf(
 				"C-STORE %s: attempted %d, sent %d, warnings %d, failed %d in %s",
 				node.Name,
@@ -9164,6 +9312,9 @@ func retrieveSelectedSeries(w fyne.Window, status *widget.Label, tables archiveT
 		status.SetText("No query-enabled remote nodes configured")
 		return
 	}
+	if !requireReceiverRunningForMove(w, status, state, node) {
+		return
+	}
 	if issue := retrieveReceiverAddressIssue(state, node); issue != "" {
 		status.SetText(issue)
 		return
@@ -9192,7 +9343,7 @@ func retrieveSelectedSeries(w fyne.Window, status *widget.Label, tables archiveT
 			if studyErr == nil {
 				setStudies(state, tables, studies)
 			}
-			recordOperation(state, ops.RetrieveSummary(outcome))
+			recordOperation(state, ops.RetrieveSummary(outcome, node.ID, "SERIES", series.StudyInstanceUID, series.SeriesInstanceUID, ""))
 			status.SetText(fmt.Sprintf(
 				"%s %s: final=0x%04X completed %d failed %d warnings %d stored %d in %s",
 				retrieveMethodName(outcome),
@@ -9234,6 +9385,9 @@ func retrieveSelectedInstance(w fyne.Window, status *widget.Label, tables archiv
 		status.SetText("No query-enabled remote nodes configured")
 		return
 	}
+	if !requireReceiverRunningForMove(w, status, state, node) {
+		return
+	}
 	if issue := retrieveReceiverAddressIssue(state, node); issue != "" {
 		status.SetText(issue)
 		return
@@ -9262,7 +9416,7 @@ func retrieveSelectedInstance(w fyne.Window, status *widget.Label, tables archiv
 			if studyErr == nil {
 				setStudies(state, tables, studies)
 			}
-			recordOperation(state, ops.RetrieveSummary(outcome))
+			recordOperation(state, ops.RetrieveSummary(outcome, node.ID, "IMAGE", instance.StudyInstanceUID, instance.SeriesInstanceUID, instance.SOPInstanceUID))
 			status.SetText(fmt.Sprintf(
 				"%s %s: final=0x%04X completed %d failed %d warnings %d stored %d in %s",
 				retrieveMethodName(outcome),
@@ -13169,14 +13323,14 @@ func retrieveSelectedQuery(w fyne.Window, status *widget.Label, tables archiveTa
 		status.SetText("Select a query result to retrieve")
 		return
 	}
-	request, ok := prepareQueryRetrieveRequest(status, state, match)
+	request, ok := prepareQueryRetrieveRequest(w, status, state, match)
 	if !ok {
 		return
 	}
 	startQueryRetrieve(w, status, tables, state, request)
 }
 
-func prepareQueryRetrieveRequest(status *widget.Label, state *uiState, match query.Match) (queryRetrieveRequest, bool) {
+func prepareQueryRetrieveRequest(w fyne.Window, status *widget.Label, state *uiState, match query.Match) (queryRetrieveRequest, bool) {
 	level, label, ok := queryRetrieveLevelAndLabel(match)
 	if !ok {
 		setStatusIfPresent(status, queryRetrieveValidationMessage(match))
@@ -13185,6 +13339,9 @@ func prepareQueryRetrieveRequest(status *widget.Label, state *uiState, match que
 	node, ok := nodeForQueryMatch(state, match)
 	if !ok {
 		setStatusIfPresent(status, "No query-enabled remote nodes configured")
+		return queryRetrieveRequest{}, false
+	}
+	if !requireReceiverRunningForMove(w, status, state, node) {
 		return queryRetrieveRequest{}, false
 	}
 	if issue := retrieveReceiverAddressIssue(state, node); issue != "" {
@@ -13338,7 +13495,7 @@ func startQueryRetrieve(w fyne.Window, status *widget.Label, tables archiveTable
 			if studyErr == nil {
 				setStudies(state, tables, studies)
 			}
-			recordOperation(state, ops.RetrieveSummary(outcome))
+			recordOperation(state, ops.RetrieveSummary(outcome, request.node.ID, request.level, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.match.SOPInstanceUID))
 			recordQueryRetrieveRowStatus(state, request.match, queryRetrieveSuccessRowStatus(request, outcome))
 			refreshQueryResultSummary(state)
 			setStatusIfPresent(status, fmt.Sprintf(
@@ -13393,7 +13550,7 @@ func runAutoQueryAutoRetrieve(w fyne.Window, status *widget.Label, tables archiv
 	}
 	requests := make([]queryRetrieveRequest, 0, len(candidates))
 	for _, candidate := range candidates {
-		request, ok := prepareQueryRetrieveRequest(status, state, candidate)
+		request, ok := prepareQueryRetrieveRequest(w, status, state, candidate)
 		if !ok {
 			return
 		}
@@ -13432,8 +13589,9 @@ func runAutoQueryAutoRetrieve(w fyne.Window, status *widget.Label, tables archiv
 			if studyErr == nil {
 				setStudies(state, tables, studies)
 			}
-			for _, outcome := range outcomes {
-				recordOperation(state, ops.RetrieveSummary(outcome))
+			for i, outcome := range outcomes {
+				request := requests[i]
+				recordOperation(state, ops.RetrieveSummary(outcome, request.node.ID, request.level, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.match.SOPInstanceUID))
 			}
 			setStatusIfPresent(status, autoQueryRetrieveBatchStatus(outcomes))
 			if studyErr != nil {

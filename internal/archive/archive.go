@@ -33,6 +33,7 @@ type Catalog struct {
 	db       *sql.DB
 	rootDir  string
 	storeDir string
+	trashDir string
 }
 
 const CatalogSchemaVersion = 1
@@ -51,6 +52,11 @@ type ImportReport struct {
 	Duplicates   int
 	InvalidFiles int
 	Rejections   []Rejection
+}
+
+type ArchiveStats struct {
+	InstanceCount int64
+	TotalBytes    int64
 }
 
 type ImportProgress struct {
@@ -217,11 +223,15 @@ func Open(rootDir string) (*Catalog, error) {
 	if err := os.MkdirAll(storeDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create object store: %w", err)
 	}
+	trashDir := filepath.Join(rootDir, "trash")
+	if err := os.MkdirAll(trashDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create trash store: %w", err)
+	}
 	db, err := sql.Open("sqlite3", filepath.Join(rootDir, "catalog.db"))
 	if err != nil {
 		return nil, fmt.Errorf("open catalog database: %w", err)
 	}
-	c := &Catalog{db: db, rootDir: rootDir, storeDir: storeDir}
+	c := &Catalog{db: db, rootDir: rootDir, storeDir: storeDir, trashDir: trashDir}
 	if err := c.init(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -234,6 +244,141 @@ func (c *Catalog) Close() error {
 		return nil
 	}
 	return c.db.Close()
+}
+
+// ObjectDir reports the directory containing catalogued DICOM objects.
+func (c *Catalog) ObjectDir() string {
+	if c == nil {
+		return ""
+	}
+	return c.storeDir
+}
+
+// IntegrityCheck runs SQLite's catalog integrity check.
+func (c *Catalog) IntegrityCheck(ctx context.Context) error {
+	rows, err := c.db.QueryContext(ctx, `PRAGMA integrity_check`)
+	if err != nil {
+		return fmt.Errorf("run catalog integrity check: %w", err)
+	}
+	defer rows.Close()
+
+	var findings []string
+	for rows.Next() {
+		var finding string
+		if err := rows.Scan(&finding); err != nil {
+			return fmt.Errorf("scan catalog integrity check: %w", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(finding), "ok") {
+			continue
+		}
+		findings = append(findings, finding)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate catalog integrity check: %w", err)
+	}
+	if len(findings) > 0 {
+		return fmt.Errorf("catalog integrity check failed: %s", strings.Join(findings, "; "))
+	}
+	return nil
+}
+
+// StoredPaths returns all catalogued object paths.
+func (c *Catalog) StoredPaths(ctx context.Context) ([]string, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT stored_path FROM instances ORDER BY sha256 ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("query stored object paths: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, fmt.Errorf("scan stored object path: %w", err)
+		}
+		paths = append(paths, path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate stored object paths: %w", err)
+	}
+	return paths, nil
+}
+
+func (c *Catalog) RebaseStoredPaths(ctx context.Context) (int64, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT sha256, stored_path FROM instances ORDER BY sha256 ASC`)
+	if err != nil {
+		return 0, fmt.Errorf("query stored object paths for rebase: %w", err)
+	}
+	defer rows.Close()
+
+	type update struct {
+		sha256 string
+		path   string
+	}
+	var updates []update
+	for rows.Next() {
+		var sha256 string
+		var storedPath string
+		if err := rows.Scan(&sha256, &storedPath); err != nil {
+			return 0, fmt.Errorf("scan stored object path for rebase: %w", err)
+		}
+		name := filepath.Base(strings.TrimSpace(storedPath))
+		if name == "" || name == "." || name == string(os.PathSeparator) {
+			return 0, fmt.Errorf("cannot rebase empty stored object path for instance %s", sha256)
+		}
+		nextPath := filepath.Join(c.storeDir, name)
+		if nextPath == storedPath {
+			continue
+		}
+		updates = append(updates, update{sha256: sha256, path: nextPath})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate stored object paths for rebase: %w", err)
+	}
+	if len(updates) == 0 {
+		return 0, nil
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin stored object path rebase: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, item := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE instances SET stored_path = ? WHERE sha256 = ?`, item.path, item.sha256); err != nil {
+			return 0, fmt.Errorf("update stored object path: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit stored object path rebase: %w", err)
+	}
+	committed = true
+	return int64(len(updates)), nil
+}
+
+func (c *Catalog) ArchiveStats(ctx context.Context) (ArchiveStats, error) {
+	var stats ArchiveStats
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(file_size), 0) FROM instances`).Scan(&stats.InstanceCount, &stats.TotalBytes); err != nil {
+		return ArchiveStats{}, fmt.Errorf("query archive stats: %w", err)
+	}
+	return stats, nil
+}
+
+func (c *Catalog) BackupCatalogTo(ctx context.Context, destPath string) error {
+	if _, err := os.Stat(destPath); err == nil {
+		return fmt.Errorf("backup catalog destination already exists: %s", destPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat backup catalog destination: %w", err)
+	}
+	if _, err := c.db.ExecContext(ctx, `VACUUM INTO ?`, destPath); err != nil {
+		return fmt.Errorf("backup catalog database: %w", err)
+	}
+	return nil
 }
 
 func (c *Catalog) ImportPath(ctx context.Context, path string) (ImportReport, error) {
@@ -1200,7 +1345,21 @@ CREATE TABLE IF NOT EXISTS study_metadata (
   comments TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
-`); err != nil {
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL,
+  token_id TEXT NOT NULL,
+  remote_addr TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  uid_scope TEXT,
+  status INTEGER NOT NULL,
+  bytes INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  error_summary TEXT,
+  occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_occurred_at ON audit_log(occurred_at);
+	`); err != nil {
 		return fmt.Errorf("initialize catalog schema: %w", err)
 	}
 	for _, column := range []struct {

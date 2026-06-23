@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/ThalesMMS/Go-PACS/internal/jsonstore"
 	"github.com/ThalesMMS/Go-PACS/internal/netverify"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/Go-PACS/internal/receive"
@@ -87,11 +87,11 @@ func Load(path string) (Config, error) {
 	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return Config{}, fmt.Errorf("parse app config: %w", err)
+		return Config{}, &jsonstore.LoadError{Err: fmt.Errorf("parse app config: %w", err), BackupExists: jsonstore.CheckBackupExists(path)}
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return Config{}, fmt.Errorf("parse app config: %w", err)
+		return Config{}, &jsonstore.LoadError{Err: fmt.Errorf("parse app config: %w", err), BackupExists: jsonstore.CheckBackupExists(path)}
 	}
 	applyMissingSafetyLimitDefaults(&cfg, raw)
 	return Normalize(cfg)
@@ -102,23 +102,19 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create app config directory: %w", err)
-	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode app config: %w", err)
 	}
 	data = append(data, '\n')
-	temp := path + ".tmp"
-	if err := os.WriteFile(temp, data, 0o644); err != nil {
+	if err := jsonstore.WriteWithBackup(path, data); err != nil {
 		return fmt.Errorf("write app config: %w", err)
 	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
-		return fmt.Errorf("replace app config: %w", err)
-	}
 	return nil
+}
+
+func RecoverFromBackup(path string) error {
+	return jsonstore.RecoverFromBackup(path)
 }
 
 func Normalize(cfg Config) (Config, error) {

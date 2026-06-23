@@ -1,11 +1,13 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
+	"github.com/ThalesMMS/Go-PACS/internal/core"
 	"github.com/ThalesMMS/Go-PACS/internal/export"
 )
 
@@ -156,12 +158,90 @@ func (s *Server) handleArchiveDecompressStudy(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleArchiveDeleteStudy(w http.ResponseWriter, r *http.Request) {
-	count, err := s.session.Catalog().DeleteStudy(r.Context(), r.PathValue("studyUID"))
+	count, err := s.session.Catalog().TrashStudy(r.Context(), r.PathValue("studyUID"))
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, archive.ErrStudyNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeData(w, map[string]int{"trashedObjects": count})
+}
+
+func (s *Server) handleArchiveVerify(w http.ResponseWriter, r *http.Request) {
+	result, err := s.session.VerifyArchive(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeData(w, map[string]int{"deletedObjects": count})
+	writeData(w, result)
+}
+
+func (s *Server) handleArchiveTrashList(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.session.Catalog().ListTrash(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeData(w, entries)
+}
+
+func (s *Server) handleArchiveTrashRestore(w http.ResponseWriter, r *http.Request) {
+	report, err := s.session.Catalog().RestoreStudy(r.Context(), r.PathValue("studyUID"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeData(w, report)
+}
+
+func (s *Server) handleArchiveTrashPurge(w http.ResponseWriter, r *http.Request) {
+	if err := s.session.Catalog().PurgeStudy(r.Context(), r.PathValue("studyUID")); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeData(w, map[string]bool{"purged": true})
+}
+
+func (s *Server) handleArchiveRestorePath(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BackupPath     string `json:"backupPath"`
+		DestPath       string `json:"destPath"`
+		AllowOverwrite bool   `json:"allowOverwrite"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.BackupPath = strings.TrimSpace(req.BackupPath)
+	req.DestPath = strings.TrimSpace(req.DestPath)
+	if req.BackupPath == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Error: "backupPath is required"})
+		return
+	}
+	if req.DestPath == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Error: "destPath is required"})
+		return
+	}
+	result, err := s.session.RestoreBackup(r.Context(), req.BackupPath, req.DestPath, req.AllowOverwrite)
+	if err != nil {
+		writeError(w, restoreErrorStatus(err), err)
+		return
+	}
+	writeData(w, result)
+}
+
+func restoreErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, core.ErrInvalidBackupManifest), errors.Is(err, core.ErrMissingBackupEntry):
+		return http.StatusBadRequest
+	case errors.Is(err, core.ErrOverwriteCurrentArchive):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 // handleArchiveExport streams studies/series/instances as CSV or JSON, re-applying

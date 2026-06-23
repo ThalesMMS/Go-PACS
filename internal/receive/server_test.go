@@ -11,17 +11,20 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/netverify"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
+	"github.com/ThalesMMS/Go-PACS/internal/query"
 	"github.com/ThalesMMS/Go-PACS/internal/send"
 	"github.com/ThalesMMS/Go-PACS/internal/testutil"
 	"github.com/ThalesMMS/dicom-go/core"
@@ -104,6 +107,555 @@ func TestServerReceivesCStoreIntoArchive(t *testing.T) {
 	}
 	if snapshot.Failed != 0 {
 		t.Fatalf("Snapshot.Failed = %d, want 0", snapshot.Failed)
+	}
+}
+
+func TestServerServesStudyRootCFindFromArchive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	studyUID := "1.2.826.0.1.3680043.10.543.250"
+	seriesUID := "1.2.826.0.1.3680043.10.543.251"
+	sopUID := "1.2.826.0.1.3680043.10.543.252"
+	source := filepath.Join(t.TempDir(), "find-source.dcm")
+	if err := os.WriteFile(source, testFindPart10File(t, "FIND^LOCAL", "F001", "ACC-FIND", "CT", studyUID, seriesUID, sopUID, "7", "Axial", "3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := catalog.ImportPath(ctx, source); err != nil {
+		t.Fatal(err)
+	} else if report.StoredFiles != 1 {
+		t.Fatalf("StoredFiles = %d, want 1", report.StoredFiles)
+	}
+
+	server, err := Start(ctx, Config{
+		Catalog: catalog,
+		Address: "127.0.0.1:0",
+		AETitle: testReceiverCalledAETitle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+
+	node := receiverNode(t, server)
+	studies, err := query.StudyRootFind(ctx, node, query.Criteria{
+		PatientName:      "FIND*",
+		PatientID:        "F001",
+		StudyDateFrom:    "20260604",
+		StudyDateTo:      "20260604",
+		AccessionNumber:  "ACC-FIND",
+		Modality:         "CT",
+		StudyInstanceUID: studyUID,
+	}, "FINDSCU")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies.Matches) != 1 {
+		t.Fatalf("study matches = %d, want 1", len(studies.Matches))
+	}
+	if studies.Matches[0].StudyInstanceUID != studyUID || studies.Matches[0].PatientID != "F001" {
+		t.Fatalf("study match = %+v", studies.Matches[0])
+	}
+
+	series, err := query.StudyRootSeriesFind(ctx, node, query.SeriesCriteria{
+		StudyInstanceUID:  studyUID,
+		SeriesInstanceUID: seriesUID,
+		Modality:          "CT",
+		SeriesNumber:      "7",
+		SeriesDescription: "Axial",
+	}, "FINDSCU")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series.Matches) != 1 {
+		t.Fatalf("series matches = %d, want 1", len(series.Matches))
+	}
+	if series.Matches[0].SeriesInstanceUID != seriesUID || series.Matches[0].ImageCount != "1" {
+		t.Fatalf("series match = %+v", series.Matches[0])
+	}
+
+	images, err := query.StudyRootImageFind(ctx, node, query.ImageCriteria{
+		StudyInstanceUID:  studyUID,
+		SeriesInstanceUID: seriesUID,
+		SOPInstanceUID:    sopUID,
+		SOPClassUID:       testStorageSOPClassUID,
+		Modality:          "CT",
+		InstanceNumber:    "3",
+	}, "FINDSCU")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(images.Matches) != 1 {
+		t.Fatalf("image matches = %d, want 1", len(images.Matches))
+	}
+	if images.Matches[0].SOPInstanceUID != sopUID || images.Matches[0].InstanceNumber != "3" {
+		t.Fatalf("image match = %+v", images.Matches[0])
+	}
+}
+
+func TestServerServesStudyRootCMoveFromArchive(t *testing.T) {
+	tests := []struct {
+		name  string
+		level string
+		keys  map[string]string
+	}{
+		{
+			name:  "study",
+			level: dimse.QueryRetrieveLevelStudy,
+			keys:  map[string]string{"StudyInstanceUID": testStudyInstanceUID},
+		},
+		{
+			name:  "series",
+			level: dimse.QueryRetrieveLevelSeries,
+			keys: map[string]string{
+				"StudyInstanceUID":  testStudyInstanceUID,
+				"SeriesInstanceUID": testSeriesInstanceUID,
+			},
+		},
+		{
+			name:  "image",
+			level: dimse.QueryRetrieveLevelImage,
+			keys: map[string]string{
+				"StudyInstanceUID":  testStudyInstanceUID,
+				"SeriesInstanceUID": testSeriesInstanceUID,
+				"SOPInstanceUID":    testSOPInstanceUID,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			sourceCatalog, err := archive.Open(filepath.Join(t.TempDir(), "source-archive"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sourceCatalog.Close()
+			source := filepath.Join(t.TempDir(), "move-source.dcm")
+			if err := os.WriteFile(source, testPart10File(t), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if report, err := sourceCatalog.ImportPath(ctx, source); err != nil {
+				t.Fatal(err)
+			} else if report.StoredFiles != 1 {
+				t.Fatalf("StoredFiles = %d, want 1", report.StoredFiles)
+			}
+
+			destinationCatalog, err := archive.Open(filepath.Join(t.TempDir(), "destination-archive"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer destinationCatalog.Close()
+			destinationServer, err := Start(ctx, Config{
+				Catalog: destinationCatalog,
+				Address: "127.0.0.1:0",
+				AETitle: "DESTAE",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stopServer(t, destinationServer)
+			destinationNode := receiverNode(t, destinationServer)
+
+			sourceServer, err := Start(ctx, Config{
+				Catalog: sourceCatalog,
+				Address: "127.0.0.1:0",
+				AETitle: "MOVESCP",
+				NodeLookup: func(aeTitle string) (nodes.Node, bool) {
+					return nodes.FindByAETitle([]nodes.Node{destinationNode}, aeTitle)
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stopServer(t, sourceServer)
+
+			rsp := sendStudyRootCMove(t, ctx, sourceServer, "DESTAE", studyRootMoveIdentifier(t, test.level, test.keys))
+			if rsp.Status != dimse.StatusSuccess {
+				t.Fatalf("C-MOVE status = 0x%04X, want success", rsp.Status)
+			}
+			if cMoveCount(rsp.NumberOfCompletedSuboperationsOrNil) != 1 || cMoveCount(rsp.NumberOfFailedSuboperationsOrNil) != 0 {
+				t.Fatalf("C-MOVE counts completed=%d failed=%d, want completed=1 failed=0",
+					cMoveCount(rsp.NumberOfCompletedSuboperationsOrNil),
+					cMoveCount(rsp.NumberOfFailedSuboperationsOrNil))
+			}
+
+			instances, err := destinationCatalog.InstancesForStudy(ctx, testStudyInstanceUID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(instances) != 1 || instances[0].SOPInstanceUID != testSOPInstanceUID {
+				t.Fatalf("moved instances = %+v, want one moved SOPInstanceUID %s", instances, testSOPInstanceUID)
+			}
+		})
+	}
+}
+
+func TestServerRejectsUnknownCMoveDestination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server, err := Start(ctx, Config{
+		Catalog: catalog,
+		Address: "127.0.0.1:0",
+		AETitle: "MOVESCP",
+		NodeLookup: func(string) (nodes.Node, bool) {
+			return nodes.Node{}, false
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+
+	rsp := sendStudyRootCMove(t, ctx, server, "MISSING", studyRootMoveIdentifier(t, dimse.QueryRetrieveLevelStudy, map[string]string{
+		"StudyInstanceUID": testStudyInstanceUID,
+	}))
+	if rsp.Status != dimse.StatusCMoveMoveDestinationUnknown {
+		t.Fatalf("C-MOVE status = 0x%04X, want destination unknown 0x%04X", rsp.Status, dimse.StatusCMoveMoveDestinationUnknown)
+	}
+}
+
+func TestServerServesStudyRootCGetFromArchive(t *testing.T) {
+	tests := []struct {
+		name  string
+		level string
+		keys  map[string]string
+	}{
+		{
+			name:  "study",
+			level: dimse.QueryRetrieveLevelStudy,
+			keys:  map[string]string{"StudyInstanceUID": testStudyInstanceUID},
+		},
+		{
+			name:  "series",
+			level: dimse.QueryRetrieveLevelSeries,
+			keys: map[string]string{
+				"StudyInstanceUID":  testStudyInstanceUID,
+				"SeriesInstanceUID": testSeriesInstanceUID,
+			},
+		},
+		{
+			name:  "image",
+			level: dimse.QueryRetrieveLevelImage,
+			keys: map[string]string{
+				"StudyInstanceUID":  testStudyInstanceUID,
+				"SeriesInstanceUID": testSeriesInstanceUID,
+				"SOPInstanceUID":    testSOPInstanceUID,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			sourceCatalog, err := archive.Open(filepath.Join(t.TempDir(), "source-archive"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sourceCatalog.Close()
+			source := filepath.Join(t.TempDir(), "get-source.dcm")
+			if err := os.WriteFile(source, testPart10File(t), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if report, err := sourceCatalog.ImportPath(ctx, source); err != nil {
+				t.Fatal(err)
+			} else if report.StoredFiles != 1 {
+				t.Fatalf("StoredFiles = %d, want 1", report.StoredFiles)
+			}
+
+			destinationCatalog, err := archive.Open(filepath.Join(t.TempDir(), "destination-archive"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer destinationCatalog.Close()
+
+			server, err := Start(ctx, Config{
+				Catalog: sourceCatalog,
+				Address: "127.0.0.1:0",
+				AETitle: "GETSCP",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stopServer(t, server)
+
+			rsp := sendStudyRootCGet(t, ctx, server, studyRootMoveIdentifier(t, test.level, test.keys), importCGetStoreHandler(t, destinationCatalog))
+			if rsp.Status != dimse.StatusSuccess {
+				t.Fatalf("C-GET status = 0x%04X, want success", rsp.Status)
+			}
+			if cMoveCount(rsp.NumberOfCompletedSuboperationsOrNil) != 1 || cMoveCount(rsp.NumberOfFailedSuboperationsOrNil) != 0 {
+				t.Fatalf("C-GET counts completed=%d failed=%d, want completed=1 failed=0",
+					cMoveCount(rsp.NumberOfCompletedSuboperationsOrNil),
+					cMoveCount(rsp.NumberOfFailedSuboperationsOrNil))
+			}
+
+			instances, err := destinationCatalog.InstancesForStudy(ctx, testStudyInstanceUID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(instances) != 1 || instances[0].SOPInstanceUID != testSOPInstanceUID {
+				t.Fatalf("retrieved instances = %+v, want one retrieved SOPInstanceUID %s", instances, testSOPInstanceUID)
+			}
+		})
+	}
+}
+
+func TestServerReportsCGetStoreFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	source := filepath.Join(t.TempDir(), "get-failure-source.dcm")
+	if err := os.WriteFile(source, testPart10File(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := catalog.ImportPath(ctx, source); err != nil {
+		t.Fatal(err)
+	} else if report.StoredFiles != 1 {
+		t.Fatalf("StoredFiles = %d, want 1", report.StoredFiles)
+	}
+
+	server, err := Start(ctx, Config{
+		Catalog: catalog,
+		Address: "127.0.0.1:0",
+		AETitle: "GETSCP",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+
+	rsp := sendStudyRootCGet(t, ctx, server, studyRootMoveIdentifier(t, dimse.QueryRetrieveLevelStudy, map[string]string{
+		"StudyInstanceUID": testStudyInstanceUID,
+	}), dimse.CGetStoreHandlerFunc(func(context.Context, dimse.CGetStoreRequestContext) (uint16, error) {
+		return dimse.StatusCGetUnableToProcess, nil
+	}))
+	if rsp.Status != dimse.StatusCGetSubOperationsCompleteOneOrMoreFailures {
+		t.Fatalf("C-GET status = 0x%04X, want failure-count warning 0x%04X", rsp.Status, dimse.StatusCGetSubOperationsCompleteOneOrMoreFailures)
+	}
+	if cMoveCount(rsp.NumberOfCompletedSuboperationsOrNil) != 0 || cMoveCount(rsp.NumberOfFailedSuboperationsOrNil) != 1 {
+		t.Fatalf("C-GET counts completed=%d failed=%d, want completed=0 failed=1",
+			cMoveCount(rsp.NumberOfCompletedSuboperationsOrNil),
+			cMoveCount(rsp.NumberOfFailedSuboperationsOrNil))
+	}
+}
+
+func TestServerHandlesSimultaneousAssociations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sourceCatalog, err := archive.Open(filepath.Join(t.TempDir(), "source-archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sourceCatalog.Close()
+	seedPath := filepath.Join(t.TempDir(), "seed.dcm")
+	if err := os.WriteFile(seedPath, testPart10File(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := sourceCatalog.ImportPath(ctx, seedPath); err != nil {
+		t.Fatal(err)
+	} else if report.StoredFiles != 1 {
+		t.Fatalf("StoredFiles = %d, want 1", report.StoredFiles)
+	}
+
+	moveCatalog, err := archive.Open(filepath.Join(t.TempDir(), "move-destination"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer moveCatalog.Close()
+	moveDestination, err := Start(ctx, Config{
+		Catalog: moveCatalog,
+		Address: "127.0.0.1:0",
+		AETitle: "MOVEDEST",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, moveDestination)
+	moveNode := receiverNode(t, moveDestination)
+
+	getCatalog, err := archive.Open(filepath.Join(t.TempDir(), "get-destination"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer getCatalog.Close()
+
+	server, err := Start(ctx, Config{
+		Catalog:         sourceCatalog,
+		Address:         "127.0.0.1:0",
+		AETitle:         "QRSCP",
+		MaxAssociations: 10,
+		NodeLookup: func(aeTitle string) (nodes.Node, bool) {
+			return nodes.FindByAETitle([]nodes.Node{moveNode}, aeTitle)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+	sourceNode := receiverNode(t, server)
+
+	first, firstPC, err := dialVerificationAssociation(ctx, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, secondPC, err := dialVerificationAssociation(ctx, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if rsp, err := dimse.SendCEcho(first, firstPC.ID, 1); err != nil || rsp.Status != dimse.StatusSuccess {
+		t.Fatalf("first C-ECHO status=%v err=%v", rsp, err)
+	}
+	if rsp, err := dimse.SendCEcho(second, secondPC.ID, 2); err != nil || rsp.Status != dimse.StatusSuccess {
+		t.Fatalf("second C-ECHO status=%v err=%v", rsp, err)
+	}
+
+	storePath := filepath.Join(t.TempDir(), "concurrent-store.dcm")
+	if err := os.WriteFile(storePath, testFindPart10File(t, "CONCURRENT^STORE", "C001", "ACC-CONC", "MR", "1.2.826.0.1.3680043.10.543.710", "1.2.826.0.1.3680043.10.543.711", "1.2.826.0.1.3680043.10.543.712", "1", "Concurrent", "1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	moveIdentifier := studyRootMoveIdentifier(t, dimse.QueryRetrieveLevelSeries, map[string]string{
+		"StudyInstanceUID":  testStudyInstanceUID,
+		"SeriesInstanceUID": testSeriesInstanceUID,
+	})
+	getIdentifier := studyRootMoveIdentifier(t, dimse.QueryRetrieveLevelImage, map[string]string{
+		"StudyInstanceUID":  testStudyInstanceUID,
+		"SeriesInstanceUID": testSeriesInstanceUID,
+		"SOPInstanceUID":    testSOPInstanceUID,
+	})
+
+	operations := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "C-STORE",
+			run: func() error {
+				outcome, err := send.SendFiles(ctx, sourceNode, []string{storePath}, "STORESCU2")
+				if err != nil {
+					return err
+				}
+				if outcome.Sent != 1 || outcome.Failed != 0 {
+					return fmt.Errorf("C-STORE outcome = %#v, want one sent", outcome)
+				}
+				return nil
+			},
+		},
+		{
+			name: "C-FIND",
+			run: func() error {
+				result, err := query.StudyRootFind(ctx, sourceNode, query.Criteria{StudyInstanceUID: testStudyInstanceUID}, "FINDSCU")
+				if err != nil {
+					return err
+				}
+				if len(result.Matches) != 1 || result.Matches[0].StudyInstanceUID != testStudyInstanceUID {
+					return fmt.Errorf("C-FIND matches = %+v, want seeded study", result.Matches)
+				}
+				return nil
+			},
+		},
+		{
+			name: "C-MOVE",
+			run: func() error {
+				rsp, err := performStudyRootCMove(ctx, server, moveNode.AETitle, moveIdentifier)
+				if err != nil {
+					return err
+				}
+				if rsp.Status != dimse.StatusSuccess || cMoveCount(rsp.NumberOfCompletedSuboperationsOrNil) != 1 {
+					return fmt.Errorf("C-MOVE response = %+v, want one completed success", rsp)
+				}
+				return nil
+			},
+		},
+		{
+			name: "C-GET",
+			run: func() error {
+				rsp, err := performStudyRootCGet(ctx, server, getIdentifier, catalogCGetStoreHandler(getCatalog))
+				if err != nil {
+					return err
+				}
+				if rsp.Status != dimse.StatusSuccess || cMoveCount(rsp.NumberOfCompletedSuboperationsOrNil) != 1 {
+					return fmt.Errorf("C-GET response = %+v, want one completed success", rsp)
+				}
+				return nil
+			},
+		},
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(operations))
+	for _, op := range operations {
+		op := op
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := op.run(); err != nil {
+				errs <- fmt.Errorf("%s: %w", op.name, err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if t.Failed() {
+		return
+	}
+
+	releaseCtx, releaseCancel := context.WithTimeout(ctx, time.Second)
+	defer releaseCancel()
+	if err := first.Release(releaseCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Release(releaseCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := server.Snapshot()
+	if snapshot.Associations < int64(2+len(operations)) {
+		t.Fatalf("Associations = %d, want at least %d", snapshot.Associations, 2+len(operations))
+	}
+	if snapshot.Stored != 1 || snapshot.Rejected != 0 || snapshot.Failed != 0 {
+		t.Fatalf("snapshot = %+v, want Stored=1 Rejected=0 Failed=0", snapshot)
+	}
+	moveInstances, err := moveCatalog.InstancesForStudy(ctx, testStudyInstanceUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(moveInstances) != 1 {
+		t.Fatalf("C-MOVE destination instances = %d, want 1", len(moveInstances))
+	}
+	getInstances, err := getCatalog.InstancesForStudy(ctx, testStudyInstanceUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(getInstances) != 1 {
+		t.Fatalf("C-GET destination instances = %d, want 1", len(getInstances))
 	}
 }
 
@@ -778,6 +1330,178 @@ func dialStorageAssociation(ctx context.Context, server *Server) (*ul.Associatio
 	return assoc, pc, nil
 }
 
+func sendStudyRootCMove(t *testing.T, ctx context.Context, server *Server, moveDestination string, identifier *object.Object) *dimse.CMoveResponse {
+	t.Helper()
+	rsp, err := performStudyRootCMove(ctx, server, moveDestination, identifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rsp
+}
+
+func performStudyRootCMove(ctx context.Context, server *Server, moveDestination string, identifier *object.Object) (*dimse.CMoveResponse, error) {
+	assoc, pc, syntax, err := dialMoveAssociation(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+	defer assoc.Close()
+
+	rsp, err := dimse.SendCMove(ctx, assoc, pc.ID, dimse.CMoveRequest{
+		AffectedSOPClassUID: dimse.StudyRootMoveSOPClassUID,
+		MessageID:           1,
+		Priority:            dimse.PriorityMedium,
+		MoveDestination:     moveDestination,
+	}, identifier, syntax)
+	if err != nil {
+		return nil, err
+	}
+	releaseCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := assoc.Release(releaseCtx); err != nil {
+		return nil, err
+	}
+	return rsp, nil
+}
+
+func dialMoveAssociation(ctx context.Context, server *Server) (*ul.Association, ul.AcceptedContext, transfer.Syntax, error) {
+	assoc, err := ul.DialContext(ctx, server.Addr(), ul.DialOptions{
+		CalledAETitle:  server.AETitle(),
+		CallingAETitle: "MOVESCU",
+		Contexts:       []ul.PresentationContext{dimse.StudyRootMovePresentationContext()},
+	})
+	if err != nil {
+		return nil, ul.AcceptedContext{}, transfer.Syntax{}, err
+	}
+	pc, err := dimse.AcceptedContextForSOPClass(assoc, dimse.StudyRootMoveSOPClassUID)
+	if err != nil {
+		_ = assoc.Close()
+		return nil, ul.AcceptedContext{}, transfer.Syntax{}, err
+	}
+	syntax, err := dimse.TransferSyntaxForAcceptedContext(pc)
+	if err != nil {
+		_ = assoc.Close()
+		return nil, ul.AcceptedContext{}, transfer.Syntax{}, err
+	}
+	return assoc, pc, syntax, nil
+}
+
+func sendStudyRootCGet(t *testing.T, ctx context.Context, server *Server, identifier *object.Object, storeHandler dimse.CGetStoreHandler) *dimse.CGetResponse {
+	t.Helper()
+	rsp, err := performStudyRootCGet(ctx, server, identifier, storeHandler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rsp
+}
+
+func performStudyRootCGet(ctx context.Context, server *Server, identifier *object.Object, storeHandler dimse.CGetStoreHandler) (*dimse.CGetResponse, error) {
+	assoc, pc, syntax, err := dialGetAssociation(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+	defer assoc.Close()
+
+	rsp, err := dimse.SendCGet(ctx, assoc, pc.ID, dimse.CGetRequest{
+		AffectedSOPClassUID: dimse.StudyRootGetSOPClassUID,
+		MessageID:           1,
+		Priority:            dimse.PriorityMedium,
+	}, identifier, syntax, storeHandler)
+	if err != nil {
+		return nil, err
+	}
+	releaseCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := assoc.Release(releaseCtx); err != nil {
+		return nil, err
+	}
+	return rsp, nil
+}
+
+func dialGetAssociation(ctx context.Context, server *Server) (*ul.Association, ul.AcceptedContext, transfer.Syntax, error) {
+	contexts, roles := cGetTestPresentationContexts()
+	assoc, err := ul.DialContext(ctx, server.Addr(), ul.DialOptions{
+		CalledAETitle:  server.AETitle(),
+		CallingAETitle: "GETSCU",
+		Contexts:       contexts,
+		RoleSelections: roles,
+	})
+	if err != nil {
+		return nil, ul.AcceptedContext{}, transfer.Syntax{}, err
+	}
+	pc, err := dimse.AcceptedContextForSOPClass(assoc, dimse.StudyRootGetSOPClassUID)
+	if err != nil {
+		_ = assoc.Close()
+		return nil, ul.AcceptedContext{}, transfer.Syntax{}, err
+	}
+	syntax, err := dimse.TransferSyntaxForAcceptedContext(pc)
+	if err != nil {
+		_ = assoc.Close()
+		return nil, ul.AcceptedContext{}, transfer.Syntax{}, err
+	}
+	return assoc, pc, syntax, nil
+}
+
+func cGetTestPresentationContexts() ([]ul.PresentationContext, []ul.RoleSelectionItem) {
+	contexts := []ul.PresentationContext{
+		dimse.StudyRootGetPresentationContext(),
+		{
+			AbstractSyntaxUID:  testStorageSOPClassUID,
+			TransferSyntaxUIDs: []string{ul.ImplicitVRLittleEndian, ul.ExplicitVRLittleEndian},
+		},
+	}
+	roles := []ul.RoleSelectionItem{
+		{SopClassUID: testStorageSOPClassUID, SCPRole: true},
+	}
+	return contexts, roles
+}
+
+func importCGetStoreHandler(t *testing.T, catalog *archive.Catalog) dimse.CGetStoreHandler {
+	t.Helper()
+	return catalogCGetStoreHandler(catalog)
+}
+
+func catalogCGetStoreHandler(catalog *archive.Catalog) dimse.CGetStoreHandler {
+	return dimse.CGetStoreHandlerFunc(func(ctx context.Context, req dimse.CGetStoreRequestContext) (uint16, error) {
+		report, err := catalog.ImportObject(ctx, "dicom://GETSCU/"+req.Request.AffectedSOPInstanceUID, req.DataSet, req.DataSetSyntax)
+		if err != nil {
+			return dimse.StatusCGetUnableToProcess, err
+		}
+		if report.InvalidFiles > 0 || len(report.Rejections) > 0 {
+			return dimse.StatusCGetUnableToProcess, fmt.Errorf("archive rejected C-GET object")
+		}
+		return dimse.StatusSuccess, nil
+	})
+}
+
+func studyRootMoveIdentifier(t *testing.T, level string, keys map[string]string) *object.Object {
+	t.Helper()
+	var (
+		elems []core.Element
+		err   error
+	)
+	switch level {
+	case dimse.QueryRetrieveLevelStudy:
+		elems, err = dimse.BuildStudyRootStudyFindKeys(keys)
+	case dimse.QueryRetrieveLevelSeries:
+		elems, err = dimse.BuildStudyRootSeriesFindKeys(keys)
+	case dimse.QueryRetrieveLevelImage:
+		elems, err = dimse.BuildStudyRootImageFindKeys(keys)
+	default:
+		t.Fatalf("unsupported move level %q", level)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return object.FromElements(elems, std.Dictionary)
+}
+
+func cMoveCount(value *uint16) uint16 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
 func sendMalformedExplicitVRDataSet(assoc *ul.Association, pcID byte) error {
 	firstPDV := []byte{
 		0x10, 0x00, 0x10, 0x00,
@@ -876,6 +1600,36 @@ func testPart10File(t *testing.T) []byte {
 		testutil.StringElement(core.NewTag(0x0008, 0x0060), core.VRCS, "CT"),
 		testutil.StringElement(core.NewTag(0x0020, 0x000D), core.VRUI, testStudyInstanceUID),
 		testutil.StringElement(core.NewTag(0x0020, 0x000E), core.VRUI, testSeriesInstanceUID),
+	}
+	file := &object.File{
+		Dataset:        object.FromElements(dataset, std.Dictionary),
+		TransferSyntax: transfer.ExplicitVRLittleEndian,
+	}
+	var buf bytes.Buffer
+	if err := object.WriteFile(&buf, file); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func testFindPart10File(t *testing.T, patientName, patientID, accession, modality, studyUID, seriesUID, sopUID, seriesNumber, seriesDescription, instanceNumber string) []byte {
+	t.Helper()
+	dataset := []core.Element{
+		testutil.StringElement(core.NewTag(0x0008, 0x0016), core.VRUI, testStorageSOPClassUID),
+		testutil.StringElement(core.NewTag(0x0008, 0x0018), core.VRUI, sopUID),
+		testutil.StringElement(core.NewTag(0x0010, 0x0010), core.VRPN, patientName),
+		testutil.StringElement(core.NewTag(0x0010, 0x0020), core.VRLO, patientID),
+		testutil.StringElement(core.NewTag(0x0010, 0x0030), core.VRDA, "19700102"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0020), core.VRDA, "20260604"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0030), core.VRTM, "134501"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0050), core.VRSH, accession),
+		testutil.StringElement(core.NewTag(0x0008, 0x0060), core.VRCS, modality),
+		testutil.StringElement(core.NewTag(0x0008, 0x1030), core.VRLO, "Find study"),
+		testutil.StringElement(core.NewTag(0x0008, 0x103E), core.VRLO, seriesDescription),
+		testutil.StringElement(core.NewTag(0x0020, 0x000D), core.VRUI, studyUID),
+		testutil.StringElement(core.NewTag(0x0020, 0x000E), core.VRUI, seriesUID),
+		testutil.StringElement(core.NewTag(0x0020, 0x0011), core.VRIS, seriesNumber),
+		testutil.StringElement(core.NewTag(0x0020, 0x0013), core.VRIS, instanceNumber),
 	}
 	file := &object.File{
 		Dataset:        object.FromElements(dataset, std.Dictionary),

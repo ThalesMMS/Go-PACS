@@ -24,7 +24,7 @@ func TestImportSummaryConvertsReportToWarningSummary(t *testing.T) {
 		},
 	}
 
-	summary := ImportSummary(report, 1500*time.Millisecond)
+	summary := ImportSummary(report, 1500*time.Millisecond, "/incoming")
 
 	if summary.Version != 1 {
 		t.Fatalf("Version = %d, want 1", summary.Version)
@@ -37,6 +37,9 @@ func TestImportSummaryConvertsReportToWarningSummary(t *testing.T) {
 	}
 	if summary.DurationMS != 1500 {
 		t.Fatalf("DurationMS = %d, want 1500", summary.DurationMS)
+	}
+	if summary.RetryInput == nil || summary.RetryInput.Path != "/incoming" {
+		t.Fatalf("RetryInput = %#v, want import path", summary.RetryInput)
 	}
 	if summary.Counts.Requested == nil || *summary.Counts.Requested != 3 {
 		t.Fatalf("Requested = %#v, want 3", summary.Counts.Requested)
@@ -62,7 +65,7 @@ func TestImportSummaryMarksAllRejectedImportAsFailure(t *testing.T) {
 		Rejections: []archive.Rejection{
 			{Path: "/incoming/bad.dcm", Reason: "DICOM parse failed"},
 		},
-	}, 20*time.Millisecond)
+	}, 20*time.Millisecond, "/incoming")
 
 	if summary.Status != StatusFailure {
 		t.Fatalf("Status = %q, want %q", summary.Status, StatusFailure)
@@ -70,7 +73,7 @@ func TestImportSummaryMarksAllRejectedImportAsFailure(t *testing.T) {
 }
 
 func TestOperationSummaryJSONUsesStableSnakeCaseValues(t *testing.T) {
-	summary := ImportSummary(archive.ImportReport{ScannedFiles: 1, StoredFiles: 1}, time.Second)
+	summary := ImportSummary(archive.ImportReport{ScannedFiles: 1, StoredFiles: 1}, time.Second, "")
 	data, err := json.Marshal(summary)
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +140,7 @@ func TestSendSummaryCountsFailures(t *testing.T) {
 			Error:                       "C-STORE failed with status 0xA700",
 		}},
 		Duration: 2 * time.Second,
-	})
+	}, "node-1", "IMAGE", "1.2.study", "1.2.series", "1.2.3")
 
 	if summary.Kind != KindSendStore {
 		t.Fatalf("Kind = %q, want %q", summary.Kind, KindSendStore)
@@ -163,6 +166,9 @@ func TestSendSummaryCountsFailures(t *testing.T) {
 	if len(summary.Failures) != 1 || summary.Failures[0].Message != "one.dcm: status 0xA700" {
 		t.Fatalf("Failures = %#v", summary.Failures)
 	}
+	if summary.RetryInput == nil || summary.RetryInput.NodeID != "node-1" || summary.RetryInput.SOPUID != "1.2.3" {
+		t.Fatalf("RetryInput = %#v, want send scope", summary.RetryInput)
+	}
 }
 
 func TestRetrieveSummaryCountsSuboperationsAndReceiverStores(t *testing.T) {
@@ -176,7 +182,7 @@ func TestRetrieveSummaryCountsSuboperationsAndReceiverStores(t *testing.T) {
 			{FinalStatus: 0xB000, Remaining: 0, Completed: 2, Failed: 1, Warnings: 1},
 		},
 		Duration: 3 * time.Second,
-	})
+	}, "node-1", "STUDY", "1.2.study", "", "")
 
 	if summary.Kind != KindRetrieveMove {
 		t.Fatalf("Kind = %q, want %q", summary.Kind, KindRetrieveMove)
@@ -202,6 +208,9 @@ func TestRetrieveSummaryCountsSuboperationsAndReceiverStores(t *testing.T) {
 	if summary.Progress[0].StatusCode != "0xFF00" || summary.Progress[1].StatusCode != "0xB000" {
 		t.Fatalf("Progress = %#v", summary.Progress)
 	}
+	if summary.RetryInput == nil || summary.RetryInput.NodeID != "node-1" || summary.RetryInput.StudyUID != "1.2.study" {
+		t.Fatalf("RetryInput = %#v, want retrieve scope", summary.RetryInput)
+	}
 }
 
 func TestRetrieveSummaryFlagsRemoteCompletionWithoutLocalStores(t *testing.T) {
@@ -212,7 +221,7 @@ func TestRetrieveSummaryFlagsRemoteCompletionWithoutLocalStores(t *testing.T) {
 			{FinalStatus: 0x0000, Remaining: 0, Completed: 785},
 		},
 		Duration: time.Minute,
-	})
+	}, "node-1", "STUDY", "1.2.study", "", "")
 
 	if summary.Status != StatusFailure {
 		t.Fatalf("Status = %q, want %q", summary.Status, StatusFailure)
@@ -240,7 +249,7 @@ func TestRetrieveSummaryCountsDirectGetStores(t *testing.T) {
 			{FinalStatus: 0x0000, Remaining: 0, Completed: 1},
 		},
 		Duration: time.Second,
-	})
+	}, "node-1", "SERIES", "1.2.study", "1.2.series", "")
 
 	if summary.Status != StatusSuccess {
 		t.Fatalf("Status = %q, want %q", summary.Status, StatusSuccess)

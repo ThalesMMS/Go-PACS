@@ -1,4 +1,4 @@
-// Network tab — dense Horos-like layout: Storage SCP listener control + status,
+// Network tab — dense Horos-like layout: DICOM listener control + status,
 // an inline-editable DICOM nodes table (nodes_add_edit_delete.png), and a dense
 // listener configuration form (listener_config.png).
 window.TABS.network = (function () {
@@ -28,7 +28,7 @@ window.TABS.network = (function () {
   // ---- Listener control ----
   function receiverCard() {
     return el("section", { class: "card" },
-      el("h2", null, "Storage SCP listener"),
+      el("h2", null, "DICOM listener"),
       el("div", { class: "row", id: "rx-statusrow" }, el("span", { class: "muted" }, "loading…")),
       el("div", { class: "row", style: "margin-top:10px" },
         el("button", { class: "btn", id: "rx-start", onclick: () => receiverAction("start") }, "Start"),

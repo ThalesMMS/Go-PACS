@@ -58,9 +58,8 @@ func TestArchiveInspectUnknownInstance(t *testing.T) {
 
 func TestArchiveDeleteUnknownStudy(t *testing.T) {
 	s := newTestServer(t)
-	// Deleting a non-existent study is a no-op delete of 0 objects (not an error).
 	rec, env := do(t, s, http.MethodDelete, "/api/archive/studies/1.2.3.4", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("delete unknown study: code=%d env=%v", rec.Code, env)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete unknown study: code=%d env=%v, want 404", rec.Code, env)
 	}
 }

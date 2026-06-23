@@ -2,6 +2,7 @@ package retrieve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -27,6 +28,8 @@ const (
 	MethodMove = "C-MOVE"
 	MethodGet  = "C-GET"
 )
+
+var ErrReceiverRequired = errors.New("DICOM receiver is not running; start the receiver before initiating C-MOVE retrieval")
 
 var (
 	tagStudyInstanceUID  = core.NewTag(0x0020, 0x000D)
@@ -429,26 +432,7 @@ func ensureReceiver(ctx context.Context, catalog *archive.Catalog, opts Options,
 	if opts.Receiver != nil {
 		return opts.Receiver, false, nil
 	}
-	address := opts.ReceiveAddress
-	if address == "" {
-		address = receive.DefaultAddress
-	}
-	aeTitle := opts.MoveDestination
-	if aeTitle == "" {
-		aeTitle = netverify.DefaultCallingAETitle
-	}
-	server, err := receive.Start(ctx, receive.Config{
-		Catalog:                catalog,
-		Address:                address,
-		AETitle:                aeTitle,
-		AllowedCallingAETitles: allowedCallingAETitles,
-		AllowedRemoteHosts:     allowedRemoteHosts,
-		MaxStoreObjectBytes:    opts.MaxStoreObjectBytes,
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	return server, true, nil
+	return nil, false, ErrReceiverRequired
 }
 
 func remoteHostAllowlist(host string) []string {

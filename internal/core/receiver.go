@@ -20,7 +20,7 @@ var (
 	ErrReceiverNotRunning = errors.New("receiver is not running")
 )
 
-// ReceiverStatus describes the Storage SCP listener for a frontend to render.
+// ReceiverStatus describes the DICOM listener for a frontend to render.
 // When stopped, Address/AETitle reflect the configured (effective) identity.
 type ReceiverStatus struct {
 	Running   bool              `json:"running"`
@@ -40,7 +40,7 @@ func (s *Session) ReceiverStatus() ReceiverStatus {
 
 // StartReceiver assembles the listener configuration from the current config and
 // nodes (Called/Calling-AE and remote-host allowlists, optional TLS) and starts
-// the Storage SCP. The listener is process-scoped and outlives the calling
+// the DICOM listener. The listener is process-scoped and outlives the calling
 // request, so it is started with a background context, not ctx. Returns
 // ErrReceiverRunning if already started.
 func (s *Session) StartReceiver(ctx context.Context) (ReceiverStatus, error) {
@@ -134,6 +134,13 @@ func (s *Session) buildReceiveConfig(cfg appconfig.Config, nodeList []nodes.Node
 		AllowedCallingAETitles:  nodes.CallingAETitles(nodeList),
 		PreferredTransferSyntax: cfg.ReceivePreferredTransferSyntax,
 		DecompressImages:        cfg.ReceiveDecompressImages,
+		NodeLookup: func(aeTitle string) (nodes.Node, bool) {
+			current, err := s.nodeStore.List()
+			if err != nil {
+				return nodes.Node{}, false
+			}
+			return nodes.FindByAETitle(current, aeTitle)
+		},
 	}
 	if cfg.MaxStoreObjectBytes != nil {
 		rcfg.MaxStoreObjectBytes = *cfg.MaxStoreObjectBytes

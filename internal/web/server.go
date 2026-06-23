@@ -53,6 +53,8 @@ func (s *Server) routes() {
 
 	// Operation history (Tasks tab)
 	s.mux.HandleFunc("GET /api/tasks", s.handleTasks)
+	s.mux.HandleFunc("GET /api/tasks/{index}/can-retry", s.handleTaskCanRetry)
+	s.mux.HandleFunc("POST /api/tasks/{index}/retry", s.handleTaskRetry)
 
 	// Local archive browse / metadata / export (Archive tab)
 	s.mux.HandleFunc("GET /api/archive/studies", s.handleArchiveStudies)
@@ -66,11 +68,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/archive/studies/{studyUID}/anonymize", s.handleArchiveAnonymizeStudy)
 	s.mux.HandleFunc("POST /api/archive/studies/{studyUID}/decompress", s.handleArchiveDecompressStudy)
 	s.mux.HandleFunc("DELETE /api/archive/studies/{studyUID}", s.handleArchiveDeleteStudy)
+	s.mux.HandleFunc("GET /api/archive/trash", s.handleArchiveTrashList)
+	s.mux.HandleFunc("POST /api/archive/trash/{studyUID}/restore", s.handleArchiveTrashRestore)
+	s.mux.HandleFunc("DELETE /api/archive/trash/{studyUID}", s.handleArchiveTrashPurge)
 	s.mux.HandleFunc("GET /api/archive/export/{kind}", s.handleArchiveExport)
 	s.mux.HandleFunc("POST /api/archive/send", s.handleArchiveSend)
 	s.mux.HandleFunc("POST /api/archive/import", s.handleArchiveImport)
 	s.mux.HandleFunc("POST /api/archive/import-path", s.handleArchiveImportPath)
 	s.mux.HandleFunc("POST /api/archive/export-path", s.handleArchiveExportPath)
+	s.mux.HandleFunc("POST /api/archive/verify", s.handleArchiveVerify)
+	s.mux.HandleFunc("POST /api/archive/restore-path", s.handleArchiveRestorePath)
 
 	// Async job progress (SSE) + cancel
 	s.mux.HandleFunc("GET /api/jobs/{id}/events", s.handleJobEvents)
@@ -91,7 +98,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/query/image", s.handleQueryImage)
 	s.mux.HandleFunc("POST /api/query/retrieve", s.handleQueryRetrieve)
 
-	// Storage SCP receiver / listener
+	// DICOM receiver / listener
 	s.mux.HandleFunc("GET /api/receiver/status", s.handleReceiverStatus)
 	s.mux.HandleFunc("GET /api/receiver/config", s.handleReceiverConfig)
 	s.mux.HandleFunc("POST /api/receiver/start", s.handleReceiverStart)

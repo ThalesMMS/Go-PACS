@@ -153,6 +153,29 @@ func TestQueryAndSendFlagsAreIndependentFromMasterEnabledState(t *testing.T) {
 	}
 }
 
+func TestFindByAETitleReturnsFirstExactMatch(t *testing.T) {
+	nodeList := []Node{
+		{Name: "first", AETitle: "DESTAE", Host: "127.0.0.1", Port: 11112},
+		{Name: "second", AETitle: "DESTAE", Host: "127.0.0.2", Port: 11113},
+		{Name: "lower", AETitle: "destae", Host: "127.0.0.3", Port: 11114},
+	}
+
+	got, ok := FindByAETitle(nodeList, "DESTAE")
+	if !ok {
+		t.Fatal("FindByAETitle did not find DESTAE")
+	}
+	if got.Name != "first" {
+		t.Fatalf("FindByAETitle returned %q, want first match", got.Name)
+	}
+
+	if _, ok := FindByAETitle(nodeList, "destae"); !ok {
+		t.Fatal("FindByAETitle should use exact AE title matching")
+	}
+	if _, ok := FindByAETitle(nodeList, "MISSING"); ok {
+		t.Fatal("FindByAETitle found missing AE title")
+	}
+}
+
 func TestNewNodeNormalizesRetrieveMethodPreference(t *testing.T) {
 	node, err := NewNode(Draft{Name: "pacs", AETitle: "PACS", Host: "localhost", Port: 11112, RetrieveMethod: " c-get "})
 	if err != nil {

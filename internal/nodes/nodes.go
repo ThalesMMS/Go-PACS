@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/ThalesMMS/Go-PACS/internal/jsonstore"
 	"github.com/google/uuid"
 )
 
@@ -87,7 +87,7 @@ func (s *Store) List() ([]Node, error) {
 	}
 	var nodes []Node
 	if err := json.Unmarshal(data, &nodes); err != nil {
-		return nil, fmt.Errorf("parse nodes config: %w", err)
+		return nil, &jsonstore.LoadError{Err: fmt.Errorf("parse nodes config: %w", err), BackupExists: jsonstore.CheckBackupExists(s.path)}
 	}
 	return nodes, nil
 }
@@ -174,23 +174,19 @@ func (s *Store) Delete(id string) error {
 }
 
 func (s *Store) Save(nodes []Node) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
 	data, err := json.MarshalIndent(nodes, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode nodes config: %w", err)
 	}
 	data = append(data, '\n')
-	temp := s.path + ".tmp"
-	if err := os.WriteFile(temp, data, 0o644); err != nil {
+	if err := jsonstore.WriteWithBackup(s.path, data); err != nil {
 		return fmt.Errorf("write nodes config: %w", err)
 	}
-	if err := os.Rename(temp, s.path); err != nil {
-		_ = os.Remove(temp)
-		return fmt.Errorf("replace nodes config: %w", err)
-	}
 	return nil
+}
+
+func (s *Store) RecoverFromBackup() error {
+	return jsonstore.RecoverFromBackup(s.path)
 }
 
 func NewNode(draft Draft) (Node, error) {
@@ -291,6 +287,15 @@ func (n Node) SendTransferSyntaxOrDefault() string {
 		return SendTransferSyntaxAuto
 	}
 	return syntax
+}
+
+func FindByAETitle(nodeList []Node, aeTitle string) (Node, bool) {
+	for _, node := range nodeList {
+		if node.AETitle == aeTitle {
+			return node, true
+		}
+	}
+	return Node{}, false
 }
 
 // CallingAETitles returns the de-duplicated, normalized AE titles of the given

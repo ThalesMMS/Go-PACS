@@ -1,9 +1,13 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -76,6 +80,44 @@ func TestConfigEndpoint(t *testing.T) {
 	}
 	if decodeEnvelope(t, rec)["ok"] != true {
 		t.Errorf("config envelope ok != true")
+	}
+}
+
+func TestArchiveVerifyEndpointReturnsResult(t *testing.T) {
+	s := newTestServer(t)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/archive/verify", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/archive/verify status = %d, want 200", rec.Code)
+	}
+	env := decodeEnvelope(t, rec)
+	if env["ok"] != true {
+		t.Fatalf("ok = %v, want true", env["ok"])
+	}
+	data, _ := env["data"].(map[string]any)
+	if data["ok"] != true {
+		t.Fatalf("verify data ok = %v, want true", data["ok"])
+	}
+}
+
+func TestArchiveRestoreEndpointRestoresBackup(t *testing.T) {
+	s := newTestServer(t)
+	backupDir := filepath.Join(t.TempDir(), "backup")
+	if _, err := s.session.BackupArchive(context.Background(), backupDir); err != nil {
+		t.Fatalf("BackupArchive: %v", err)
+	}
+	restoreDir := filepath.Join(t.TempDir(), "restore")
+	body := fmt.Sprintf(`{"backupPath":%q,"destPath":%q}`, backupDir, restoreDir)
+	rec, env := do(t, s, http.MethodPost, "/api/archive/restore-path", body)
+	if rec.Code != http.StatusOK || env["ok"] != true {
+		t.Fatalf("restore: code=%d env=%v", rec.Code, env)
+	}
+	data, _ := env["data"].(map[string]any)
+	if data["verificationPassed"] != true {
+		t.Fatalf("verificationPassed = %v, want true", data["verificationPassed"])
+	}
+	if _, err := os.Stat(filepath.Join(restoreDir, "catalog.db")); err != nil {
+		t.Fatalf("restored catalog missing: %v", err)
 	}
 }
 

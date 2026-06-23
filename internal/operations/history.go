@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/ThalesMMS/Go-PACS/internal/jsonstore"
 )
 
 const MaxHistoryEntries = 200
@@ -24,30 +25,26 @@ func LoadHistory(path string) ([]Summary, error) {
 	}
 	var history []Summary
 	if err := json.Unmarshal(data, &history); err != nil {
-		return nil, fmt.Errorf("parse task history: %w", err)
+		return nil, &jsonstore.LoadError{Err: fmt.Errorf("parse task history: %w", err), BackupExists: jsonstore.CheckBackupExists(path)}
 	}
 	return trimHistory(history), nil
 }
 
 func SaveHistory(path string, history []Summary) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create task history directory: %w", err)
-	}
 	history = trimHistory(history)
 	data, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode task history: %w", err)
 	}
 	data = append(data, '\n')
-	temp := path + ".tmp"
-	if err := os.WriteFile(temp, data, 0o644); err != nil {
+	if err := jsonstore.WriteWithBackup(path, data); err != nil {
 		return fmt.Errorf("write task history: %w", err)
 	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
-		return fmt.Errorf("replace task history: %w", err)
-	}
 	return nil
+}
+
+func RecoverFromBackup(path string) error {
+	return jsonstore.RecoverFromBackup(path)
 }
 
 func trimHistory(history []Summary) []Summary {

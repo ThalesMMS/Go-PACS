@@ -1165,6 +1165,32 @@ func TestRetrieveOptionsUseNodeRetrieveMethodPreference(t *testing.T) {
 	}
 }
 
+func TestRequireReceiverRunningForMoveRejectsMoveWithoutReceiver(t *testing.T) {
+	status := widget.NewLabel("")
+	state := &uiState{}
+	node := nodes.Node{Name: "radiant", RetrieveMethod: nodes.RetrieveMethodMove}
+
+	if requireReceiverRunningForMove(nil, status, state, node) {
+		t.Fatal("requireReceiverRunningForMove allowed C-MOVE without receiver")
+	}
+	if !strings.Contains(status.Text, "DICOM receiver is not running") {
+		t.Fatalf("status = %q, want receiver-required message", status.Text)
+	}
+}
+
+func TestRequireReceiverRunningForMoveAllowsExplicitCGetWithoutReceiver(t *testing.T) {
+	status := widget.NewLabel("")
+	state := &uiState{}
+	node := nodes.Node{Name: "radiant", RetrieveMethod: nodes.RetrieveMethodGet}
+
+	if !requireReceiverRunningForMove(nil, status, state, node) {
+		t.Fatal("requireReceiverRunningForMove rejected explicit C-GET without receiver")
+	}
+	if status.Text != "" {
+		t.Fatalf("status = %q, want unchanged", status.Text)
+	}
+}
+
 func TestQueryDestinationTextShowsMoveDestinationAndReceiver(t *testing.T) {
 	state := &uiState{
 		appConfig: appconfig.Config{
@@ -10020,7 +10046,7 @@ func TestDeleteSelectedStudyRemovesStudyAndRefreshesArchive(t *testing.T) {
 	if len(state.series) != 0 || len(state.instances) != 0 {
 		t.Fatalf("details after delete = series %#v instances %#v", state.series, state.instances)
 	}
-	if status.Text != "Deleted study 1.2.3.delete (1 object)" {
+	if status.Text != "Moved study 1.2.3.delete to local trash (1 object)" {
 		t.Fatalf("status = %q", status.Text)
 	}
 	if !strings.Contains(state.archiveSummary.Text, "No study selected") || !strings.Contains(state.archiveSummary.Text, "1 studies in archive") {
@@ -10097,7 +10123,7 @@ func TestDeleteSelectedStudyRemovesDisplayedMissingStudy(t *testing.T) {
 	if state.collapsedArchiveStudies[missingStudyUID] || state.collapsedArchiveSeries[seriesUID] {
 		t.Fatalf("collapsed archive state still references deleted study: studies=%#v series=%#v", state.collapsedArchiveStudies, state.collapsedArchiveSeries)
 	}
-	if status.Text != "Deleted study (missing) (1 object)" {
+	if status.Text != "Moved study (missing) to local trash (1 object)" {
 		t.Fatalf("status = %q", status.Text)
 	}
 	instances, err := catalog.InstancesForStudy(ctx, missingStudyUID)
@@ -10133,7 +10159,7 @@ func TestDeleteSelectedStudyReportsNoOpWithoutSuccess(t *testing.T) {
 	if deleted != 0 {
 		t.Fatalf("deleted = %d, want 0", deleted)
 	}
-	if strings.Contains(status.Text, "Deleted study") {
+	if strings.Contains(status.Text, "Moved study") {
 		t.Fatalf("status reports success for no-op delete: %q", status.Text)
 	}
 	if len(state.studies) != 1 || state.studies[0].StudyInstanceUID != "1.2.3.stale" {

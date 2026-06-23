@@ -227,10 +227,21 @@ func TestRetrieveImageFallsBackToCGetWhenMoveStoresNothing(t *testing.T) {
 	defer catalog.Close()
 
 	source := testMoveDataSet(t)
+	receiver, err := receive.Start(ctx, receive.Config{
+		Catalog: catalog,
+		Address: "127.0.0.1:0",
+		AETitle: "MOVEDEST",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopReceiver(t, receiver)
+
 	node, done := startMoveFailureThenGetSCP(t, ctx, source)
 	outcome, err := RetrieveImage(ctx, catalog, node, testMoveStudyInstanceUID, testMoveSeriesInstanceUID, testMoveSOPInstanceUID, Options{
 		CallingAETitle:  "GETSCU",
 		MoveDestination: "MOVEDEST",
+		Receiver:        receiver,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -343,6 +354,25 @@ func TestRetrieveMethodPreferenceNormalizes(t *testing.T) {
 func TestRetrieveMethodPreferenceRejectsUnknownMethod(t *testing.T) {
 	if _, err := retrieveMethodPreference(Options{Method: "WADO"}); err == nil {
 		t.Fatal("retrieveMethodPreference accepted WADO")
+	}
+}
+
+func TestEnsureReceiverRequiresRunningReceiver(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server, stopReceiver, err := ensureReceiver(ctx, catalog, Options{ReceiveAddress: "127.0.0.1:0"}, nil, nil)
+	if !errors.Is(err, ErrReceiverRequired) {
+		t.Fatalf("ensureReceiver() error = %v, want ErrReceiverRequired", err)
+	}
+	if server != nil || stopReceiver {
+		t.Fatalf("ensureReceiver() server=%v stopReceiver=%v, want no spawned receiver", server, stopReceiver)
 	}
 }
 

@@ -438,6 +438,91 @@ func TestDeleteStudyRemovesMissingStudyUIDInstances(t *testing.T) {
 	}
 }
 
+func TestTrashStudyAndRestore(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	sourceDir := t.TempDir()
+	studyUID := "1.2.826.0.1.3680043.10.543.9601"
+	sopUID := studyUID + ".instance"
+	if err := os.WriteFile(filepath.Join(sourceDir, "study.dcm"), testPart10FileWithDetails(t, "TRASH^PATIENT", "T001", "CT", studyUID, studyUID+".series", sopUID, "1", "Trash", "1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if studies, err := catalog.Studies(ctx); err != nil {
+		t.Fatal(err)
+	} else if len(studies) != 1 {
+		t.Fatalf("studies before trash = %d, want 1", len(studies))
+	}
+	instances, err := catalog.InstancesForStudy(ctx, studyUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("instances before trash = %d, want 1", len(instances))
+	}
+	originalPath := instances[0].StoredPath
+
+	deleted, err := catalog.TrashStudy(ctx, studyUID)
+	if err != nil {
+		t.Fatalf("TrashStudy failed: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("TrashStudy deleted = %d, want 1", deleted)
+	}
+	if _, err := os.Stat(originalPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original object still exists after trash: %v", err)
+	}
+	if instances, err := catalog.InstancesForStudy(ctx, studyUID); err != nil {
+		t.Fatal(err)
+	} else if len(instances) != 0 {
+		t.Fatalf("instances after trash = %#v, want none", instances)
+	}
+	entries, err := catalog.ListTrash(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].StudyInstanceUID != studyUID {
+		t.Fatalf("trash entries = %#v, want study %q", entries, studyUID)
+	}
+	manifest, err := readTrashManifest(filepath.Join(catalog.trashPathForStudy(studyUID), trashManifestFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.DeletedCount != 1 || len(manifest.Objects) != 1 {
+		t.Fatalf("trash manifest = %#v, want one deleted object", manifest)
+	}
+	if manifest.Objects[0].SOPInstanceUID != sopUID || manifest.Objects[0].OriginalPath != originalPath {
+		t.Fatalf("trash manifest object = %#v, want SOP %q original path %q", manifest.Objects[0], sopUID, originalPath)
+	}
+
+	report, err := catalog.RestoreStudy(ctx, studyUID)
+	if err != nil {
+		t.Fatalf("RestoreStudy failed: %v", err)
+	}
+	if report.StoredFiles != 1 || report.InvalidFiles != 0 {
+		t.Fatalf("restore report = %#v, want one stored and no invalid", report)
+	}
+	if studies, err := catalog.Studies(ctx); err != nil {
+		t.Fatal(err)
+	} else if len(studies) != 1 || studies[0].StudyInstanceUID != studyUID {
+		t.Fatalf("studies after restore = %#v, want restored study", studies)
+	}
+	entries, err = catalog.ListTrash(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("trash entries after restore = %#v, want none", entries)
+	}
+}
+
 func TestStudyExistsDetectsImportedStudyUID(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
@@ -1350,6 +1435,15 @@ func hasRejectionContaining(report ImportReport, fragment string) bool {
 	return false
 }
 
+func containsString(values []string, value string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
 func TestImportPathCountsDuplicateContent(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
@@ -1405,6 +1499,127 @@ func TestImportPathCountsDuplicateContentFromZip(t *testing.T) {
 	}
 	if report.Duplicates != 1 {
 		t.Fatalf("Duplicates = %d, want 1", report.Duplicates)
+	}
+}
+
+func TestRebuildCatalogFromObjects(t *testing.T) {
+	ctx := context.Background()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	catalog, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceDir := t.TempDir()
+	studyA := "1.2.826.0.1.3680043.10.543.9401"
+	studyB := "1.2.826.0.1.3680043.10.543.9402"
+	fixtures := map[string][]byte{
+		"a1.dcm": testPart10FileWithDetails(t, "REBUILD^A", "RA001", "CT", studyA, studyA+".series.1", studyA+".instance.1", "1", "A1", "1"),
+		"a2.dcm": testPart10FileWithDetails(t, "REBUILD^A", "RA001", "CT", studyA, studyA+".series.1", studyA+".instance.2", "1", "A1", "2"),
+		"a3.dcm": testPart10FileWithDetails(t, "REBUILD^A", "RA001", "MR", studyA, studyA+".series.2", studyA+".instance.3", "2", "A2", "1"),
+		"b1.dcm": testPart10FileWithDetails(t, "REBUILD^B", "RB001", "US", studyB, studyB+".series.1", studyB+".instance.1", "1", "B1", "1"),
+		"b2.dcm": testPart10FileWithDetails(t, "REBUILD^B", "RB001", "US", studyB, studyB+".series.1", studyB+".instance.2", "1", "B1", "2"),
+	}
+	for name, data := range fixtures {
+		if err := os.WriteFile(filepath.Join(sourceDir, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	importReport, err := catalog.ImportPath(ctx, sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if importReport.StoredFiles != 5 {
+		t.Fatalf("initial StoredFiles = %d, want 5", importReport.StoredFiles)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(archiveDir, "catalog.db")); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := RebuildCatalog(ctx, archiveDir, RebuildOptions{})
+	if err != nil {
+		t.Fatalf("RebuildCatalog failed: %v", err)
+	}
+	if report.StoredFiles != 5 || report.FailedFiles != 0 {
+		t.Fatalf("report stored/failed = %d/%d, want 5/0; rejections=%#v", report.StoredFiles, report.FailedFiles, report.Rejections)
+	}
+	if !containsString(report.Warnings, rebuildMetadataWarning) {
+		t.Fatalf("warnings = %#v, want metadata warning", report.Warnings)
+	}
+
+	rebuilt, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebuilt.Close()
+	studies, err := rebuilt.Studies(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies) != 2 {
+		t.Fatalf("rebuilt studies = %d, want 2", len(studies))
+	}
+	seriesA, err := rebuilt.SeriesForStudy(ctx, studyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seriesA) != 2 {
+		t.Fatalf("rebuilt series for study A = %d, want 2", len(seriesA))
+	}
+	instancesA, err := rebuilt.InstancesForStudy(ctx, studyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instancesA) != 3 {
+		t.Fatalf("rebuilt instances for study A = %d, want 3", len(instancesA))
+	}
+	seriesB, err := rebuilt.SeriesForStudy(ctx, studyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seriesB) != 1 {
+		t.Fatalf("rebuilt series for study B = %d, want 1", len(seriesB))
+	}
+	instancesB, err := rebuilt.InstancesForStudy(ctx, studyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instancesB) != 2 {
+		t.Fatalf("rebuilt instances for study B = %d, want 2", len(instancesB))
+	}
+}
+
+func TestRebuildCatalogMovesExistingCatalogAndReportsCorruptObject(t *testing.T) {
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	catalog, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(archiveDir, "objects", "bad.dcm")
+	if err := os.WriteFile(badPath, []byte("not dicom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := RebuildCatalog(context.Background(), archiveDir, RebuildOptions{})
+	if err != nil {
+		t.Fatalf("RebuildCatalog failed: %v", err)
+	}
+	if report.CatalogBackupPath == "" {
+		t.Fatal("CatalogBackupPath is empty, want moved existing catalog")
+	}
+	if _, err := os.Stat(report.CatalogBackupPath); err != nil {
+		t.Fatalf("catalog backup missing: %v", err)
+	}
+	if report.FailedFiles != 1 || len(report.Rejections) != 1 {
+		t.Fatalf("failed/rejections = %d/%d, want 1/1", report.FailedFiles, len(report.Rejections))
+	}
+	if !strings.Contains(report.Rejections[0].Path, "bad.dcm") {
+		t.Fatalf("rejection path = %q, want bad.dcm", report.Rejections[0].Path)
 	}
 }
 

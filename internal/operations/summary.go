@@ -11,7 +11,10 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/send"
 )
 
-const SummaryVersion = 1
+const (
+	SummaryVersion    = 1
+	RetryInputVersion = 1
+)
 
 type Kind string
 
@@ -72,6 +75,16 @@ type ProgressDetail struct {
 	Warnings   uint16 `json:"warnings"`
 }
 
+type RetryInput struct {
+	Version   int    `json:"version"`
+	Path      string `json:"path,omitempty"`
+	NodeID    string `json:"nodeID,omitempty"`
+	Level     string `json:"level,omitempty"`
+	StudyUID  string `json:"studyUID,omitempty"`
+	SeriesUID string `json:"seriesUID,omitempty"`
+	SOPUID    string `json:"sopUID,omitempty"`
+}
+
 type Summary struct {
 	Version    uint32           `json:"version"`
 	Kind       Kind             `json:"kind"`
@@ -82,9 +95,10 @@ type Summary struct {
 	Logs       []LogReference   `json:"logs,omitempty"`
 	Transfers  []TransferDetail `json:"transfers,omitempty"`
 	Progress   []ProgressDetail `json:"progress,omitempty"`
+	RetryInput *RetryInput      `json:"retryInput,omitempty"`
 }
 
-func ImportSummary(report archive.ImportReport, duration time.Duration) Summary {
+func ImportSummary(report archive.ImportReport, duration time.Duration, sourcePath string) Summary {
 	failed := maxInt(len(report.Rejections), report.InvalidFiles)
 	status := StatusSuccess
 	if failed > 0 {
@@ -105,6 +119,7 @@ func ImportSummary(report archive.ImportReport, duration time.Duration) Summary 
 			Failed:     uint64Ptr(uint64(failed)),
 			Duplicates: uint64Ptr(uint64(report.Duplicates)),
 		},
+		RetryInput: retryInputForImport(sourcePath),
 	}
 	for _, rejection := range report.Rejections {
 		message := rejection.Reason
@@ -135,7 +150,7 @@ func QuerySummary(result query.Result) Summary {
 	}
 }
 
-func SendSummary(outcome send.Outcome) Summary {
+func SendSummary(outcome send.Outcome, nodeID, level, studyUID, seriesUID, sopUID string) Summary {
 	summary := Summary{
 		Version:    SummaryVersion,
 		Kind:       KindSendStore,
@@ -146,6 +161,7 @@ func SendSummary(outcome send.Outcome) Summary {
 			Sent:      uint64Ptr(uint64(outcome.Sent)),
 			Failed:    uint64Ptr(uint64(outcome.Failed)),
 		},
+		RetryInput: retryInputForScopedOperation(nodeID, level, studyUID, seriesUID, sopUID),
 	}
 	for _, failure := range outcome.Failures {
 		summary.Failures = append(summary.Failures, FailureDetail{Message: failure})
@@ -164,7 +180,7 @@ func SendSummary(outcome send.Outcome) Summary {
 	return summary
 }
 
-func RetrieveSummary(outcome retrieve.Outcome) Summary {
+func RetrieveSummary(outcome retrieve.Outcome, nodeID, level, studyUID, seriesUID, sopUID string) Summary {
 	stored := outcome.Stored
 	duplicates := outcome.Duplicates
 	if stored == 0 && duplicates == 0 {
@@ -189,6 +205,7 @@ func RetrieveSummary(outcome retrieve.Outcome) Summary {
 			Duplicates: uint64Ptr(uint64(duplicates)),
 			Failed:     uint64Ptr(uint64(failed)),
 		},
+		RetryInput: retryInputForScopedOperation(nodeID, level, studyUID, seriesUID, sopUID),
 	}
 	for _, progress := range outcome.Progress {
 		summary.Progress = append(summary.Progress, ProgressDetail{
@@ -210,6 +227,17 @@ func RetrieveSummary(outcome retrieve.Outcome) Summary {
 		})
 	}
 	return summary
+}
+
+func RetryFailureSummary(original Summary, message string, duration time.Duration) Summary {
+	return Summary{
+		Version:    SummaryVersion,
+		Kind:       original.Kind,
+		DurationMS: uint64(duration / time.Millisecond),
+		Status:     StatusFailure,
+		Failures:   []FailureDetail{{Message: message}},
+		RetryInput: cloneRetryInput(original.RetryInput),
+	}
 }
 
 func ReceiverSummary(snapshot receive.Snapshot, duration time.Duration) Summary {
@@ -250,6 +278,38 @@ func statusFromCounts(successes, warnings, failures int) Status {
 
 func uint64Ptr(value uint64) *uint64 {
 	return &value
+}
+
+func retryInputForImport(sourcePath string) *RetryInput {
+	if sourcePath == "" {
+		return nil
+	}
+	return &RetryInput{
+		Version: RetryInputVersion,
+		Path:    sourcePath,
+	}
+}
+
+func retryInputForScopedOperation(nodeID, level, studyUID, seriesUID, sopUID string) *RetryInput {
+	if nodeID == "" && level == "" && studyUID == "" && seriesUID == "" && sopUID == "" {
+		return nil
+	}
+	return &RetryInput{
+		Version:   RetryInputVersion,
+		NodeID:    nodeID,
+		Level:     level,
+		StudyUID:  studyUID,
+		SeriesUID: seriesUID,
+		SOPUID:    sopUID,
+	}
+}
+
+func cloneRetryInput(input *RetryInput) *RetryInput {
+	if input == nil {
+		return nil
+	}
+	clone := *input
+	return &clone
 }
 
 func maxInt(a, b int) int {
