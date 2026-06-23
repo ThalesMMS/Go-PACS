@@ -41,6 +41,7 @@ func (s *Session) PreviewInstancePNG(ctx context.Context, sopInstanceUID string,
 	return data, nil
 }
 
+// NormalizePreviewSize returns the canonical preview size for the given input: "large" (matched case-insensitively) or "thumb" as the default.
 func normalizePreviewSize(size string) string {
 	switch strings.ToLower(strings.TrimSpace(size)) {
 	case "large":
@@ -50,6 +51,7 @@ func normalizePreviewSize(size string) string {
 	}
 }
 
+// previewMaxDimension returns the pixel limit for resizing a DICOM preview image based on the requested size.
 func previewMaxDimension(size string) int {
 	if size == "large" {
 		return 1024
@@ -57,6 +59,8 @@ func previewMaxDimension(size string) int {
 	return 256
 }
 
+// RenderPreviewPNG renders a DICOM file as a PNG preview. It returns PNG-encoded
+// bytes of the preview image, or an error if the file cannot be read, decoded, or encoded.
 func renderPreviewPNG(path string, maxDimension int) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -79,6 +83,8 @@ func renderPreviewPNG(path string, maxDimension int) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// renderPreviewImage decodes and renders a displayable image from DICOM pixel data.
+// It returns ErrPreviewUnsupported if the file or dataset is invalid, if pixel data cannot be extracted or decoded, or if image rendering fails.
 func renderPreviewImage(file *object.File) (image.Image, error) {
 	if file == nil || file.Dataset == nil {
 		return nil, ErrPreviewUnsupported
@@ -146,6 +152,9 @@ func renderPreviewImage(file *object.File) (image.Image, error) {
 	return img, nil
 }
 
+// previewPixelRegistry creates a pixel decoder registry with support for JPEG,
+// JPEG-Lossless, and RLE transfer syntaxes. It returns the registry and any
+// error encountered during registration.
 func previewPixelRegistry() (pixeldata.Registry, error) {
 	registry := pixeldata.NewMemoryRegistry()
 	for _, register := range []func(pixeldata.Registry) error{
@@ -160,6 +169,7 @@ func previewPixelRegistry() (pixeldata.Registry, error) {
 	return registry, nil
 }
 
+// resizeNearest resizes src to fit within maxDimension while preserving aspect ratio, using nearest-neighbor sampling.
 func resizeNearest(src image.Image, maxDimension int) image.Image {
 	if src == nil || maxDimension <= 0 {
 		return src

@@ -15,6 +15,7 @@ import (
 
 type Middleware func(http.Handler) http.Handler
 
+// Chain combines multiple middlewares into a single middleware.
 func Chain(middlewares ...Middleware) Middleware {
 	return func(next http.Handler) http.Handler {
 		for i := len(middlewares) - 1; i >= 0; i-- {
@@ -42,6 +43,7 @@ type authInfoHolder struct {
 	set  bool
 }
 
+// AuthInfoFromContext retrieves authentication information stored in the request context. It returns the AuthInfo and a boolean indicating whether it was successfully found.
 func AuthInfoFromContext(ctx context.Context) (AuthInfo, bool) {
 	if info, ok := ctx.Value(authInfoContextKey).(AuthInfo); ok {
 		return info, true
@@ -53,11 +55,13 @@ func AuthInfoFromContext(ctx context.Context) (AuthInfo, bool) {
 	return holder.info, true
 }
 
+// RequestIDFromContext retrieves the request ID from the context. If the request ID is not present or not a string, it returns an empty string.
 func RequestIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDContextKey).(string)
 	return id
 }
 
+// BearerAuth returns a middleware that validates Bearer tokens and enforces role-based authorization.
 func BearerAuth(store *tokens.Store, requiredRole string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +97,7 @@ func BearerAuth(store *tokens.Store, requiredRole string) Middleware {
 	}
 }
 
+// withAuthInfo stores authentication info in the context, updating the auth-info holder if one exists.
 func withAuthInfo(ctx context.Context, info AuthInfo) context.Context {
 	if holder, ok := ctx.Value(authInfoHolderContextKey).(*authInfoHolder); ok {
 		holder.info = info
@@ -101,6 +106,8 @@ func withAuthInfo(ctx context.Context, info AuthInfo) context.Context {
 	return context.WithValue(ctx, authInfoContextKey, info)
 }
 
+// bearerToken extracts and validates a Bearer token from an Authorization header.
+// It returns the token and true if the header is valid, empty string and false otherwise.
 func bearerToken(header string) (string, bool) {
 	parts := strings.Fields(header)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
@@ -109,6 +116,10 @@ func bearerToken(header string) (string, bool) {
 	return parts[1], true
 }
 
+// AuditMiddleware returns middleware that records an audit entry after the handler completes.
+// The middleware generates a unique request ID, initializes context storage for authentication information, captures response status and bytes written, and records an audit entry containing the operation (method and path), UID scope derived from the URL path, status code, response size, request duration, and an error summary for responses with HTTP status greater than or equal to 400.
+// If the catalog is nil, the middleware returns without writing audit data.
+// Audit records are written with a 2-second timeout; any write errors are logged and do not affect the response.
 func AuditMiddleware(catalog *archive.Catalog) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +190,7 @@ func (r *auditResponseRecorder) statusCode() int {
 	return r.status
 }
 
+// uidScopeFromPath extracts UID scope identifiers from a URL path, returning a space-separated string of scope pairs formatted as "study=", "series=", and "instance=" pairs derived from path segments.
 func uidScopeFromPath(path string) string {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	var scope []string

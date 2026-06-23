@@ -121,6 +121,7 @@ func (s *Server) findImages(ctx context.Context, identifier *object.Object) ([]*
 	return out, nil
 }
 
+// studyFindFilters builds study filter criteria from a C-FIND query identifier.
 func studyFindFilters(identifier *object.Object) archive.StudyFilters {
 	from, to := findDateRange(findString(identifier, findTagStudyDate))
 	return archive.StudyFilters{
@@ -135,6 +136,7 @@ func studyFindFilters(identifier *object.Object) archive.StudyFilters {
 	}
 }
 
+// instanceMatchesFind reports whether an instance matches all criteria in a C-FIND query identifier.
 func instanceMatchesFind(inst archive.Instance, identifier *object.Object) bool {
 	return findMatches(inst.PatientName, findString(identifier, findTagPatientName)) &&
 		findMatches(inst.PatientID, findString(identifier, findTagPatientID)) &&
@@ -148,6 +150,9 @@ func instanceMatchesFind(inst archive.Instance, identifier *object.Object) bool 
 		findMatches(inst.InstanceNumber, findString(identifier, findTagInstanceNumber))
 }
 
+// FindModalities extracts modality criteria from a query identifier.
+// It reads ModalitiesInStudy values, falling back to Modality if none are found.
+// Values are split on backslash separators, and wildcard characters are removed.
 func findModalities(identifier *object.Object) []string {
 	values := findStrings(identifier, findTagModalitiesInStudy)
 	if len(values) == 0 {
@@ -164,6 +169,10 @@ func findModalities(identifier *object.Object) []string {
 	return out
 }
 
+// findDateRange parses a date criterion into a start and end date.
+// If the criterion is empty, both return values are empty. If it contains
+// no hyphen, both values are the criterion. If it contains a hyphen, it is
+// split into start and end parts, each trimmed of whitespace.
 func findDateRange(value string) (string, string) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -176,6 +185,7 @@ func findDateRange(value string) (string, string) {
 	return strings.TrimSpace(from), strings.TrimSpace(to)
 }
 
+// findMatches determines if a value matches a query criterion. Wildcard characters * and ? use shell-style matching with case-insensitive comparison. An empty criterion matches any value.
 func findMatches(value, criterion string) bool {
 	criterion = strings.TrimSpace(criterion)
 	if criterion == "" {
@@ -188,6 +198,8 @@ func findMatches(value, criterion string) bool {
 	return strings.EqualFold(value, criterion)
 }
 
+// findDateMatches reports whether a date value falls within the range specified by a criterion.
+// The criterion can specify an exact date, a range in the form from-to, or be empty for no constraint.
 func findDateMatches(value, criterion string) bool {
 	from, to := findDateRange(criterion)
 	if from != "" && value < from {
@@ -199,6 +211,7 @@ func findDateMatches(value, criterion string) bool {
 	return true
 }
 
+// StudyFindObject converts a study record into a DICOM C-FIND response dataset.
 func studyFindObject(study archive.Study) *object.Object {
 	return object.FromElements([]core.Element{
 		findElement(findTagPatientName, core.VRPN, study.PatientName),
@@ -215,6 +228,7 @@ func studyFindObject(study archive.Study) *object.Object {
 	}, std.Dictionary)
 }
 
+// seriesFindObject creates a DICOM dataset for C-FIND series responses, combining patient and study information with series-specific fields.
 func seriesFindObject(series archive.Series, study archive.Study) *object.Object {
 	return object.FromElements([]core.Element{
 		findElement(findTagPatientName, core.VRPN, study.PatientName),
@@ -231,6 +245,7 @@ func seriesFindObject(series archive.Series, study archive.Study) *object.Object
 	}, std.Dictionary)
 }
 
+// instanceFindObject constructs a DICOM dataset from an instance record for C-FIND responses.
 func instanceFindObject(inst archive.Instance) *object.Object {
 	return object.FromElements([]core.Element{
 		findElement(findTagPatientName, core.VRPN, inst.PatientName),
@@ -247,14 +262,17 @@ func instanceFindObject(inst archive.Instance) *object.Object {
 	}, std.Dictionary)
 }
 
+// findElement constructs a core.Element with the given tag, VR, and string value.
 func findElement(tag core.Tag, vr core.VR, value string) core.Element {
 	return core.Element{Header: core.ElementHeader{Tag: tag, VR: vr}, Value: core.StringValue{value}}
 }
 
+// findCriterion extracts a DICOM query criterion from the given tag in the object, removing wildcard characters and trimming whitespace.
 func findCriterion(obj *object.Object, tag core.Tag) string {
 	return findCriterionText(findString(obj, tag))
 }
 
+// findCriterionText removes wildcard characters and trims whitespace from a criterion string.
 func findCriterionText(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.ReplaceAll(value, "*", "")
@@ -262,6 +280,7 @@ func findCriterionText(value string) string {
 	return strings.TrimSpace(value)
 }
 
+// findString returns the string value associated with a tag from a DICOM object, or an empty string if the value is not present.
 func findString(obj *object.Object, tag core.Tag) string {
 	value, ok := obj.GetString(tag)
 	if !ok {
@@ -270,6 +289,7 @@ func findString(obj *object.Object, tag core.Tag) string {
 	return value
 }
 
+// FindStrings retrieves string values from the given DICOM tag, returning a slice containing those values or a single string value if only a scalar is present.
 func findStrings(obj *object.Object, tag core.Tag) []string {
 	values, ok := obj.GetStrings(tag)
 	if ok {

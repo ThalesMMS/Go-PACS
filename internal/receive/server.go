@@ -80,6 +80,9 @@ type Server struct {
 	failed       atomic.Int64
 }
 
+// Start creates and starts a DICOM receiver server with the given configuration.
+// The configuration must include a Catalog; other values use defaults if omitted.
+// It returns an initialized Server, or an error if the configuration is invalid.
 func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.Catalog == nil {
 		return nil, errors.New("receive catalog is required")
@@ -298,6 +301,7 @@ func (s *Server) handleAssociation(assoc *ul.Association) error {
 	return dimse.ServeAssociation(s.ctx, assoc, opts)
 }
 
+// normalizeAllowedCalledAETitles normalizes and validates the primary called AE title and a list of additional allowed called AE titles, returning a set of normalized AE titles.
 func normalizeAllowedCalledAETitles(primary string, aeTitles []string) (map[string]struct{}, error) {
 	allowed := map[string]struct{}{}
 	primary = nodes.NormalizeAETitle(primary)
@@ -397,6 +401,9 @@ func (s *Server) storeCStore(ctx context.Context, assoc *ul.Association, req dim
 	return status, err
 }
 
+// sourcePath constructs a source URI for a received DICOM dataset.
+// It returns a DICOM URI in the format dicom://{callingAE}/{AffectedSOPInstanceUID},
+// where callingAE is the association's calling AE title or "unknown" if unavailable.
 func sourcePath(assoc *ul.Association, req *dimse.CStoreRequest) string {
 	callingAE := "unknown"
 	if assoc != nil && assoc.CallingAETitle != "" {
@@ -405,6 +412,7 @@ func sourcePath(assoc *ul.Association, req *dimse.CStoreRequest) string {
 	return fmt.Sprintf("dicom://%s/%s", callingAE, req.AffectedSOPInstanceUID)
 }
 
+// acceptedAbstractSyntaxes returns the abstract syntax UIDs supported by the receiver, including verification, C-FIND, C-GET, and storage SOP classes, with optional C-MOVE support when enableMove is true.
 func acceptedAbstractSyntaxes(enableMove bool) []string {
 	uids := []string{dimse.VerificationSOPClassUID, dimse.StudyRootFindSOPClassUID, dimse.StudyRootGetSOPClassUID}
 	if enableMove {
@@ -414,6 +422,7 @@ func acceptedAbstractSyntaxes(enableMove bool) []string {
 	return uids
 }
 
+// storageRoleSelections returns role selection items for all storage SOP class UIDs with SCP role enabled.
 func storageRoleSelections() []ul.RoleSelectionItem {
 	uids := storageSOPClassUIDs()
 	roles := make([]ul.RoleSelectionItem, 0, len(uids))
@@ -428,10 +437,12 @@ func StorageSOPClassUIDs() []string {
 	return storageSOPClassUIDs()
 }
 
+// storageSOPClassUIDs returns the default storage SOP class UIDs.
 func storageSOPClassUIDs() []string {
 	return dimse.DefaultStorageSOPClassUIDs()
 }
 
+// TransferSyntaxUIDsForPreference returns transfer syntax UIDs for receiving DICOM data according to the specified preference. It returns an error if the preference is unsupported.
 func TransferSyntaxUIDsForPreference(preference string) ([]string, error) {
 	preference = strings.TrimSpace(preference)
 	if preference == "" || strings.EqualFold(preference, PreferredTransferSyntaxAuto) {
@@ -447,6 +458,7 @@ func TransferSyntaxUIDsForPreference(preference string) ([]string, error) {
 	}
 }
 
+// decompressionTransferSyntaxUIDs identifies the transfer syntax UIDs that support image decompression.
 func decompressionTransferSyntaxUIDs() []string {
 	return []string{
 		transfer.JPEGBaseline.UID,
@@ -457,6 +469,7 @@ func decompressionTransferSyntaxUIDs() []string {
 	}
 }
 
+// appendUniqueTransferSyntaxUIDs produces a deduplicated list of transfer syntax UIDs by normalizing and combining the base and extra lists, skipping empty UIDs and duplicates while preserving iteration order.
 func appendUniqueTransferSyntaxUIDs(base []string, extra ...string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(base)+len(extra))

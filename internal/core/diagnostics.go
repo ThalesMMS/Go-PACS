@@ -192,6 +192,7 @@ func (s *Session) diagnosticStore(ctx context.Context, node nodes.Node, studyUID
 	return step
 }
 
+// failedStep creates a diagnostic step with the given name and failure status, using the provided error's message if the error is non-nil.
 func failedStep(name string, err error) NetworkDiagnosticStep {
 	msg := ""
 	if err != nil {
@@ -200,6 +201,7 @@ func failedStep(name string, err error) NetworkDiagnosticStep {
 	return NetworkDiagnosticStep{Name: name, Status: "failed", Error: msg}
 }
 
+// durationMS converts a duration to milliseconds, returning zero for durations less than or equal to zero.
 func durationMS(duration time.Duration) int64 {
 	if duration <= 0 {
 		return 0
@@ -207,6 +209,9 @@ func durationMS(duration time.Duration) int64 {
 	return int64(duration / time.Millisecond)
 }
 
+// transferSyntaxUIDs collects and deduplicates transfer syntax UIDs from send results.
+// If requested is true, it extracts RequestedTransferSyntaxUID; otherwise it extracts
+// NegotiatedTransferSyntaxUID. Duplicates and empty strings are excluded.
 func transferSyntaxUIDs(results []send.Result, requested bool) []string {
 	seen := map[string]bool{}
 	var out []string

@@ -15,6 +15,7 @@ type Options struct {
 	Verbose    bool
 }
 
+// Run validates the archive directory, rebuilds its catalog, and writes a status report to out if provided. It returns an error if the directory is invalid or the rebuild fails.
 func Run(ctx context.Context, opts Options, out io.Writer) error {
 	opts.ArchiveDir = strings.TrimSpace(opts.ArchiveDir)
 	if opts.ArchiveDir == "" {

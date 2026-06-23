@@ -80,7 +80,10 @@ LIMIT ?`, limit)
 		); err != nil {
 			return nil, fmt.Errorf("scan audit record: %w", err)
 		}
-		record.OccurredAt, _ = time.Parse(time.RFC3339Nano, occurredAt)
+		record.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse audit occurred_at %q: %w", occurredAt, err)
+		}
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {

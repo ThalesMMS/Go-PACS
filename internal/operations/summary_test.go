@@ -341,6 +341,80 @@ func TestReceiverSummaryCountsSnapshot(t *testing.T) {
 	}
 }
 
+func TestStoragePolicySummaryCountsPurgedAndSkipped(t *testing.T) {
+	report := archive.PurgeExpiredTrashReport{
+		Scanned: 5,
+		Purged:  3,
+		Skipped: 2,
+	}
+
+	summary := StoragePolicySummary(report, 500*time.Millisecond)
+
+	if summary.Kind != KindStoragePolicy {
+		t.Fatalf("Kind = %q, want %q", summary.Kind, KindStoragePolicy)
+	}
+	if summary.Method != "trash_purge_expired" {
+		t.Fatalf("Method = %q, want trash_purge_expired", summary.Method)
+	}
+	if summary.Status != StatusSuccess {
+		t.Fatalf("Status = %q, want %q", summary.Status, StatusSuccess)
+	}
+	if summary.DurationMS != 500 {
+		t.Fatalf("DurationMS = %d, want 500", summary.DurationMS)
+	}
+	if summary.Counts.Requested == nil || *summary.Counts.Requested != 5 {
+		t.Fatalf("Requested = %#v, want 5", summary.Counts.Requested)
+	}
+	if summary.Counts.Purged == nil || *summary.Counts.Purged != 3 {
+		t.Fatalf("Purged = %#v, want 3", summary.Counts.Purged)
+	}
+	if summary.Counts.Skipped == nil || *summary.Counts.Skipped != 2 {
+		t.Fatalf("Skipped = %#v, want 2", summary.Counts.Skipped)
+	}
+	if summary.Counts.Failed == nil || *summary.Counts.Failed != 0 {
+		t.Fatalf("Failed = %#v, want 0", summary.Counts.Failed)
+	}
+	if len(summary.Failures) != 0 {
+		t.Fatalf("Failures = %#v, want empty", summary.Failures)
+	}
+}
+
+func TestStoragePolicySummaryReportsWarningWhenErrorsPresent(t *testing.T) {
+	report := archive.PurgeExpiredTrashReport{
+		Scanned: 3,
+		Purged:  1,
+		Skipped: 1,
+		Errors:  []string{"purge trash entry 1.2.3: permission denied"},
+	}
+
+	summary := StoragePolicySummary(report, time.Second)
+
+	if summary.Status != StatusWarning {
+		t.Fatalf("Status = %q, want %q", summary.Status, StatusWarning)
+	}
+	if summary.Counts.Failed == nil || *summary.Counts.Failed != 1 {
+		t.Fatalf("Failed = %#v, want 1", summary.Counts.Failed)
+	}
+	if len(summary.Failures) != 1 || summary.Failures[0].Message != "purge trash entry 1.2.3: permission denied" {
+		t.Fatalf("Failures = %#v", summary.Failures)
+	}
+}
+
+func TestStoragePolicySummaryReportsFailureWhenNothingPurgedWithErrors(t *testing.T) {
+	report := archive.PurgeExpiredTrashReport{
+		Scanned: 2,
+		Purged:  0,
+		Skipped: 0,
+		Errors:  []string{"stat trash entry: no such file"},
+	}
+
+	summary := StoragePolicySummary(report, time.Second)
+
+	if summary.Status != StatusFailure {
+		t.Fatalf("Status = %q, want %q", summary.Status, StatusFailure)
+	}
+}
+
 func containsAll(value string, fragments ...string) bool {
 	for _, fragment := range fragments {
 		if !strings.Contains(value, fragment) {

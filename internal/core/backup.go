@@ -124,6 +124,7 @@ func (s *Session) BackupArchive(ctx context.Context, destDir string) (*BackupRes
 	}, nil
 }
 
+// validateBackupDestination validates that destDir is suitable for a backup operation. It returns nil if destDir does not exist or is an empty directory, otherwise an error.
 func validateBackupDestination(destDir string) error {
 	info, err := os.Stat(destDir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -145,6 +146,7 @@ func validateBackupDestination(destDir string) error {
 	return nil
 }
 
+// CopyObjectsDir recursively copies the directory tree rooted at srcRoot to dstRoot, validating that all entries are regular files, and returns the total bytes copied.
 func copyObjectsDir(ctx context.Context, srcRoot string, dstRoot string) (int64, error) {
 	if err := os.MkdirAll(dstRoot, 0o755); err != nil {
 		return 0, fmt.Errorf("create backup objects directory: %w", err)
@@ -184,10 +186,12 @@ func copyObjectsDir(ctx context.Context, srcRoot string, dstRoot string) (int64,
 	return total, nil
 }
 
+// archiveSidecarFileNames returns the sidecar filenames to be backed up with an archive.
 func archiveSidecarFileNames() []string {
 	return []string{configFileName, nodesFileName, autoQueryProfilesFileName, historyFileName}
 }
 
+// copyOptionalFileAtomic copies srcPath to dstPath, returning the bytes copied and whether the source file existed. If the source does not exist, no error is returned; otherwise, any copy error is propagated.
 func copyOptionalFileAtomic(ctx context.Context, srcPath string, dstPath string) (int64, bool, error) {
 	copied, err := copyFileAtomic(ctx, srcPath, dstPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -196,6 +200,7 @@ func copyOptionalFileAtomic(ctx context.Context, srcPath string, dstPath string)
 	return copied, true, err
 }
 
+// copyFileAtomic atomically copies srcPath to dstPath, preserving the source file's permissions and respecting context cancellation. It returns the number of bytes written and any error encountered.
 func copyFileAtomic(ctx context.Context, srcPath string, dstPath string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -250,6 +255,7 @@ func copyFileAtomic(ctx context.Context, srcPath string, dstPath string) (int64,
 	return written, nil
 }
 
+// writeJSONAtomic atomically writes v as indented JSON to path.
 func writeJSONAtomic(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {

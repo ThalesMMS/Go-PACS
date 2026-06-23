@@ -49,6 +49,9 @@ func (s *Server) handleTaskRetry(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]string{"jobID": job.ID, "kind": job.Kind})
 }
 
+// taskIndexFromRequest parses a task index from the request path.
+// It validates that the index is a non-negative integer, writing a 400 Bad Request
+// response if invalid. It returns the index and true on success, or (0, false) on error.
 func taskIndexFromRequest(w http.ResponseWriter, r *http.Request) (int, bool) {
 	index, err := strconv.Atoi(r.PathValue("index"))
 	if err != nil || index < 0 {
@@ -58,6 +61,7 @@ func taskIndexFromRequest(w http.ResponseWriter, r *http.Request) (int, bool) {
 	return index, true
 }
 
+// writeTaskRetryError writes an HTTP error response for task-retry failures, using 404 Not Found for out-of-range task index errors and 500 Internal Server Error for all other errors.
 func writeTaskRetryError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, core.ErrTaskIndexOutOfRange):

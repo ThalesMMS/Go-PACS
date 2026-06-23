@@ -271,6 +271,7 @@ func (s *Server) handleDICOMwebInstanceObject(w http.ResponseWriter, r *http.Req
 	_, _ = io.Copy(w, file)
 }
 
+// WriteDICOMwebMetadata writes instance metadata as a DICOMweb JSON response. If no instances are present, it writes an HTTP 404 error response instead.
 func writeDICOMwebMetadata(w http.ResponseWriter, instances []archive.Instance) {
 	if len(instances) == 0 {
 		writeJSON(w, http.StatusNotFound, apiResponse{Error: "DICOM resource not found"})
@@ -342,17 +343,26 @@ func (s *Server) safeStoredObjectPath(instance archive.Instance) (string, error)
 	if err != nil {
 		return "", errDICOMwebUnsafeStoredPath
 	}
-	rel, err := filepath.Rel(objectsRoot, absPath)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errDICOMwebUnsafeStoredPath
-	}
 	info, err := os.Stat(absPath)
 	if err != nil || info.IsDir() {
 		return "", errDICOMwebObjectUnavailable
 	}
-	return absPath, nil
+	objectsRoot, err = filepath.EvalSymlinks(objectsRoot)
+	if err != nil {
+		return "", errDICOMwebUnsafeStoredPath
+	}
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", errDICOMwebUnsafeStoredPath
+	}
+	rel, err := filepath.Rel(objectsRoot, resolvedPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errDICOMwebUnsafeStoredPath
+	}
+	return resolvedPath, nil
 }
 
+// dicomwebStoreMultipartReader creates a multipart reader from an HTTP request for STOW-RS operations. It validates that the Content-Type header specifies multipart/related with a required boundary parameter and an optional application/dicom type parameter.
 func dicomwebStoreMultipartReader(r *http.Request) (*multipart.Reader, error) {
 	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
@@ -407,6 +417,7 @@ func (s *Server) importDICOMwebStorePart(r *http.Request, part *multipart.Part, 
 	return ref, &dicomwebStoreFailure{Reference: ref, Reason: stowFailureReasonForReport(report)}, nil
 }
 
+// CopyDICOMwebStorePart copies data from src to dst, optionally enforcing a maximum size limit. If maxBytes is less than or equal to zero, all data is copied without restriction. If data exceeds maxBytes, the remaining source is drained and errDICOMwebPartTooLarge is returned. It returns the number of bytes copied and any error encountered.
 func copyDICOMwebStorePart(dst io.Writer, src io.Reader, maxBytes int64) (int64, error) {
 	if maxBytes <= 0 {
 		return io.Copy(dst, src)
@@ -423,6 +434,7 @@ func copyDICOMwebStorePart(dst io.Writer, src io.Reader, maxBytes int64) (int64,
 	return copied, nil
 }
 
+// dicomwebStoreReferenceFromFile extracts the SOP Class and Instance UIDs from the DICOM file at the given path.
 func dicomwebStoreReferenceFromFile(path string) (dicomwebStoreReference, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -440,6 +452,7 @@ func dicomwebStoreReferenceFromFile(path string) (dicomwebStoreReference, error)
 	}, nil
 }
 
+// dicomwebFileUID returns a UID from the file, using the preferred tag if found, otherwise using the fallback tag.
 func dicomwebFileUID(file *object.File, preferred dicomcore.Tag, fallback dicomcore.Tag) string {
 	if value, ok := file.GetUID(preferred); ok {
 		return value
@@ -450,6 +463,7 @@ func dicomwebFileUID(file *object.File, preferred dicomcore.Tag, fallback dicomc
 	return ""
 }
 
+// stowFailureReasonForReport returns the STOW-RS failure reason code based on the import report's rejections.
 func stowFailureReasonForReport(report archive.ImportReport) int {
 	for _, rejection := range report.Rejections {
 		if strings.Contains(rejection.Reason, "max_file_import_bytes") {
@@ -459,6 +473,7 @@ func stowFailureReasonForReport(report archive.ImportReport) int {
 	return stowFailureCannotUnderstand
 }
 
+// dicomwebImportLimits converts server configuration to import limits, treating absent values as zero.
 func dicomwebImportLimits(cfg appconfig.Config) archive.ImportLimits {
 	d64 := func(p *int64) int64 {
 		if p != nil {
@@ -504,6 +519,7 @@ func (r dicomwebStoreResult) Dataset() dicomJSONDataset {
 	return dataset
 }
 
+// DicomwebReferencedSOPItem builds a DICOM JSON dataset item containing the referenced SOP Class and Instance UIDs from a store reference.
 func dicomwebReferencedSOPItem(ref dicomwebStoreReference) dicomJSONDataset {
 	item := dicomJSONDataset{}
 	if strings.TrimSpace(ref.SOPClassUID) != "" {
@@ -515,6 +531,7 @@ func dicomwebReferencedSOPItem(ref dicomwebStoreReference) dicomJSONDataset {
 	return item
 }
 
+// dicomwebSequenceValue creates a DICOM JSON sequence value from a list of datasets.
 func dicomwebSequenceValue(items []dicomJSONDataset) dicomJSONValue {
 	values := make([]any, 0, len(items))
 	for _, item := range items {
@@ -523,6 +540,7 @@ func dicomwebSequenceValue(items []dicomJSONDataset) dicomJSONValue {
 	return dicomJSONValue{VR: "SQ", Value: values}
 }
 
+// writeDICOMwebObjectError writes a JSON-formatted HTTP error response with a status code appropriate to the error.
 func writeDICOMwebObjectError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errDICOMwebObjectUnavailable):
@@ -545,6 +563,8 @@ type qidoInstanceFilter struct {
 	InstanceNumber string
 }
 
+// qidoStudyFilters parses study-level filters and pagination parameters from QIDO query values.
+// It returns the filters, pagination window, and any error if parameters are invalid.
 func qidoStudyFilters(values url.Values) (archive.StudyFilters, qidoWindow, error) {
 	allowed := map[string]bool{
 		"PatientName": true, "PatientID": true, "PatientBirthDate": true,
@@ -582,6 +602,7 @@ func qidoStudyFilters(values url.Values) (archive.StudyFilters, qidoWindow, erro
 	return filters, window, nil
 }
 
+// QidoSeriesFilters parses series-level QIDO-RS query filters and pagination parameters from URL query values. It rejects unsupported parameters and returns the parsed filters, the series instance UID, pagination window, and any parsing or validation error.
 func qidoSeriesFilters(values url.Values) (archive.SeriesFilters, string, qidoWindow, error) {
 	allowed := map[string]bool{
 		"Modality": true, "SeriesNumber": true, "SeriesDescription": true,
@@ -601,6 +622,7 @@ func qidoSeriesFilters(values url.Values) (archive.SeriesFilters, string, qidoWi
 	}, strings.TrimSpace(values.Get("SeriesInstanceUID")), window, nil
 }
 
+// qidoInstanceFilters parses instance-level QIDO query parameters, validates that only supported parameters are present, and returns the extracted filters and pagination window.
 func qidoInstanceFilters(values url.Values) (qidoInstanceFilter, qidoWindow, error) {
 	allowed := map[string]bool{
 		"SOPInstanceUID": true, "SOPClassUID": true, "InstanceNumber": true,
@@ -620,6 +642,7 @@ func qidoInstanceFilters(values url.Values) (qidoInstanceFilter, qidoWindow, err
 	}, window, nil
 }
 
+// rejectUnsupportedQIDOParams validates that all query parameter keys are in the allowed set, returning an error if any unsupported parameters are found.
 func rejectUnsupportedQIDOParams(values url.Values, allowed map[string]bool) error {
 	for key := range values {
 		if !allowed[key] {
@@ -629,6 +652,7 @@ func rejectUnsupportedQIDOParams(values url.Values, allowed map[string]bool) err
 	return nil
 }
 
+// qidoWindowFromParams parses limit and offset pagination parameters from URL query values. Empty or missing values default to zero. It returns an error if either parameter cannot be parsed as a non-negative integer.
 func qidoWindowFromParams(values url.Values) (qidoWindow, error) {
 	var window qidoWindow
 	var err error
@@ -647,6 +671,7 @@ func qidoWindowFromParams(values url.Values) (qidoWindow, error) {
 	return window, nil
 }
 
+// qidoDateRange parses a DICOM date or date range string for QIDO queries. An empty string returns zero values. A single date returns that date as both the start and end. A date range is specified as two dates separated by a hyphen.
 func qidoDateRange(value string) (string, string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -662,12 +687,14 @@ func qidoDateRange(value string) (string, string, error) {
 	return "", "", fmt.Errorf("StudyDate must be a DICOM date or date range")
 }
 
+// qidoList splits value by commas and backslashes.
 func qidoList(value string) []string {
 	return strings.FieldsFunc(value, func(r rune) bool {
 		return r == '\\' || r == ','
 	})
 }
 
+// applyWindow returns items with pagination applied according to the offset and limit in window. If offset exceeds len(items), applyWindow returns nil.
 func applyWindow[T any](items []T, window qidoWindow) []T {
 	if window.Offset >= len(items) {
 		return nil
@@ -681,6 +708,7 @@ func applyWindow[T any](items []T, window qidoWindow) []T {
 	return items
 }
 
+// filterSlice returns a new slice containing only the elements of items for which keep returns true.
 func filterSlice[T any](items []T, keep func(T) bool) []T {
 	out := make([]T, 0, len(items))
 	for _, item := range items {
@@ -691,6 +719,7 @@ func filterSlice[T any](items []T, keep func(T) bool) []T {
 	return out
 }
 
+// QidoStudyDataset converts a study record to a DICOM JSON dataset with study and patient attributes mapped to standard DICOM tags.
 func qidoStudyDataset(study archive.Study) dicomJSONDataset {
 	return dicomJSONDataset{
 		"00080020": qidoValue("DA", study.StudyDate),
@@ -710,6 +739,7 @@ func qidoStudyDataset(study archive.Study) dicomJSONDataset {
 	}
 }
 
+// qidoSeriesDataset encodes a series as a DICOM JSON dataset.
 func qidoSeriesDataset(series archive.Series) dicomJSONDataset {
 	return dicomJSONDataset{
 		"00080021": qidoValue("DA", series.SeriesDate),
@@ -723,6 +753,7 @@ func qidoSeriesDataset(series archive.Series) dicomJSONDataset {
 	}
 }
 
+// QidoInstanceDataset converts an instance to a DICOM JSON dataset.
 func qidoInstanceDataset(instance archive.Instance) dicomJSONDataset {
 	return dicomJSONDataset{
 		"00020010": qidoValue("UI", instance.TransferSyntaxUID),
@@ -735,6 +766,7 @@ func qidoInstanceDataset(instance archive.Instance) dicomJSONDataset {
 	}
 }
 
+// qidoValue constructs a DICOM JSON value with the specified value representation and the given value if it is non-empty.
 func qidoValue(vr string, value string) dicomJSONValue {
 	if strings.TrimSpace(value) == "" {
 		return dicomJSONValue{VR: vr}
@@ -742,6 +774,7 @@ func qidoValue(vr string, value string) dicomJSONValue {
 	return dicomJSONValue{VR: vr, Value: []any{value}}
 }
 
+// qidoValues creates a DICOM JSON value from a list of string values, excluding empty or whitespace-only strings.
 func qidoValues(vr string, values []string) dicomJSONValue {
 	out := make([]any, 0, len(values))
 	for _, value := range values {
@@ -756,12 +789,14 @@ func qidoValues(vr string, values []string) dicomJSONValue {
 	return dicomJSONValue{VR: vr, Value: out}
 }
 
+// writeDICOMJSONDataset writes a single DICOM JSON dataset to the HTTP response with the specified status code.
 func writeDICOMJSONDataset(w http.ResponseWriter, status int, dataset dicomJSONDataset) {
 	w.Header().Set("Content-Type", "application/dicom+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(dataset)
 }
 
+// writeDICOMJSON writes datasets as DICOM JSON to w, with HTTP 204 No Content if datasets is empty.
 func writeDICOMJSON(w http.ResponseWriter, datasets []dicomJSONDataset) {
 	if len(datasets) == 0 {
 		w.WriteHeader(http.StatusNoContent)

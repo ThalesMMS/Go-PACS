@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/tokens"
 	dicomcore "github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
@@ -309,6 +310,15 @@ func TestDICOMwebCapabilitiesAdvertisesSupportedSurface(t *testing.T) {
 	s := newTestServer(t)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/dicomweb/capabilities", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("capabilities without token status = %d body=%s, want 401", rec.Code, rec.Body.String())
+	}
+
+	token := createDICOMwebToken(t, s, tokens.RoleRead)
+	req := httptest.NewRequest(http.MethodGet, "/dicomweb/capabilities", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("capabilities status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -326,7 +336,7 @@ func TestDICOMwebCapabilitiesAdvertisesSupportedSurface(t *testing.T) {
 	if !ok {
 		t.Fatalf("authentication missing in %#v", body)
 	}
-	if auth["required"] != true || auth["scheme"] != "Bearer" || auth["capabilitiesEndpointRequiresAuth"] != false {
+	if auth["required"] != true || auth["scheme"] != "Bearer" || auth["capabilitiesEndpointRequiresAuth"] != true {
 		t.Fatalf("authentication = %#v", auth)
 	}
 	transactions := capabilitiesStrings(t, body, "transactions", "name")
@@ -351,6 +361,23 @@ func TestDICOMwebCapabilitiesAdvertisesSupportedSurface(t *testing.T) {
 	limits, ok := body["limits"].(map[string]any)
 	if !ok || limits["maxFileImportBytes"] == nil || limits["maxStoreObjectBytes"] == nil {
 		t.Fatalf("limits = %#v", body["limits"])
+	}
+}
+
+func TestSafeStoredObjectPathRejectsSymlinkOutsideObjects(t *testing.T) {
+	s := newTestServer(t)
+	outside := filepath.Join(t.TempDir(), "outside.dcm")
+	if err := os.WriteFile(outside, []byte("not checked here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(s.session.ArchiveDir(), "objects", "linked.dcm")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.safeStoredObjectPath(archive.Instance{StoredPath: link})
+	if !errors.Is(err, errDICOMwebUnsafeStoredPath) {
+		t.Fatalf("safeStoredObjectPath error = %v, want unsafe stored path", err)
 	}
 }
 

@@ -16,7 +16,8 @@ import (
 )
 
 // StudyQuery performs a QIDO-RS study search and maps DICOM JSON results into
-// the shared query.Match model used by the existing DIMSE query workflow.
+// StudyQuery searches for DICOM studies matching the criteria using QIDO-RS against the specified node.
+// It returns an error if a custom DICOM field value is provided without a corresponding keyword.
 func StudyQuery(ctx context.Context, node nodes.Node, criteria query.Criteria) (query.Result, error) {
 	params := url.Values{}
 	addParam(params, "PatientName", criteria.PatientName)
@@ -43,7 +44,9 @@ func StudyQuery(ctx context.Context, node nodes.Node, criteria query.Criteria) (
 	}, studyMatch)
 }
 
-// SeriesQuery performs a QIDO-RS series search for one study.
+// SeriesQuery searches for series within a study using DICOMweb QIDO-RS.
+// StudyInstanceUID is required; it returns an error if empty.
+// Returns the aggregated query result or an error from the search.
 func SeriesQuery(ctx context.Context, node nodes.Node, criteria query.SeriesCriteria) (query.Result, error) {
 	studyUID := strings.TrimSpace(criteria.StudyInstanceUID)
 	if studyUID == "" {
@@ -64,7 +67,8 @@ func SeriesQuery(ctx context.Context, node nodes.Node, criteria query.SeriesCrit
 	}, seriesMatch)
 }
 
-// ImageQuery performs a QIDO-RS instance search for one series.
+// ImageQuery searches for instances within a specified study and series using QIDO-RS.
+// StudyInstanceUID and SeriesInstanceUID are required; an error is returned if either is empty.
 func ImageQuery(ctx context.Context, node nodes.Node, criteria query.ImageCriteria) (query.Result, error) {
 	studyUID := strings.TrimSpace(criteria.StudyInstanceUID)
 	if studyUID == "" {
@@ -89,6 +93,9 @@ func ImageQuery(ctx context.Context, node nodes.Node, criteria query.ImageCriter
 	}, imageMatch)
 }
 
+// search executes a QIDO-RS search against a DICOMweb node, limits results
+// if specified, maps datasets to query matches, and records operation timing.
+// It returns an error if the node is not DICOMweb or if the search fails.
 func search(ctx context.Context, node nodes.Node, maxResults int, run func(dicomweb.Client) ([]dicomweb.Dataset, error), mapMatch func(dicomweb.Dataset) query.Match) (query.Result, error) {
 	if !node.IsDICOMweb() {
 		return query.Result{}, fmt.Errorf("node %q is not a DICOMweb profile", node.Name)
@@ -117,6 +124,7 @@ func search(ctx context.Context, node nodes.Node, maxResults int, run func(dicom
 	return out, nil
 }
 
+// studyMatch converts a DICOM JSON dataset into a study-level query.Match with patient and study information.
 func studyMatch(dataset dicomweb.Dataset) query.Match {
 	return query.Match{
 		QueryRetrieveLevel:     dimse.QueryRetrieveLevelStudy,
@@ -138,6 +146,7 @@ func studyMatch(dataset dicomweb.Dataset) query.Match {
 	}
 }
 
+// seriesMatch converts a DICOM dataset into a series-level query match populated with patient, study, and series attributes.
 func seriesMatch(dataset dicomweb.Dataset) query.Match {
 	return query.Match{
 		QueryRetrieveLevel:     dimse.QueryRetrieveLevelSeries,
@@ -158,6 +167,7 @@ func seriesMatch(dataset dicomweb.Dataset) query.Match {
 	}
 }
 
+// imageMatch converts a DICOM dataset into an image-level query match.
 func imageMatch(dataset dicomweb.Dataset) query.Match {
 	return query.Match{
 		QueryRetrieveLevel:     dimse.QueryRetrieveLevelImage,
@@ -178,6 +188,7 @@ func imageMatch(dataset dicomweb.Dataset) query.Match {
 	}
 }
 
+// addParam adds a query parameter if both key and value are non-empty after trimming whitespace.
 func addParam(params url.Values, key string, value string) {
 	key = strings.TrimSpace(key)
 	value = strings.TrimSpace(value)
@@ -187,12 +198,14 @@ func addParam(params url.Values, key string, value string) {
 	params.Set(key, value)
 }
 
+// addLimit sets the limit query parameter to maxResults if it is greater than zero.
 func addLimit(params url.Values, maxResults int) {
 	if maxResults > 0 {
 		params.Set("limit", strconv.Itoa(maxResults))
 	}
 }
 
+// valueRange formats a range query string from two values. It returns an empty string if both are empty, the single value if both are equal, or a hyphen-separated range otherwise.
 func valueRange(from, to string) string {
 	from = strings.TrimSpace(from)
 	to = strings.TrimSpace(to)
@@ -206,10 +219,12 @@ func valueRange(from, to string) string {
 	}
 }
 
+// elementString returns the string value of a DICOM attribute with the specified tag from the dataset.
 func elementString(dataset dicomweb.Dataset, tag string) string {
 	return dicomjson.ElementString(dataset, tag)
 }
 
+// elementStrings returns the string values of a multi-valued DICOM attribute from the dataset.
 func elementStrings(dataset dicomweb.Dataset, tag string) []string {
 	return dicomjson.ElementStrings(dataset, tag)
 }

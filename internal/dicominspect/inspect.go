@@ -77,6 +77,8 @@ func DefaultOptions() Options {
 	}
 }
 
+// InspectReader reads a DICOM file from a reader and returns a summary of its metadata and elements.
+// Parsing limits specified in opts are applied; zero values are replaced with defaults.
 func InspectReader(fileName string, r io.Reader, opts Options) (Summary, error) {
 	opts = withDefaults(opts)
 	file, err := dicom.ReadFileWithOptions(r, dicom.ReadFileOptions{
@@ -137,6 +139,7 @@ func InspectFile(path string, opts Options) (Summary, error) {
 	return InspectReader(filepath.Base(path), file, opts)
 }
 
+// withDefaults returns opts with zero-valued limits replaced by defaults from DefaultOptions.
 func withDefaults(opts Options) Options {
 	defaults := DefaultOptions()
 	if opts.MaxTotalBytes == 0 {
@@ -154,6 +157,7 @@ func withDefaults(opts Options) Options {
 	return opts
 }
 
+// summarizeObject converts DICOM elements from the given object into ElementSummary values with the specified source.
 func summarizeObject(source string, obj *object.Object) []ElementSummary {
 	rows := object.SummarizeElements(obj, object.SummaryOptions{
 		Dictionary:     std.Dictionary,

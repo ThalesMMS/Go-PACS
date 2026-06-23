@@ -31,15 +31,18 @@ func (e *LoadError) Unwrap() error {
 	return e.Err
 }
 
+// BackupPath returns the backup file path for the given path by appending ".bak".
 func BackupPath(path string) string {
 	return path + ".bak"
 }
 
+// CheckBackupExists reports whether a backup file exists for the given path and is a regular file.
 func CheckBackupExists(path string) bool {
 	info, err := os.Stat(BackupPath(path))
 	return err == nil && info.Mode().IsRegular()
 }
 
+// WriteWithBackup writes data to a JSON store at path, creating a backup of any existing valid JSON content beforehand. The store directory is created if necessary. Both the backup and the store file are written atomically. No backup is created if the file does not exist or contains invalid JSON. It returns any error encountered during the operation.
 func WriteWithBackup(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create JSON store directory: %w", err)
@@ -57,6 +60,8 @@ func WriteWithBackup(path string, data []byte) error {
 	return nil
 }
 
+// RecoverFromBackup restores a JSON store from its backup file.
+// An error is returned if the backup does not exist, is not a regular file, or the restore fails.
 func RecoverFromBackup(path string) error {
 	backup := BackupPath(path)
 	info, err := os.Stat(backup)
@@ -84,6 +89,8 @@ func RecoverFromBackup(path string) error {
 	return nil
 }
 
+// writeAtomic atomically writes data to a file at path with the specified permissions.
+// It returns an error if the operation fails, or nil on success.
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

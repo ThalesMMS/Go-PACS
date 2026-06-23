@@ -58,6 +58,7 @@ type SortPreference struct {
 	Descending bool `json:"descending"`
 }
 
+// Defaults returns a Config populated with default values.
 func Defaults() Config {
 	return Config{
 		LocalAETitle:                     netverify.DefaultCallingAETitle,
@@ -77,6 +78,9 @@ func Defaults() Config {
 	}
 }
 
+// Load reads application configuration from the file at path.
+// If the file does not exist or is empty, it returns the default configuration.
+// It returns an error if the file cannot be read or contains invalid JSON.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -101,6 +105,7 @@ func Load(path string) (Config, error) {
 	return Normalize(cfg)
 }
 
+// Save persists cfg to a file at path, after normalizing it. It returns an error if normalization or writing fails.
 func Save(path string, cfg Config) error {
 	cfg, err := Normalize(cfg)
 	if err != nil {
@@ -117,10 +122,12 @@ func Save(path string, cfg Config) error {
 	return nil
 }
 
+// RecoverFromBackup restores the application configuration from a backup file.
 func RecoverFromBackup(path string) error {
 	return jsonstore.RecoverFromBackup(path)
 }
 
+// Normalize normalizes and validates cfg, applying defaults for unset values. It returns the normalized configuration or an error if any field is invalid.
 func Normalize(cfg Config) (Config, error) {
 	defaults := Defaults()
 	cfg.LocalAETitle = nodes.NormalizeAETitle(cfg.LocalAETitle)
@@ -231,6 +238,7 @@ func normalizeStringList(values []string) []string {
 	return normalized
 }
 
+// applyMissingSafetyLimitDefaults sets default values for safety limit fields in cfg that are missing from raw.
 func applyMissingSafetyLimitDefaults(cfg *Config, raw map[string]json.RawMessage) {
 	if _, ok := raw["max_zip_entry_bytes"]; !ok {
 		cfg.MaxZipEntryBytes = int64Ptr(DefaultMaxZipEntryBytes)
@@ -258,12 +266,15 @@ func applyMissingSafetyLimitDefaults(cfg *Config, raw map[string]json.RawMessage
 	}
 }
 
+// applyMissingStoragePolicyDefaults sets the trash auto-purge days to its default value if the field is absent from the raw JSON configuration.
 func applyMissingStoragePolicyDefaults(cfg *Config, raw map[string]json.RawMessage) {
 	if _, ok := raw["trashAutoPurgeDays"]; !ok {
 		cfg.TrashAutoPurgeDays = DefaultTrashAutoPurgeDays
 	}
 }
 
+// validateOptionalInt64 validates that an optional int64 value is positive or null.
+// It returns an error if the value is non-nil and not positive.
 func validateOptionalInt64(name string, value *int64) error {
 	if value != nil && *value <= 0 {
 		return fmt.Errorf("%s must be greater than zero or null", name)

@@ -10,6 +10,8 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 )
 
+// RebuildArchiveCatalog rebuilds an archive catalog and verifies the rebuild.
+// It returns the rebuild report and any error encountered during the rebuild or verification process.
 func RebuildArchiveCatalog(ctx context.Context, archiveDir string) (archive.RebuildReport, error) {
 	return archive.RebuildCatalog(ctx, archiveDir, archive.RebuildOptions{
 		VerifyFunc: func(ctx context.Context, catalog *archive.Catalog) error {

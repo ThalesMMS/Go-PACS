@@ -74,7 +74,7 @@ type Session struct {
 
 // Open opens (creating it if necessary) the archive catalog under archiveDir
 // and prepares the configuration, node, auto-query, and history stores. The
-// caller must call Close when finished with the returned Session.
+// Open opens an archive at the given directory and returns a new Session with all stores and configuration paths initialized. It returns an error if the catalog cannot be opened.
 func Open(archiveDir string) (*Session, error) {
 	catalog, err := archive.Open(archiveDir)
 	if err != nil {
@@ -219,7 +219,7 @@ func (s *Session) RecoverAutoQueryProfilesFromBackup() error {
 }
 
 // DefaultArchiveDir returns the platform-appropriate default location for the
-// archive catalog and object store. Every frontend resolves the same default.
+// DefaultArchiveDir returns the default archive directory path, preferring the user's system config directory with a fallback to ./.go-pacs.
 func DefaultArchiveDir() string {
 	dir, err := os.UserConfigDir()
 	if err != nil || dir == "" {

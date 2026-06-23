@@ -15,6 +15,9 @@ window.TABS.network = (function () {
   ];
   const PROTOCOLS = [["DIMSE", "dimse"], ["DICOMweb", "dicomweb"]];
 
+  /**
+   * Renders the Network tab with all UI components and starts periodic status monitoring.
+   */
   function render() {
     panel.innerHTML = "";
     panel.appendChild(receiverCard());
@@ -27,7 +30,10 @@ window.TABS.network = (function () {
     if (!statusTimer) statusTimer = setInterval(refreshStatus, 5000);
   }
 
-  // ---- Listener control ----
+  /**
+   * Creates the DICOM listener control card.
+   * @returns {Element} The card element containing listener status, control buttons, counters, and warnings.
+   */
   function receiverCard() {
     return el("section", { class: "card" },
       el("h2", null, "DICOM listener"),
@@ -67,7 +73,10 @@ window.TABS.network = (function () {
     refreshStatus();
   }
 
-  // ---- Inline node table ----
+  /**
+   * Builds the DICOM nodes management interface for Query/Retrieve and Send operations.
+   * @returns {Element} A section element containing the editable node table and action buttons.
+   */
   function nodesCard() {
     return el("section", { class: "card" },
       el("h2", null, "DICOM nodes for Query/Retrieve and Send"),
@@ -84,6 +93,9 @@ window.TABS.network = (function () {
         el("button", { class: "btn secondary", onclick: verifyAll }, "Verify all")));
   }
 
+  /**
+   * Fetches and displays the list of DICOM nodes in the network table.
+   */
   async function refreshNodes() {
     const r = await apiGet("/api/nodes");
     nodes = (r.ok && r.data) || [];
@@ -99,6 +111,11 @@ window.TABS.network = (function () {
     renderDiagnosticNodes();
   }
 
+  /**
+   * Creates an editable table row for a DICOM node.
+   * @param {Object} n - A node object containing endpoint and configuration data.
+   * @returns {HTMLElement} A table row with protocol-specific fields, inline editing controls, and action buttons.
+   */
   function nodeRow(n) {
     const draft = () => {
       const protocol = cells.protocol.value;
@@ -164,21 +181,65 @@ window.TABS.network = (function () {
         el("button", { class: "btn danger", onclick: () => deleteNode(n) }, "✕"), verifyPill)));
     return tr;
   }
-  function chk(checked, onchange) { const i = el("input", { type: "checkbox", onchange }); i.checked = checked; return i; }
-  function sel(opts, value, onchange) { return el("select", { onchange }, ...opts.map(([t, v]) => el("option", { value: v, selected: v === value }, t))); }
-  function protocolOf(n) { return String(n.protocol || "dimse").toLowerCase() === "dicomweb" ? "dicomweb" : "dimse"; }
+  /**
+ * Creates a checkbox input element.
+ * @param {boolean} checked - The initial checked state.
+ * @param {Function} onchange - Handler invoked when the checkbox state changes.
+ * @return {HTMLInputElement} A checkbox input element.
+ */
+function chk(checked, onchange) { const i = el("input", { type: "checkbox", onchange }); i.checked = checked; return i; }
+  /**
+ * Creates a select element with the specified options and initial selection.
+ * @param {Array<[string, string]>} opts - Array of [label, value] pairs for the select options.
+ * @param {string} value - The value to pre-select.
+ * @param {Function} onchange - Callback invoked when the selection changes.
+ * @return {Element} The created select element.
+ */
+function sel(opts, value, onchange) { return el("select", { onchange }, ...opts.map(([t, v]) => el("option", { value: v, selected: v === value }, t))); }
+  /**
+ * Normalizes a node's protocol identifier to a canonical value.
+ * @param {Object} n - A node object with an optional `protocol` property.
+ * @returns {string} `'dicomweb'` if the protocol is 'dicomweb', `'dimse'` otherwise.
+ */
+function protocolOf(n) { return String(n.protocol || "dimse").toLowerCase() === "dicomweb" ? "dicomweb" : "dimse"; }
+  /**
+   * Wraps an input element with a styled label.
+   * @param {string} label - The label text.
+   * @param {HTMLElement} input - The input element.
+   * @return {HTMLElement} A label element containing the styled label and input.
+   */
   function field(label, input) {
     return el("label", { style: "display:grid;gap:2px;min-width:160px" }, el("span", { class: "muted" }, label), input);
   }
+  /**
+   * Stacks field elements in a vertical grid layout.
+   * @param {...*} items - Elements to stack.
+   * @return {Element} The container div.
+   */
   function fieldStack(...items) {
     return el("div", { style: "display:grid;gap:6px;min-width:220px" }, ...items);
   }
+  /**
+   * Assembles the DIMSE endpoint configuration fields.
+   * @param {Object} cells - Input elements for host, AE Title, and port.
+   * @returns {HTMLElement} A stacked layout of the endpoint fields.
+   */
   function dimseEndpointFields(cells) {
     return fieldStack(field("Host", cells.host), field("AE Title", cells.aeTitle), field("Port", cells.port));
   }
+  /**
+   * Assembles the options UI fields for a DIMSE node.
+   * @param {object} cells - An object containing `tls` and `syntax` UI control elements.
+   * @return {element} A stacked layout of the TLS and Send Transfer Syntax option fields.
+   */
   function dimseOptions(cells) {
     return fieldStack(field("TLS", cells.tls), field("Send Transfer Syntax", cells.syntax));
   }
+  /**
+   * Assembles the DICOMweb endpoint configuration fields into a stacked layout.
+   * @param {Object} cells - An object containing the Base URL, QIDO path, WADO path, and STOW path input elements.
+   * @return {HTMLElement} A stacked field container with labeled DICOMweb endpoint inputs.
+   */
   function dicomwebEndpointFields(cells) {
     return fieldStack(
       field("Base URL", cells.baseURL),
@@ -186,30 +247,58 @@ window.TABS.network = (function () {
       field("WADO path", cells.wado),
       field("STOW path", cells.stow));
   }
+  /**
+   * Builds the DICOMweb-specific options UI for a node.
+   * @param {object} cells - Object containing the credential UI control.
+   * @return {HTMLElement} A field containing the credential reference input.
+   */
   function dicomwebOptions(cells) {
     return fieldStack(field("Credential ref", cells.credential));
   }
 
+  /**
+   * Creates a new DIMSE node with default settings.
+   */
   async function addDimseNode() {
     const suffix = nodes.length + 1;
     const r = await apiSend("/api/nodes", "POST", { name: `dimse-${suffix}`, protocol: "dimse", aeTitle: "AETITLE", host: "127.0.0.1", port: 104 });
     if (r.ok) { setStatus("DIMSE node added", "ok"); refreshNodes(); } else setStatus(`Add failed: ${r.error}`, "error");
   }
+  /**
+   * Adds a new DICOMweb node to the network configuration.
+   */
   async function addDICOMwebNode() {
     const suffix = nodes.length + 1;
     const r = await apiSend("/api/nodes", "POST", { name: `dicomweb-${suffix}`, protocol: "dicomweb", baseURL: "http://127.0.0.1/dicom-web" });
     if (r.ok) { setStatus("Node added", "ok"); refreshNodes(); } else setStatus(`Add failed: ${r.error}`, "error");
   }
+  /**
+   * Deletes a node after prompting for user confirmation.
+   * @param {Object} n - The node to delete.
+   */
   async function deleteNode(n) {
     if (!confirm(`Delete node "${n.name}"?`)) return;
     const r = await apiSend(`/api/nodes/${encodeURIComponent(n.id)}`, "DELETE");
     if (r.ok) { setStatus(`Deleted ${n.name}`, "ok"); refreshNodes(); } else setStatus(`Delete failed: ${r.error}`, "error");
   }
+  /**
+   * Enables or disables Query/Retrieve on all nodes.
+   * @param {boolean} on - `true` to enable Query, `false` to disable.
+   */
   async function setAllQuery(on) {
-    for (const n of nodes) await apiSend(`/api/nodes/${encodeURIComponent(n.id)}`, "PUT", Object.assign({}, draftOf(n), { queryDisabled: !on }));
-    setStatus(on ? "Query enabled for all" : "Query disabled for all", "ok");
+    const failed = [];
+    for (const n of nodes) {
+      const r = await apiSend(`/api/nodes/${encodeURIComponent(n.id)}`, "PUT", Object.assign({}, draftOf(n), { queryDisabled: !on }));
+      if (!r.ok) failed.push(n.name || n.id);
+    }
+    setStatus(failed.length ? `Query update failed for ${failed.join(", ")}` : (on ? "Query enabled for all" : "Query disabled for all"), failed.length ? "error" : "ok");
     refreshNodes();
   }
+  /**
+   * Constructs an API payload for a DICOM node, adding protocol-specific fields.
+   * @param {Object} n - The node object to convert.
+   * @returns {Object} A payload with common node properties and protocol-specific fields.
+   */
   function draftOf(n) {
     const protocol = protocolOf(n);
     const base = { name: n.name, protocol, disabled: !!n.disabled, queryDisabled: !!n.queryDisabled,
@@ -221,6 +310,12 @@ window.TABS.network = (function () {
     return Object.assign(base, { aeTitle: n.aeTitle, host: n.host, port: n.port, retrieveMethod: n.retrieveMethod || "Auto",
       sendTransferSyntax: n.sendTransferSyntax || "Auto", useTLS: !!n.useTLS, preferredMoveDestination: n.preferredMoveDestination || "" });
   }
+  /**
+   * Verifies connectivity to a DICOM node.
+   * @param {Object} node - The DICOM node to verify.
+   * @param {HTMLElement} btn - The button element to disable during verification.
+   * @param {HTMLElement} pill - The element to display the verification result.
+   */
   async function verify(node, btn, pill) {
     btn.disabled = true;
     setStatus(`Verifying ${node.name}…`);
@@ -231,9 +326,22 @@ window.TABS.network = (function () {
     const okText = protocolOf(node) === "dicomweb" ? "DICOMweb verify OK" : "C-ECHO OK";
     setStatus(r.ok ? `${node.name}: ${okText}` : `${node.name}: ${r.error}`, r.ok ? "ok" : "error");
   }
-  async function verifyAll() { for (const n of nodes) await apiSend("/api/echo", "POST", { nodeID: n.id }); setStatus("Verified all nodes", "ok"); }
+  /**
+ * Verifies connectivity to all configured nodes sequentially.
+ */
+async function verifyAll() {
+  const failed = [];
+  for (const n of nodes) {
+    const r = await apiSend("/api/echo", "POST", { nodeID: n.id });
+    if (!r.ok) failed.push(n.name || n.id);
+  }
+  setStatus(failed.length ? `Verification failed for ${failed.join(", ")}` : "Verified all nodes", failed.length ? "error" : "ok");
+}
 
-  // ---- Network diagnostics ----
+  /**
+   * Creates the diagnostics card UI for running network diagnostics against DICOM nodes.
+   * @returns {HTMLElement} The diagnostics card section element.
+   */
   function diagnosticsCard() {
     const study = el("input", { type: "text", id: "diag-study", placeholder: "Study Instance UID" });
     const cstore = el("input", { type: "checkbox", id: "diag-cstore" });
@@ -249,6 +357,9 @@ window.TABS.network = (function () {
       el("div", { id: "diag-results", class: "diag-results" }));
   }
 
+  /**
+   * Populates the diagnostics node selector with checkboxes for each available DICOM node, pre-selecting those that are not disabled.
+   */
   function renderDiagnosticNodes() {
     const wrap = document.getElementById("diag-nodes");
     if (!wrap) return;
@@ -261,6 +372,9 @@ window.TABS.network = (function () {
     }
   }
 
+  /**
+   * Runs network diagnostics on selected nodes.
+   */
   async function runDiagnostics() {
     const studyInput = document.getElementById("diag-study");
     const includeCStore = document.getElementById("diag-cstore").checked;
@@ -280,6 +394,10 @@ window.TABS.network = (function () {
     setStatus("Diagnostics complete", "ok");
   }
 
+  /**
+   * Displays diagnostic results in a formatted table.
+   * @param {Array} results - An array of diagnostic result objects, each with node information, protocol, and an array of step results including status, error, and diagnostic counts.
+   */
   function renderDiagnosticResults(results) {
     const wrap = document.getElementById("diag-results");
     if (!wrap) return;
@@ -304,6 +422,11 @@ window.TABS.network = (function () {
       body));
   }
 
+  /**
+   * Formats diagnostic step metrics as a human-readable string.
+   * @param {Object} step - An object containing optional count properties.
+   * @return {string} A human-readable string of count metrics separated by ' · ', or an empty string if no counts are present.
+   */
   function diagnosticCounts(step) {
     const parts = [];
     if (step.count) parts.push(`matches ${step.count}`);
@@ -314,6 +437,10 @@ window.TABS.network = (function () {
     return parts.join(" · ");
   }
 
+  /**
+   * Formats a summary of requested and negotiated transfer syntax UIDs.
+   * @return {string} A summary string showing requested and negotiated transfer syntaxes, or an empty string if both are absent.
+   */
   function transferSyntaxSummary(step) {
     const req = (step.requestedTransferSyntaxUIDs || []).join(",");
     const neg = (step.negotiatedTransferSyntaxUIDs || []).join(",");
@@ -321,7 +448,10 @@ window.TABS.network = (function () {
     return `req ${req || "-"} / neg ${neg || "-"}`;
   }
 
-  // ---- Listener config (dense form) ----
+  /**
+   * Creates the DICOM listener configuration card UI.
+   * @returns The card element containing the settings form grid and save button.
+   */
   function settingsCard() {
     return el("section", { class: "card" },
       el("h2", null, "DICOM listener configuration"),
@@ -330,6 +460,9 @@ window.TABS.network = (function () {
         el("button", { class: "btn", onclick: saveSettings }, "Save settings")));
   }
   let fields = {};
+  /**
+   * Loads listener configuration and populates the settings form.
+   */
   async function loadSettings() {
     const r = await apiGet("/api/config");
     const wrap = document.getElementById("net-settings");
@@ -357,6 +490,9 @@ window.TABS.network = (function () {
       k("TLS certificate file"), text("receiverTLSCertFile", cfg.receiverTLSCertFile),
       k("TLS key file"), text("receiverTLSKeyFile", cfg.receiverTLSKeyFile));
   }
+  /**
+   * Saves the listener configuration settings from the form to the server.
+   */
   async function saveSettings() {
     if (!cfg) return;
     const out = Object.assign({}, cfg, {

@@ -72,6 +72,7 @@ func PlanFromArchiveDir(opts Options) (Plan, error) {
 	return plan, nil
 }
 
+// Run starts a DICOM receiver server from the configuration in the archive directory, waits for the context to be cancelled, then stops the server. It returns an error if configuration loading, archive opening, server startup, or shutdown fails.
 func Run(ctx context.Context, opts Options, out io.Writer) error {
 	plan, err := PlanFromArchiveDir(opts)
 	if err != nil {

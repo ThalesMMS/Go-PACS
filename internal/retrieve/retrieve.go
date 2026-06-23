@@ -431,6 +431,7 @@ func cGetSourcePath(aeTitle, sopInstanceUID string) string {
 	return fmt.Sprintf("dicom://%s-cget/%s", aeTitle, sopInstanceUID)
 }
 
+// ensureReceiver returns the configured receiver if one is provided via options, or ErrReceiverRequired if none is available.
 func ensureReceiver(ctx context.Context, catalog *archive.Catalog, opts Options, allowedCallingAETitles, allowedRemoteHosts []string) (*receive.Server, bool, error) {
 	if opts.Receiver != nil {
 		return opts.Receiver, false, nil
@@ -438,6 +439,7 @@ func ensureReceiver(ctx context.Context, catalog *archive.Catalog, opts Options,
 	return nil, false, ErrReceiverRequired
 }
 
+// remoteHostAllowlist returns a one-element allowlist containing the trimmed host if it is a valid IP address, or nil otherwise.
 func remoteHostAllowlist(host string) []string {
 	if net.ParseIP(strings.TrimSpace(host)) == nil {
 		return nil

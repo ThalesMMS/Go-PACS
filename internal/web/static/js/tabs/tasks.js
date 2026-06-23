@@ -5,6 +5,9 @@ window.TABS.tasks = (function () {
   let history = [];
   let selectedIndex = -1;
 
+  /**
+   * Renders the activity history panel with task table and retry controls.
+   */
   function render() {
     panel.innerHTML = "";
     panel.appendChild(el("section", { class: "card" },
@@ -51,6 +54,11 @@ window.TABS.tasks = (function () {
     return `${(ms / 1000).toFixed(1)} s`;
   }
 
+  /**
+   * Fetches and displays the task operation history in a table.
+   * 
+   * Creates a clickable row for each operation displaying its kind, status, counts, and duration. Shows a placeholder message and disables retry when no history is available. If the fetch fails, displays an error message in the table.
+   */
   async function load() {
     const r = await apiGet("/api/tasks");
     const body = document.getElementById("tasks-rows");
@@ -58,9 +66,9 @@ window.TABS.tasks = (function () {
     if (!r.ok) { body.innerHTML = `<tr><td colspan="4">error: ${escapeHTML(r.error)}</td></tr>`; return; }
     history = r.data || [];
     body.innerHTML = "";
+    selectedIndex = -1;
+    updateRetryControl({ canRetry: false, reason: "Select a retryable failed or warning task" });
     if (!history.length) {
-      selectedIndex = -1;
-      updateRetryControl({ canRetry: false, reason: "Select a retryable failed or warning task" });
       body.appendChild(el("tr", null, el("td", { colspan: "4", class: "empty" }, "no operations recorded")));
       return;
     }
@@ -74,14 +82,21 @@ window.TABS.tasks = (function () {
     });
   }
 
+  /**
+   * Displays details for a selected operation and checks its retry eligibility.
+   * @param {number} i - The index of the operation in the history list.
+   * @param {HTMLElement} [row] - The table row element to highlight as selected.
+   */
   async function showDetail(i, row) {
     selectedIndex = i;
+    const expectedIndex = selectedIndex;
     for (const tr of document.querySelectorAll("#tasks-rows tr")) tr.classList.remove("selected");
     if (row) row.classList.add("selected");
     const pre = document.getElementById("tasks-detail");
     pre.textContent = JSON.stringify(history[i], null, 2);
     updateRetryControl({ canRetry: false, reason: "Checking retry state..." });
     const r = await apiGet(`/api/tasks/${encodeURIComponent(i)}/can-retry`);
+    if (selectedIndex !== expectedIndex) return;
     if (!r.ok) {
       updateRetryControl({ canRetry: false, reason: r.error || "Retry check failed" });
       return;
@@ -89,6 +104,10 @@ window.TABS.tasks = (function () {
     updateRetryControl(r.data || {});
   }
 
+  /**
+   * Updates the retry button state and message based on retry eligibility.
+   * @param {Object} state - Object with `canRetry` (boolean) and optional `reason` (string).
+   */
   function updateRetryControl(state) {
     const btn = document.getElementById("tasks-retry");
     const reason = document.getElementById("tasks-retry-reason");
@@ -100,6 +119,11 @@ window.TABS.tasks = (function () {
     reason.textContent = message;
   }
 
+  /**
+   * Initiates a retry for the currently selected operation and streams its progress.
+   *
+   * If no operation is selected, returns immediately. On successful initiation, disables the retry button, monitors the job until completion, and refreshes the task history with a status update.
+   */
   async function retrySelected() {
     if (selectedIndex < 0) return;
     const r = await apiSend(`/api/tasks/${encodeURIComponent(selectedIndex)}/retry`, "POST");

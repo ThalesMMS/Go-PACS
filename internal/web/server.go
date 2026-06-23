@@ -31,7 +31,7 @@ type Server struct {
 	mux     *http.ServeMux
 }
 
-// NewServer builds a Server backed by session and registers its routes.
+// NewServer creates a Server with the provided session, purges expired trash, and registers HTTP routes.
 func NewServer(session *core.Session) *Server {
 	s := &Server{session: session, mux: http.NewServeMux()}
 	_, _ = session.PurgeExpiredTrash(context.Background())
@@ -121,7 +121,7 @@ func (s *Server) routes() {
 	// envelopes on successful requests.
 	dicomwebRead := Chain(AuditMiddleware(s.session.Catalog()), BearerAuth(s.session.TokenStore(), tokens.RoleRead))
 	dicomwebWrite := Chain(AuditMiddleware(s.session.Catalog()), BearerAuth(s.session.TokenStore(), tokens.RoleWrite))
-	s.mux.HandleFunc("GET /dicomweb/capabilities", s.handleDICOMwebCapabilities)
+	s.mux.Handle("GET /dicomweb/capabilities", dicomwebRead(http.HandlerFunc(s.handleDICOMwebCapabilities)))
 	s.mux.Handle("POST /dicomweb/studies", dicomwebWrite(http.HandlerFunc(s.handleDICOMwebStoreStudies)))
 	s.mux.Handle("GET /dicomweb/studies", dicomwebRead(http.HandlerFunc(s.handleDICOMwebStudies)))
 	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series", dicomwebRead(http.HandlerFunc(s.handleDICOMwebSeries)))

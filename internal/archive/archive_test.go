@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -521,6 +522,56 @@ func TestTrashStudyAndRestore(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("trash entries after restore = %#v, want none", entries)
+	}
+}
+
+func TestListTrashSortsByParsedTrashTime(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	sourceDir := t.TempDir()
+	firstStudyUID := "1.2.826.0.1.3680043.10.543.9602"
+	secondStudyUID := "1.2.826.0.1.3680043.10.543.9603"
+	if err := os.WriteFile(filepath.Join(sourceDir, "first.dcm"), testPart10File(t, "TRASH^FIRST", "TF001", "CT", firstStudyUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "second.dcm"), testPart10File(t, "TRASH^SECOND", "TS001", "CT", secondStudyUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.TrashStudy(ctx, firstStudyUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.TrashStudy(ctx, secondStudyUID); err != nil {
+		t.Fatal(err)
+	}
+	setTrashTime := func(studyUID, value string) {
+		t.Helper()
+		path := filepath.Join(catalog.trashPathForStudy(studyUID), trashManifestFileName)
+		manifest, err := readTrashManifest(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest.TrashedAt = value
+		if err := writeTrashManifest(path, manifest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setTrashTime(firstStudyUID, "2026-06-23T00:00:00Z")
+	setTrashTime(secondStudyUID, "2026-06-23T00:00:00.1Z")
+
+	entries, err := catalog.ListTrash(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].StudyInstanceUID != secondStudyUID {
+		t.Fatalf("trash entries = %#v, want later fractional timestamp first", entries)
 	}
 }
 
@@ -1698,6 +1749,50 @@ func TestRebuildCatalogFromObjects(t *testing.T) {
 	}
 }
 
+func TestRebuildCatalogUsesContentDigest(t *testing.T) {
+	ctx := context.Background()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	catalog, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	studyUID := "1.2.826.0.1.3680043.10.543.9403"
+	data := testPart10File(t, "REBUILD^HASH", "RH001", "CT", studyUID)
+	actualDigest := fmt.Sprintf("%x", sha256.Sum256(data))
+	fakeDigest := strings.Repeat("0", 64)
+	if fakeDigest == actualDigest {
+		fakeDigest = strings.Repeat("1", 64)
+	}
+	if err := os.WriteFile(filepath.Join(archiveDir, "objects", fakeDigest+".dcm"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := RebuildCatalog(ctx, archiveDir, RebuildOptions{})
+	if err != nil {
+		t.Fatalf("RebuildCatalog failed: %v", err)
+	}
+	if report.StoredFiles != 1 || report.FailedFiles != 0 {
+		t.Fatalf("report stored/failed = %d/%d, want 1/0; rejections=%#v", report.StoredFiles, report.FailedFiles, report.Rejections)
+	}
+
+	rebuilt, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebuilt.Close()
+	instance, err := rebuilt.InstanceBySOPInstanceUID(ctx, studyUID+".instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.SHA256 != actualDigest {
+		t.Fatalf("rebuilt SHA256 = %q, want content digest %q", instance.SHA256, actualDigest)
+	}
+}
+
 func TestRebuildCatalogMovesExistingCatalogAndReportsCorruptObject(t *testing.T) {
 	archiveDir := filepath.Join(t.TempDir(), "archive")
 	catalog, err := Open(archiveDir)
@@ -1816,4 +1911,233 @@ func testPart10FileWithStudyDateTimeAndSeries(t *testing.T, patientName, patient
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func TestObjectDirReturnsStoreDir(t *testing.T) {
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	catalog, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	dir := catalog.ObjectDir()
+	if dir == "" {
+		t.Fatal("ObjectDir returned empty string")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("ObjectDir %q is not accessible: %v", dir, err)
+	}
+	if filepath.Base(dir) != "objects" {
+		t.Fatalf("ObjectDir = %q, want path ending in objects/", dir)
+	}
+}
+
+func TestObjectDirReturnsEmptyStringForNilCatalog(t *testing.T) {
+	var c *Catalog
+	if dir := c.ObjectDir(); dir != "" {
+		t.Fatalf("nil Catalog.ObjectDir() = %q, want empty string", dir)
+	}
+}
+
+func TestIntegrityCheckPassesOnCleanCatalog(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	if err := catalog.IntegrityCheck(ctx); err != nil {
+		t.Fatalf("IntegrityCheck on clean catalog failed: %v", err)
+	}
+}
+
+func TestIntegrityCheckPassesAfterImport(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	source := filepath.Join(t.TempDir(), "study.dcm")
+	if err := os.WriteFile(source, testPart10File(t, "INTEGRITY^CHECK", "IC001", "CT", "1.2.3.integrity"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := catalog.IntegrityCheck(ctx); err != nil {
+		t.Fatalf("IntegrityCheck after import failed: %v", err)
+	}
+}
+
+func TestStoredPathsListsCataloguedObjectPaths(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	paths, err := catalog.StoredPaths(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("StoredPaths on empty catalog = %d, want 0", len(paths))
+	}
+
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "a.dcm"), testPart10File(t, "STORED^A", "SA001", "CT", "1.2.3.stored.a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "b.dcm"), testPart10File(t, "STORED^B", "SB001", "MR", "1.2.3.stored.b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err = catalog.StoredPaths(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("StoredPaths after two imports = %d, want 2", len(paths))
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("stored path %q not accessible: %v", p, err)
+		}
+	}
+}
+
+func TestArchiveStatsCountsInstancesAndBytes(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	stats, err := catalog.ArchiveStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.InstanceCount != 0 || stats.TotalBytes != 0 {
+		t.Fatalf("empty catalog stats = %+v, want zero counts", stats)
+	}
+
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "one.dcm"), testPart10File(t, "STATS^ONE", "S001", "CT", "1.2.3.stats"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err = catalog.ArchiveStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.InstanceCount != 1 {
+		t.Fatalf("InstanceCount = %d, want 1", stats.InstanceCount)
+	}
+	if stats.TotalBytes <= 0 {
+		t.Fatalf("TotalBytes = %d, want > 0", stats.TotalBytes)
+	}
+}
+
+func TestBackupCatalogToCreatesReadableDatabase(t *testing.T) {
+	ctx := context.Background()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	catalog, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	source := filepath.Join(t.TempDir(), "backup-study.dcm")
+	studyUID := "1.2.826.0.1.3680043.10.543.9810"
+	if err := os.WriteFile(source, testPart10File(t, "BACKUP^CATALOG", "BC001", "CT", studyUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+
+	// BackupCatalogTo writes a SQLite database to destPath. Open() expects
+	// a rootDir containing catalog.db, so we back up directly to that path
+	// inside a new directory.
+	backupDir := t.TempDir()
+	backupPath := filepath.Join(backupDir, "catalog.db")
+	if err := catalog.BackupCatalogTo(ctx, backupPath); err != nil {
+		t.Fatalf("BackupCatalogTo failed: %v", err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("backup database missing: %v", err)
+	}
+
+	backup, err := Open(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+
+	studies, err := backup.Studies(ctx)
+	if err != nil {
+		t.Fatalf("query backup studies failed: %v", err)
+	}
+	if len(studies) != 1 || studies[0].StudyInstanceUID != studyUID {
+		t.Fatalf("backup studies = %#v, want study %q", studies, studyUID)
+	}
+}
+
+func TestBackupCatalogToRejectsExistingDestination(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	existingPath := filepath.Join(t.TempDir(), "existing.db")
+	if err := os.WriteFile(existingPath, []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := catalog.BackupCatalogTo(ctx, existingPath); err == nil {
+		t.Fatal("BackupCatalogTo succeeded with existing destination, want error")
+	}
+}
+
+func TestRebaseStoredPathsUpdatesOldBasePaths(t *testing.T) {
+	ctx := context.Background()
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	catalog, err := Open(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	source := filepath.Join(t.TempDir(), "rebase-study.dcm")
+	studyUID := "1.2.826.0.1.3680043.10.543.9820"
+	if err := os.WriteFile(source, testPart10File(t, "REBASE^PATHS", "RP001", "CT", studyUID), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+
+	// When paths already match the current store dir, rebase should report 0 updates.
+	updated, err := catalog.RebaseStoredPaths(ctx)
+	if err != nil {
+		t.Fatalf("RebaseStoredPaths failed: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("RebaseStoredPaths on up-to-date paths returned %d, want 0", updated)
+	}
 }

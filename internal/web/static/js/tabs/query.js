@@ -337,13 +337,20 @@ window.TABS.query = (function () {
     setStatus("Verified selected sources", "ok");
   }
 
+  /**
+   * Initiates a retrieve operation for the currently selected match.
+   */
   function retrieveSelected() {
     if (!selected) return;
     retrieveMatch(selected.match, selected.level);
   }
 
   // retrieveMatch posts a retrieve request for one match and streams the job.
-  // Shared by the toolbar "Retrieve" button and the per-row green ↓ buttons.
+  /**
+   * Initiates a retrieve request for a DICOM match at the specified level.
+   * @param {Object} m - The match object containing study/series UIDs and source node identification.
+   * @param {string} level - The retrieve level: "study", "series", or "image". Defaults to "study".
+   */
   async function retrieveMatch(m, level) {
     if (!m) return;
     const lvl = (level || "study").toUpperCase();

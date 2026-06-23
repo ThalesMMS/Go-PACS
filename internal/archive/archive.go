@@ -227,6 +227,8 @@ var (
 	errStopImportWalk             = errors.New("stop import walk")
 )
 
+// Open initializes an archive catalog at the specified root directory.
+// It returns an error if the root directory is empty or if initialization fails.
 func Open(rootDir string) (*Catalog, error) {
 	if rootDir == "" {
 		return nil, errors.New("archive root directory is required")
@@ -655,6 +657,7 @@ func zipReadLimit(limits ImportLimits, extractedBytes int64) int64 {
 	return limit
 }
 
+// safeZipEntryName validates and normalizes a ZIP entry name to prevent directory traversal and other unsafe patterns. It returns the cleaned name and true if valid, empty string and false otherwise.
 func safeZipEntryName(name string) (string, bool) {
 	name = strings.ReplaceAll(name, "\\", "/")
 	if strings.TrimSpace(name) == "" || strings.HasPrefix(name, "/") {
@@ -881,6 +884,8 @@ FROM (
 	return total, nil
 }
 
+// studySelectSQL constructs a SQL query for retrieving study-level aggregated data from instances.
+// If where is non-empty, it is appended as the WHERE clause to filter results.
 func studySelectSQL(where string) string {
 	query := `
 SELECT
@@ -915,6 +920,7 @@ ORDER BY imported_at DESC, patient_name ASC, study_instance_uid ASC`
 	return query
 }
 
+// studyFilterWhere builds a SQL WHERE clause and parameterized arguments to filter studies based on the provided StudyFilters.
 func studyFilterWhere(filters StudyFilters) (string, []any) {
 	var clauses []string
 	var args []any
@@ -1873,6 +1879,7 @@ func (c *Catalog) importFileWithSource(ctx context.Context, path string, sourceP
 	report.StoredFiles++
 }
 
+// instanceFromSummary creates an Instance by mapping DICOM metadata from an inspection summary along with storage and import details.
 func instanceFromSummary(summary dicominspect.Summary, digest string, storedPath string, sourcePath string, size int64, importedAt time.Time) Instance {
 	return Instance{
 		SHA256:            digest,
@@ -1909,6 +1916,7 @@ func instanceFromSummary(summary dicominspect.Summary, digest string, storedPath
 	}
 }
 
+// reportImportProgress calls the provided progress callback with the current import counts and path.
 func reportImportProgress(onProgress func(ImportProgress), report ImportReport, path string) {
 	if onProgress == nil {
 		return
@@ -2028,10 +2036,12 @@ func (c *Catalog) decompressFileToStage(path string) (string, string, int64, boo
 	return tempPath, hex.EncodeToString(hash.Sum(nil)), info.Size(), true, nil
 }
 
+// It returns true if the syntax requires decompression, false otherwise.
 func shouldDecompressSyntax(syntax transfer.Syntax) bool {
 	return syntax.RequiresCodec()
 }
 
+// decompressRegistry creates and initializes a pixel data Registry with JPEG, JPEG-Lossless, and RLE codec handlers.
 func decompressionRegistry() (pixeldata.Registry, error) {
 	registry := pixeldata.NewMemoryRegistry()
 	for _, register := range []func(pixeldata.Registry) error{
@@ -2078,10 +2088,21 @@ func (c *Catalog) upsertInstance(ctx context.Context, instance Instance) error {
 		}
 	}()
 
-	_, err = tx.ExecContext(ctx, `
-INSERT INTO instances (
-  sha256, stored_path, source_path, file_size,
-  patient_name, patient_id, patient_birth_date, institution_name,
+	if err := upsertInstanceTx(ctx, tx, instance); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit upsert instance: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func upsertInstanceTx(ctx context.Context, tx *sql.Tx, instance Instance) error {
+	_, err := tx.ExecContext(ctx, `
+	INSERT INTO instances (
+	  sha256, stored_path, source_path, file_size,
+	  patient_name, patient_id, patient_birth_date, institution_name,
   study_date, study_time, series_date, series_time, study_description, modality, accession_number,
   study_instance_uid, series_instance_uid, series_number, series_description,
   sop_class_uid, sop_instance_uid, instance_number,
@@ -2129,20 +2150,10 @@ ON CONFLICT(sha256) DO UPDATE SET
 	if err := replaceInstancePatientSoundex(ctx, tx, instance.SHA256, soundexTokenCodes(instance.PatientName)); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit upsert instance: %w", err)
-	}
-	committed = true
 	return nil
 }
 
 func (c *Catalog) replaceInstance(ctx context.Context, oldSHA string, instance Instance) error {
-	if err := c.upsertInstance(ctx, instance); err != nil {
-		return err
-	}
-	if oldSHA == "" || oldSHA == instance.SHA256 {
-		return nil
-	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin replace instance: %w", err)
@@ -2153,11 +2164,16 @@ func (c *Catalog) replaceInstance(ctx context.Context, oldSHA string, instance I
 			_ = tx.Rollback()
 		}
 	}()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM instance_patient_soundex WHERE instance_sha256 = ?`, oldSHA); err != nil {
-		return fmt.Errorf("delete replaced instance soundex: %w", err)
+	if err := upsertInstanceTx(ctx, tx, instance); err != nil {
+		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE sha256 = ?`, oldSHA); err != nil {
-		return fmt.Errorf("delete replaced instance: %w", err)
+	if oldSHA != "" && oldSHA != instance.SHA256 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM instance_patient_soundex WHERE instance_sha256 = ?`, oldSHA); err != nil {
+			return fmt.Errorf("delete replaced instance soundex: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE sha256 = ?`, oldSHA); err != nil {
+			return fmt.Errorf("delete replaced instance: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit replace instance: %w", err)
@@ -2166,6 +2182,7 @@ func (c *Catalog) replaceInstance(ctx context.Context, oldSHA string, instance I
 	return nil
 }
 
+// replaceInstancePatientSoundex replaces all soundex codes for an instance with the provided codes.
 func replaceInstancePatientSoundex(ctx context.Context, tx *sql.Tx, sha string, codes []string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM instance_patient_soundex WHERE instance_sha256 = ?`, sha); err != nil {
 		return fmt.Errorf("delete instance patient soundex: %w", err)

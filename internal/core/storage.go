@@ -67,7 +67,12 @@ func (s *Session) PurgeExpiredTrash(ctx context.Context) (archive.PurgeExpiredTr
 		return archive.PurgeExpiredTrashReport{}, nil
 	}
 	start := time.Now()
-	cutoff := start.UTC().Add(-time.Duration(policy.TrashAutoPurgeDays) * 24 * time.Hour)
+	days := int64(policy.TrashAutoPurgeDays)
+	const nanosPerDay = int64(24 * time.Hour)
+	if days > (1<<63-1)/nanosPerDay {
+		return archive.PurgeExpiredTrashReport{}, fmt.Errorf("trash auto purge days overflows duration")
+	}
+	cutoff := start.UTC().Add(-time.Duration(days * nanosPerDay))
 	report, err := s.catalog.PurgeExpiredTrash(ctx, cutoff)
 	if err != nil {
 		return report, err

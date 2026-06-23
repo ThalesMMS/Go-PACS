@@ -244,6 +244,51 @@ func TestSaveRejectsInvalidReceivePreferredTransferSyntax(t *testing.T) {
 	}
 }
 
+func TestLoadBackfillsMissingTrashAutoPurgeDaysField(t *testing.T) {
+	// When the JSON does not contain the trashAutoPurgeDays key at all,
+	// Load should apply the default value just like the safety-limit backfill.
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+  "localAETitle": "LOCAL",
+  "receiverAddress": "127.0.0.1:11112",
+  "dicomCommunicationTimeoutSeconds": 40,
+  "dicomConnectionTimeoutSeconds": 10
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.TrashAutoPurgeDays != DefaultTrashAutoPurgeDays {
+		t.Fatalf("TrashAutoPurgeDays = %d, want default %d", cfg.TrashAutoPurgeDays, DefaultTrashAutoPurgeDays)
+	}
+}
+
+func TestLoadPreservesExplicitZeroTrashAutoPurgeDays(t *testing.T) {
+	// When the JSON explicitly contains trashAutoPurgeDays=0, Load should
+	// preserve 0 and NOT replace it with the default.
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+  "localAETitle": "LOCAL",
+  "receiverAddress": "127.0.0.1:11112",
+  "dicomCommunicationTimeoutSeconds": 40,
+  "dicomConnectionTimeoutSeconds": 10,
+  "trashAutoPurgeDays": 0
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.TrashAutoPurgeDays != 0 {
+		t.Fatalf("TrashAutoPurgeDays = %d, want 0 (explicitly set)", cfg.TrashAutoPurgeDays)
+	}
+}
+
 func TestLoadPreservesNullSafetyLimitsAsUnlimited(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{

@@ -18,7 +18,7 @@ const (
 )
 
 // studyFiltersFromQuery builds archive.StudyFilters from URL query parameters so
-// the web frontend drives the same filtering the Fyne UI does.
+// StudyFiltersFromQuery builds an archive.StudyFilters from URL query parameters. The HasComments field is set to true only when the hasComments query parameter equals the string "true". The Modalities field is populated by splitting the modalities query parameter on commas and appending non-empty, trimmed values.
 func studyFiltersFromQuery(r *http.Request) archive.StudyFilters {
 	q := r.URL.Query()
 	f := archive.StudyFilters{
@@ -54,6 +54,7 @@ func studyFiltersFromQuery(r *http.Request) archive.StudyFilters {
 	return f
 }
 
+// SeriesFiltersFromQuery constructs an archive.SeriesFilters struct from URL query parameters.
 func seriesFiltersFromQuery(r *http.Request) archive.SeriesFilters {
 	q := r.URL.Query()
 	return archive.SeriesFilters{
@@ -86,6 +87,9 @@ func (s *Server) handleArchiveStudies(w http.ResponseWriter, r *http.Request) {
 	writeData(w, studies)
 }
 
+// studyPageOptionsFromQuery parses and validates pagination parameters from the HTTP request query string.
+// Limit defaults to defaultArchiveStudyLimit and is capped at maxArchiveStudyLimit; if provided, it must be a positive integer.
+// Offset defaults to 0; if provided, it must be a non-negative integer. Returns an error if either parameter fails parsing or validation.
 func studyPageOptionsFromQuery(r *http.Request) (archive.StudyPageOptions, error) {
 	q := r.URL.Query()
 	limit := defaultArchiveStudyLimit
@@ -354,6 +358,7 @@ func (s *Server) handleArchiveRestorePath(w http.ResponseWriter, r *http.Request
 	writeData(w, result)
 }
 
+// RestoreErrorStatus maps restore backup errors to their corresponding HTTP status codes.
 func restoreErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, core.ErrInvalidBackupManifest), errors.Is(err, core.ErrMissingBackupEntry):

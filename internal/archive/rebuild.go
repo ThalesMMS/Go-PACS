@@ -2,8 +2,10 @@ package archive
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +31,7 @@ type RebuildOptions struct {
 	VerifyFunc func(context.Context, *Catalog) error
 }
 
+// RebuildCatalog rebuilds the archive catalog by scanning the objects directory for DICOM files and upserting instances into the catalog. Any existing catalog.db is moved to a backup file. File-level errors do not interrupt the rebuild and are recorded as rejections in the report. If a verification function is provided in opts, it is called to verify the rebuilt catalog.
 func RebuildCatalog(ctx context.Context, rootDir string, opts RebuildOptions) (RebuildReport, error) {
 	rootDir = strings.TrimSpace(rootDir)
 	if rootDir == "" {
@@ -102,6 +105,7 @@ func RebuildCatalog(ctx context.Context, rootDir string, opts RebuildOptions) (R
 	return report, nil
 }
 
+// rebuildObject computes the object's SHA-256 digest, inspects the DICOM file, and upserts the instance to the catalog.
 func rebuildObject(ctx context.Context, catalog *Catalog, path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -110,9 +114,9 @@ func rebuildObject(ctx context.Context, catalog *Catalog, path string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("object is not a regular file")
 	}
-	digest := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	if digest == "" {
-		return fmt.Errorf("object filename does not contain a SHA-256 digest")
+	digest, err := fileSHA256(path)
+	if err != nil {
+		return err
 	}
 	summary, err := dicominspect.InspectFile(path, dicominspect.DefaultOptions())
 	if err != nil {
@@ -125,6 +129,20 @@ func rebuildObject(ctx context.Context, catalog *Catalog, path string) error {
 	return nil
 }
 
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open object for digest: %w", err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("hash object: %w", err)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+// moveCatalogDBAside renames the existing catalog.db file in rootDir to a unique backup filename. It returns the backup file path, or an empty string if catalog.db did not exist.
 func moveCatalogDBAside(rootDir string) (string, error) {
 	catalogPath := filepath.Join(rootDir, "catalog.db")
 	if _, err := os.Stat(catalogPath); errors.Is(err, os.ErrNotExist) {

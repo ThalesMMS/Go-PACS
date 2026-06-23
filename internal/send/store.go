@@ -124,10 +124,12 @@ func sendInstancesWithOptions(ctx context.Context, node nodes.Node, instances []
 	return SendFilesWithOptions(ctx, node, paths, opts)
 }
 
+// SendFiles sends DICOM instances from the provided file paths to a remote node using the specified calling AE title, returning transmission statistics and per-file results.
 func SendFiles(ctx context.Context, node nodes.Node, paths []string, callingAETitle string) (Outcome, error) {
 	return SendFilesWithOptions(ctx, node, paths, Options{CallingAETitle: callingAETitle})
 }
 
+// The operation includes per-file progress reporting via opts.OnProgress if provided.
 func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, opts Options) (Outcome, error) {
 	if node.IsDICOMweb() {
 		return sendFilesWithSTOW(ctx, node, paths, opts)
@@ -217,6 +219,7 @@ func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, 
 	return outcome, nil
 }
 
+// sendFilesWithSTOW sends DICOM files to a remote DICOMweb STOW-RS node.
 func sendFilesWithSTOW(ctx context.Context, node nodes.Node, paths []string, opts Options) (Outcome, error) {
 	if len(paths) == 0 {
 		return Outcome{}, nil
@@ -250,6 +253,9 @@ func sendFilesWithSTOW(ctx context.Context, node nodes.Node, paths []string, opt
 	return outcome, err
 }
 
+// stowClientForNode creates a dicomweb.Client configured for the given node.
+// If tlsConfig is non-nil, the client uses it for TLS connections; otherwise
+// the default HTTP transport is used.
 func stowClientForNode(node nodes.Node, tlsConfig *tls.Config) dicomweb.Client {
 	opts := dicomweb.Options{Timeout: DefaultTimeout}
 	if tlsConfig != nil {
@@ -268,6 +274,7 @@ func stowClientForNode(node nodes.Node, tlsConfig *tls.Config) dicomweb.Client {
 	}
 }
 
+// stowInstances produces StoreInstance structures for STOW-RS submission from inspected DICOM files.
 func stowInstances(files []storeFile) []dicomweb.StoreInstance {
 	instances := make([]dicomweb.StoreInstance, 0, len(files))
 	for _, file := range files {
@@ -284,6 +291,7 @@ func stowInstances(files []storeFile) []dicomweb.StoreInstance {
 	return instances
 }
 
+// mapSTOWResult maps a STOW-RS StoreResult into the outcome, populating sent/warning/failed counters, per-file Result entries, failure messages, and invoking progress callbacks.
 func mapSTOWResult(outcome *Outcome, files []storeFile, result dicomweb.StoreResult, storeErr error, onProgress func(Progress)) {
 	bySOP := map[string]storeFile{}
 	for _, file := range files {
@@ -356,6 +364,7 @@ func mapSTOWResult(outcome *Outcome, files []storeFile, result dicomweb.StoreRes
 	}
 }
 
+// markSTOWSuccess records a successful STOW-RS send for a file and reports the outcome.
 func markSTOWSuccess(outcome *Outcome, file storeFile, total int, onProgress func(Progress)) {
 	outcome.Sent++
 	outcome.Results = append(outcome.Results, Result{
@@ -368,6 +377,7 @@ func markSTOWSuccess(outcome *Outcome, file storeFile, total int, onProgress fun
 	reportSendProgress(onProgress, *outcome, total, file.path, dimse.StatusSuccess, "")
 }
 
+// markSTOWFailure records a file's STOW-RS storage failure in the outcome, including failure statistics and progress reporting.
 func markSTOWFailure(outcome *Outcome, file storeFile, status uint16, message string, total int, onProgress func(Progress)) {
 	outcome.Failed++
 	outcome.Failures = append(outcome.Failures, fmt.Sprintf("%s: %s", file.path, message))
@@ -382,6 +392,7 @@ func markSTOWFailure(outcome *Outcome, file storeFile, status uint16, message st
 	reportSendProgress(onProgress, *outcome, total, file.path, status, message)
 }
 
+// stowFileForItem returns the storeFile for a STOW-RS store result item, or constructs a partial entry from the item if not found.
 func stowFileForItem(files map[string]storeFile, item dicomweb.StoreItem) storeFile {
 	if file, ok := files[item.SOPInstanceUID]; ok {
 		return file
@@ -389,6 +400,7 @@ func stowFileForItem(files map[string]storeFile, item dicomweb.StoreItem) storeF
 	return storeFile{sopClassUID: item.SOPClassUID, sopInstanceUID: item.SOPInstanceUID}
 }
 
+// firstNonEmpty returns the first non-empty string from the provided values, or an empty string if all values are empty.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -398,6 +410,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// reportSendProgress invokes the progress callback with the current send outcome, if the callback is non-nil.
 func reportSendProgress(onProgress func(Progress), outcome Outcome, total int, path string, status uint16, resultError string) {
 	if onProgress == nil {
 		return
@@ -469,6 +482,7 @@ func inspectFiles(paths []string) ([]storeFile, error) {
 	return files, nil
 }
 
+// PresentationContexts builds DIMSE presentation contexts, creating one context per unique SOP Class UID with transfer syntax proposals based on the preferred syntax.
 func presentationContexts(files []storeFile, preferredTransferSyntax string) []ul.PresentationContext {
 	seen := map[string]bool{}
 	contexts := make([]ul.PresentationContext, 0, len(files))
@@ -485,6 +499,7 @@ func presentationContexts(files []storeFile, preferredTransferSyntax string) []u
 	return contexts
 }
 
+// sendOne sends a DICOM instance via DIMSE C-STORE and returns the DIMSE response status, the negotiated transfer syntax UID, and any error.
 func sendOne(ctx context.Context, assoc *ul.Association, file storeFile, messageID uint16) (uint16, string, error) {
 	defer file.file.Close()
 	result, err := dimse.NewStoreClient(assoc).StoreWithOptions(ctx, file.file.Dataset, dimse.CStoreOptions{
@@ -504,6 +519,7 @@ func sendOne(ctx context.Context, assoc *ul.Association, file storeFile, message
 	return status, negotiatedTransferSyntaxUID, err
 }
 
+// fileSOPClassUID extracts the SOP Class UID from a DICOM file, or returns an error if not found.
 func fileSOPClassUID(file *object.File) (string, error) {
 	if uid, ok := file.GetUID(tagMediaStorageSOPClassUID); ok && uid != "" {
 		return uid, nil
@@ -528,6 +544,8 @@ func fileSOPInstanceUID(file *object.File) (string, error) {
 	return "", object.ErrMissingSOPInstanceUID
 }
 
+// fileTransferSyntaxUID extracts the transfer syntax UID from a DICOM file.
+// It returns the transfer syntax UID string, or an error if the transfer syntax is missing.
 func fileTransferSyntaxUID(file *object.File) (string, error) {
 	if uid, ok := file.GetUID(tagTransferSyntaxUID); ok && uid != "" {
 		return uid, nil
@@ -538,6 +556,7 @@ func fileTransferSyntaxUID(file *object.File) (string, error) {
 	return "", object.ErrMissingTransferSyntax
 }
 
+// proposedTransferSyntaxes builds a list of proposed transfer syntax UIDs ordered by the specified preference.
 func proposedTransferSyntaxes(fileTransferSyntaxUID string, preferredTransferSyntax string) []string {
 	switch preferredTransferSyntax {
 	case nodes.SendTransferSyntaxExplicitVRLittleEndian:

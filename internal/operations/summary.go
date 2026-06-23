@@ -105,19 +105,11 @@ type Summary struct {
 
 func ImportSummary(report archive.ImportReport, duration time.Duration, sourcePath string) Summary {
 	failed := maxInt(len(report.Rejections), report.InvalidFiles)
-	status := StatusSuccess
-	if failed > 0 {
-		status = StatusWarning
-		if report.StoredFiles == 0 && report.Duplicates == 0 {
-			status = StatusFailure
-		}
-	}
-
 	summary := Summary{
 		Version:    SummaryVersion,
 		Kind:       KindImport,
 		DurationMS: uint64(duration / time.Millisecond),
-		Status:     status,
+		Status:     statusFromCounts(report.StoredFiles+report.Duplicates, 0, failed),
 		Counts: Counts{
 			Requested:  uint64Ptr(uint64(report.ScannedFiles)),
 			Stored:     uint64Ptr(uint64(report.StoredFiles)),
@@ -137,19 +129,12 @@ func ImportSummary(report archive.ImportReport, duration time.Duration, sourcePa
 }
 
 func StoragePolicySummary(report archive.PurgeExpiredTrashReport, duration time.Duration) Summary {
-	status := StatusSuccess
-	if len(report.Errors) > 0 {
-		status = StatusWarning
-		if report.Purged == 0 {
-			status = StatusFailure
-		}
-	}
 	summary := Summary{
 		Version:    SummaryVersion,
 		Kind:       KindStoragePolicy,
 		Method:     "trash_purge_expired",
 		DurationMS: uint64(duration / time.Millisecond),
-		Status:     status,
+		Status:     statusFromCounts(report.Purged, 0, len(report.Errors)),
 		Counts: Counts{
 			Requested: uint64Ptr(uint64(report.Scanned)),
 			Purged:    uint64Ptr(uint64(report.Purged)),
@@ -243,15 +228,7 @@ func RetrieveSummary(outcome retrieve.Outcome, nodeID, level, studyUID, seriesUI
 		},
 		RetryInput: retryInputForScopedOperation(nodeID, level, studyUID, seriesUID, sopUID),
 	}
-	for _, progress := range outcome.Progress {
-		summary.Progress = append(summary.Progress, ProgressDetail{
-			StatusCode: fmt.Sprintf("0x%04X", progress.FinalStatus),
-			Remaining:  progress.Remaining,
-			Completed:  progress.Completed,
-			Failed:     progress.Failed,
-			Warnings:   progress.Warnings,
-		})
-	}
+	appendOutcomeProgress(&summary, outcome.Progress)
 	if outcome.Completed > 0 && localStored == 0 {
 		summary.Failures = append(summary.Failures, FailureDetail{
 			Message: fmt.Sprintf("remote completed %d C-STORE suboperations, but local receiver stored no objects; check Move Destination AE routing and receiver address", outcome.Completed),
@@ -289,15 +266,7 @@ func retrieveWADORSSummary(outcome retrieve.Outcome, nodeID, level, studyUID, se
 	for _, failure := range outcome.Failures {
 		summary.Failures = append(summary.Failures, FailureDetail{Message: failure})
 	}
-	for _, progress := range outcome.Progress {
-		summary.Progress = append(summary.Progress, ProgressDetail{
-			StatusCode: fmt.Sprintf("0x%04X", progress.FinalStatus),
-			Remaining:  progress.Remaining,
-			Completed:  progress.Completed,
-			Failed:     progress.Failed,
-			Warnings:   progress.Warnings,
-		})
-	}
+	appendOutcomeProgress(&summary, outcome.Progress)
 	return summary
 }
 
@@ -314,24 +283,29 @@ func RetryFailureSummary(original Summary, message string, duration time.Duratio
 
 func ReceiverSummary(snapshot receive.Snapshot, duration time.Duration) Summary {
 	failed := snapshot.Rejected + snapshot.Failed
-	status := StatusSuccess
-	if failed > 0 {
-		status = StatusWarning
-		if snapshot.Stored == 0 && snapshot.Duplicates == 0 {
-			status = StatusFailure
-		}
-	}
 	return Summary{
 		Version:    SummaryVersion,
 		Kind:       KindStorageSCP,
 		DurationMS: uint64(duration / time.Millisecond),
-		Status:     status,
+		Status:     statusFromCounts(int(snapshot.Stored+snapshot.Duplicates), 0, int(failed)),
 		Counts: Counts{
 			Received:   uint64Ptr(uint64(snapshot.Associations)),
 			Stored:     uint64Ptr(uint64(snapshot.Stored)),
 			Duplicates: uint64Ptr(uint64(snapshot.Duplicates)),
 			Failed:     uint64Ptr(uint64(failed)),
 		},
+	}
+}
+
+func appendOutcomeProgress(summary *Summary, progress []retrieve.Progress) {
+	for _, p := range progress {
+		summary.Progress = append(summary.Progress, ProgressDetail{
+			StatusCode: fmt.Sprintf("0x%04X", p.FinalStatus),
+			Remaining:  p.Remaining,
+			Completed:  p.Completed,
+			Failed:     p.Failed,
+			Warnings:   p.Warnings,
+		})
 	}
 }
 

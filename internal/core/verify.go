@@ -86,12 +86,14 @@ func (s *Session) VerifyArchive(ctx context.Context) (*VerifyResult, error) {
 	return result, nil
 }
 
+// verifySidecar loads a sidecar and records any load error via addError.
 func verifySidecar(category string, name string, load func() error, addError func(string, string, ...any)) {
 	if err := load(); err != nil {
 		addError(category, "%s: %v", name, err)
 	}
 }
 
+// verifyStoredObjects validates catalogued stored object paths and returns the count of unique, non-empty paths. It reports errors via addError for paths outside root, missing files, or directories.
 func verifyStoredObjects(root string, paths []string, addError func(string, string, ...any)) int {
 	seen := map[string]bool{}
 	for _, path := range paths {
@@ -124,6 +126,7 @@ func verifyStoredObjects(root string, paths []string, addError func(string, stri
 	return len(seen)
 }
 
+// pathInside reports whether path is strictly contained within the root directory.
 func pathInside(root string, path string) bool {
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {

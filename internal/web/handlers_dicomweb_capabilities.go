@@ -61,6 +61,7 @@ func (s *Server) handleDICOMwebCapabilities(w http.ResponseWriter, r *http.Reque
 	_ = json.NewEncoder(w).Encode(dicomwebCapabilities(cfg))
 }
 
+// dicomwebCapabilities constructs the DICOMweb service capabilities response with the provided configuration limits.
 func dicomwebCapabilities(cfg appconfig.Config) dicomwebCapabilitiesResponse {
 	return dicomwebCapabilitiesResponse{
 		Service:  "go-pacs DICOMweb",
@@ -71,7 +72,7 @@ func dicomwebCapabilities(cfg appconfig.Config) dicomwebCapabilitiesResponse {
 			TokenRoles:                       []string{"read", "write"},
 			ReadOperationsRole:               "read or write",
 			WriteOperationsRole:              "write",
-			CapabilitiesEndpointRequiresAuth: false,
+			CapabilitiesEndpointRequiresAuth: true,
 		},
 		MediaTypes: dicomwebMediaTypeCapabilities{
 			DICOMJSON:      "application/dicom+json",

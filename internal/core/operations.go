@@ -69,6 +69,7 @@ func (s *Session) QueryImages(ctx context.Context, sources []nodes.Node, criteri
 	}, obs)
 }
 
+// QueryStudySource queries studies from a node.
 func QueryStudySource(ctx context.Context, node nodes.Node, criteria query.Criteria, callingAETitle string) (query.Result, error) {
 	if node.IsDICOMweb() {
 		return qido.StudyQuery(ctx, node, criteria)
@@ -76,6 +77,7 @@ func QueryStudySource(ctx context.Context, node nodes.Node, criteria query.Crite
 	return query.StudyRootFind(ctx, node, criteria, callingAETitle)
 }
 
+// QuerySeriesSource queries for series using the specified node and criteria, routing to the appropriate backend based on the node type.
 func QuerySeriesSource(ctx context.Context, node nodes.Node, criteria query.SeriesCriteria, callingAETitle string) (query.Result, error) {
 	if node.IsDICOMweb() {
 		return qido.SeriesQuery(ctx, node, criteria)
@@ -83,6 +85,7 @@ func QuerySeriesSource(ctx context.Context, node nodes.Node, criteria query.Seri
 	return query.StudyRootSeriesFind(ctx, node, criteria, callingAETitle)
 }
 
+// QueryImageSource queries images from a node, selecting DICOMweb or traditional DICOM based on the node type.
 func QueryImageSource(ctx context.Context, node nodes.Node, criteria query.ImageCriteria, callingAETitle string) (query.Result, error) {
 	if node.IsDICOMweb() {
 		return qido.ImageQuery(ctx, node, criteria)
@@ -311,8 +314,12 @@ func (s *Session) StartImportJob(path string) *Job {
 
 // StartRetryJob reruns a retry-capable failed or warning task asynchronously.
 func (s *Session) StartRetryJob(historyIndex int) *Job {
+	summary, err := s.retryTaskSummary(historyIndex)
 	return s.startJob("retry", func(ctx context.Context, emit func(any)) (any, error) {
-		return nil, s.RetryTask(ctx, historyIndex)
+		if err != nil {
+			return nil, err
+		}
+		return nil, s.retrySummary(ctx, summary)
 	})
 }
 
@@ -390,6 +397,10 @@ func (s *Session) RetryTask(ctx context.Context, historyIndex int) error {
 	if err != nil {
 		return err
 	}
+	return s.retrySummary(ctx, summary)
+}
+
+func (s *Session) retrySummary(ctx context.Context, summary ops.Summary) error {
 	if err := retryStaticError(summary); err != nil {
 		return err
 	}
@@ -426,6 +437,7 @@ func (s *Session) retryTaskSummary(historyIndex int) (ops.Summary, error) {
 	return history[historyIndex], nil
 }
 
+// retryStaticError validates that summary has retry input with a supported version, a retryable status, and a retryable kind.
 func retryStaticError(summary ops.Summary) error {
 	if summary.RetryInput == nil {
 		return ErrTaskNoRetryInput
@@ -469,12 +481,33 @@ func (s *Session) validateRetryInput(ctx context.Context, summary ops.Summary) (
 		if !node.QueryEnabled() {
 			return nodes.Node{}, errors.New("node query/retrieve is disabled")
 		}
-		return node, validateRetrieveRetryInput(input)
+		if err := validateRetrieveRetryInput(input); err != nil {
+			return nodes.Node{}, err
+		}
+		if err := s.validateRetrieveRetryPrerequisites(summary.Kind, node); err != nil {
+			return nodes.Node{}, err
+		}
+		return node, nil
 	default:
 		return nodes.Node{}, fmt.Errorf("task kind %q cannot be retried", summary.Kind)
 	}
 }
 
+func (s *Session) validateRetrieveRetryPrerequisites(kind ops.Kind, node nodes.Node) error {
+	if kind != ops.KindRetrieveMove || node.RetrieveMethodOrDefault() == nodes.RetrieveMethodGet {
+		return nil
+	}
+	s.receiverMu.Lock()
+	running := s.receiver != nil
+	s.receiverMu.Unlock()
+	if !running {
+		return retrieve.ErrReceiverRequired
+	}
+	return nil
+}
+
+// validateImportRetryInput validates that the retry input contains a non-empty, accessible path.
+// It returns an error if the path is empty after trimming whitespace, does not exist, or cannot be accessed.
 func validateImportRetryInput(input *ops.RetryInput) error {
 	if strings.TrimSpace(input.Path) == "" {
 		return errors.New("source path is required")
@@ -488,6 +521,7 @@ func validateImportRetryInput(input *ops.RetryInput) error {
 	return nil
 }
 
+// validateRetrieveRetryInput validates that a retrieval task's retry input contains all required DICOM UIDs for its retrieval level. Study UID is always required; series UID is required for series and image level; SOP instance UID is required for image level. It returns an error if any required UID is missing.
 func validateRetrieveRetryInput(input *ops.RetryInput) error {
 	level := retryLevel(input.Level)
 	if strings.TrimSpace(input.StudyUID) == "" {
@@ -559,6 +593,9 @@ func (s *Session) retryNode(nodeID string) (nodes.Node, error) {
 	return nodes.Node{}, errors.New("node no longer exists")
 }
 
+// retryLevel normalizes a level string to a canonical query level.
+// It returns "IMAGE" or "SERIES" if the input matches those values
+// (case-insensitive and trimmed), otherwise "STUDY".
 func retryLevel(level string) string {
 	switch strings.ToUpper(strings.TrimSpace(level)) {
 	case "IMAGE":
@@ -579,6 +616,7 @@ func (s *Session) recordRetryValidationFailure(original ops.Summary, err error, 
 	_ = s.SaveHistory(ops.Prepend(history, summary))
 }
 
+// importLimits converts configuration values to import limits, treating nil pointers as zero.
 func importLimits(cfg appconfig.Config) archive.ImportLimits {
 	d64 := func(p *int64) int64 {
 		if p != nil {

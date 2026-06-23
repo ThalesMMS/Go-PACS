@@ -11,6 +11,7 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/rebuildmode"
 )
 
+// main runs the pacs-rebuild CLI tool, which rebuilds a PACS archive based on the provided command-line flags for archive directory and verbosity.
 func main() {
 	archiveDir := flag.String("archive-dir", "", "directory containing the local archive objects/ store")
 	verbose := flag.Bool("verbose", false, "show per-file rejection details")

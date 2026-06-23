@@ -209,6 +209,7 @@ func (s *Store) RecoverFromBackup() error {
 	return jsonstore.RecoverFromBackup(s.path)
 }
 
+// NewNode constructs a new Node from a Draft by normalizing and validating all fields and generating a unique ID. It returns the created Node or an error if validation fails.
 func NewNode(draft Draft) (Node, error) {
 	name := NormalizeNodeName(draft.Name)
 	protocol, err := NormalizeProtocol(draft.Protocol)
@@ -278,6 +279,7 @@ func NewNode(draft Draft) (Node, error) {
 	}, nil
 }
 
+// newDICOMwebNode constructs a validated DICOMweb node from a draft specification.
 func newDICOMwebNode(draft Draft, name string, protocol string) (Node, error) {
 	baseURL, err := NormalizeDICOMwebBaseURL(draft.BaseURL)
 	if err != nil {
@@ -378,6 +380,8 @@ func (n Node) SendTransferSyntaxOrDefault() string {
 	return syntax
 }
 
+// FindByAETitle searches for a node with the matching AE title.
+// It returns the node and true if found, or an empty node and false otherwise.
 func FindByAETitle(nodeList []Node, aeTitle string) (Node, bool) {
 	for _, node := range nodeList {
 		if node.AETitle == aeTitle {
@@ -444,6 +448,7 @@ func remoteHostAllowlist(nodeList []Node, lookupIP func(string) ([]net.IP, error
 	return result
 }
 
+// appendRemoteHost appends ip to hosts if it is non-nil and not already in seen, and records ip in seen.
 func appendRemoteHost(hosts []string, seen map[string]bool, ip net.IP) []string {
 	if ip == nil {
 		return hosts
@@ -456,6 +461,9 @@ func appendRemoteHost(hosts []string, seen map[string]bool, ip net.IP) []string 
 	return append(hosts, host)
 }
 
+// NormalizeProtocol normalizes the protocol string to a supported protocol.
+// Empty input and "dimse" normalize to DIMSE, while "dicom-web" and "dicom web"
+// normalize to DICOMweb. It returns an error if the protocol is unsupported.
 func NormalizeProtocol(protocol string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
 	case "", ProtocolDIMSE:
@@ -467,6 +475,9 @@ func NormalizeProtocol(protocol string) (string, error) {
 	}
 }
 
+// NormalizeDICOMwebBaseURL normalizes and validates a DICOMweb base URL.
+// It returns the URL with trailing slashes removed if valid, or an error
+// if the input is empty, unparseable, lacks http or https scheme, or lacks a host.
 func NormalizeDICOMwebBaseURL(raw string) (string, error) {
 	baseURL := strings.TrimSpace(raw)
 	if baseURL == "" {
@@ -485,10 +496,12 @@ func NormalizeDICOMwebBaseURL(raw string) (string, error) {
 	return strings.TrimRight(baseURL, "/"), nil
 }
 
+// NormalizeDICOMwebPathPrefix trims whitespace and trailing forward slashes from a path.
 func NormalizeDICOMwebPathPrefix(path string) string {
 	return strings.TrimRight(strings.TrimSpace(path), "/")
 }
 
+// NormalizeNodeName returns the name with whitespace trimmed and converted to lowercase.
 func NormalizeNodeName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }

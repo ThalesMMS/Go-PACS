@@ -106,6 +106,9 @@ window.TABS.archive = (function () {
     { id: "todayCT", label: "Today CT", cls: "album", match: (s) => importedToday(s) && mods(s).includes("CT") },
   ];
 
+  /**
+   * Renders the archive tab UI with toolbar, pane layout, study table, and sidebar.
+   */
   function render() {
     panel.innerHTML = "";
     panel.appendChild(iconToolbar());
@@ -133,6 +136,10 @@ window.TABS.archive = (function () {
       detail: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>`,
     };
   })();
+  /**
+   * Creates the archive tab icon toolbar with action buttons and search functionality.
+   * @return {Element} The toolbar DOM element containing action buttons and a search box.
+   */
   function iconToolbar() {
     const tb = (icon, l, fn, id) => el("button", { class: "tbtn", id, onclick: fn },
       el("span", { class: "g", html: ICONS[icon] }), el("span", { class: "l" }, l));
@@ -191,12 +198,18 @@ window.TABS.archive = (function () {
     doSearch();
   }
 
+  /**
+   * Executes a search using the current input value and reloads the study results.
+   */
   function doSearch() {
     search.text = (document.getElementById("arc-search").value || "").trim();
     page.offset = 0;
     reloadAll();
   }
 
+  /**
+   * Loads archive studies and configuration from the backend and updates the archive view.
+   */
   async function reloadAll() {
     const params = studyQueryParams();
     const [st, nd, rx, ops, cfg] = await Promise.all([
@@ -216,6 +229,10 @@ window.TABS.archive = (function () {
     applyFilters();
   }
 
+  /**
+   * Builds query parameters for fetching studies from the archive API.
+   * @returns {URLSearchParams} Query parameters with pagination, search, and album filters.
+   */
   function studyQueryParams() {
     const params = new URLSearchParams({ limit: String(page.limit || 100), offset: String(page.offset || 0) });
     if (search.text) {
@@ -240,7 +257,9 @@ window.TABS.archive = (function () {
     return params;
   }
 
-  // ---- Sidebar ----
+  /**
+   * Populates the sidebar with album filters, data sources, and recent activity.
+   */
   function renderSidebar() {
     const sb = document.getElementById("arc-sidebar");
     if (!sb) return;
@@ -275,13 +294,20 @@ window.TABS.archive = (function () {
     sb.appendChild(act);
   }
 
-  // ---- Table ----
+  /**
+   * Filters studies by the active album and updates the display.
+   */
   async function applyFilters() {
     const m = ALBUMS.find((a) => a.id === activeAlbum).match;
     displayed = allStudies.filter(m);
     renderRows();
   }
 
+  /**
+   * Renders the study and series rows in the archive table.
+   * 
+   * Populates the table with rows from the currently displayed studies, expanding series for any studies in the expanded set. Displays a "No studies" message if no studies are available, and updates pagination controls.
+   */
   function renderRows() {
     const body = document.getElementById("arc-rows");
     if (!body) return;
@@ -299,6 +325,9 @@ window.TABS.archive = (function () {
     renderPager();
   }
 
+  /**
+   * Updates the pagination controls with Previous/Next buttons and a record count display.
+   */
   function renderPager() {
     const wrap = document.getElementById("arc-pager");
     if (!wrap) return;
@@ -311,6 +340,12 @@ window.TABS.archive = (function () {
       el("button", { class: "btn secondary", disabled: page.offset + page.limit >= page.total, onclick: () => { page.offset += page.limit; reloadAll(); } }, "Next"));
   }
 
+  /**
+   * Builds a table row element for a study with selection and context menu.
+   * @param {Object} st - The study object to display.
+   * @param {Array} oc - Ordered columns defining the row's cells.
+   * @return {HTMLTableRowElement} The table row element.
+   */
   function studyRow(st, oc) {
     const tr = el("tr", { class: "study" + (selectedStudy && selectedStudy.StudyInstanceUID === st.StudyInstanceUID ? " selected" : "") });
     for (const c of oc) {
@@ -333,6 +368,12 @@ window.TABS.archive = (function () {
   }
   function onCtxOutside(e) { if (ctxMenu && !ctxMenu.contains(e.target)) closeContextMenu(); }
   function onCtxKey(e) { if (e.key === "Escape") closeContextMenu(); }
+  /**
+   * Displays a context menu with study operations at the specified position.
+   * @param {number} x - The left position in pixels.
+   * @param {number} y - The top position in pixels.
+   * @param {Object} st - The study object.
+   */
   function showContextMenu(x, y, st) {
     closeContextMenu();
     const open = expanded.has(st.StudyInstanceUID);
@@ -404,7 +445,10 @@ window.TABS.archive = (function () {
     }
   }
 
-  // ---- Right panel: patient's studies ----
+  /**
+   * Selects a study and updates the UI to display its details, related studies, and preview.
+   * @param {Object|null} st - The study object to select, or `null` to deselect.
+   */
   function select(st) {
     selectedStudy = st;
     window.gopacsSelectedStudy = st || null;
@@ -428,6 +472,14 @@ window.TABS.archive = (function () {
     }
   }
 
+  /**
+   * Loads and displays a preview thumbnail for a study's first instance in the provided element.
+   * 
+   * If no instances are available or the preview image fails to load, displays an appropriate message.
+   * 
+   * @param {Object} st - The study object with StudyInstanceUID property.
+   * @param {HTMLElement} wrap - The DOM element in which to display the preview.
+   */
   async function loadPreview(st, wrap) {
     const r = await apiGet(`/api/archive/studies/${encodeURIComponent(st.StudyInstanceUID)}/instances`);
     const inst = r.ok && (r.data || []).find((x) => x.SOPInstanceUID);
@@ -489,6 +541,9 @@ window.TABS.archive = (function () {
     }
   }
 
+  /**
+   * Opens a modal to select the send destination for the selected study.
+   */
   function openSend() {
     if (!selectedStudy) return;
     const enabled = sendNodes.filter((n) => !n.sendDisabled && !n.disabled);
@@ -501,6 +556,10 @@ window.TABS.archive = (function () {
         el("button", { class: "btn secondary", onclick: closeModal }, "Cancel"),
         el("button", { class: "btn", onclick: () => { closeModal(); sendStudy(sel.value); } }, "Send"))));
   }
+  /**
+   * Sends the selected study to a remote DICOM node.
+   * @param {string} nodeID - The destination node identifier.
+   */
   async function sendStudy(nodeID) {
     if (!nodeID) { setStatus("No send-enabled node", "error"); return; }
     setStatus("Sending study…");
@@ -513,6 +572,9 @@ window.TABS.archive = (function () {
     });
   }
 
+  /**
+   * Creates an anonymized copy of the selected study.
+   */
   async function anonymizeStudy() {
     if (!selectedStudy) return;
     const uid = selectedStudy.StudyInstanceUID;
@@ -530,6 +592,9 @@ window.TABS.archive = (function () {
     });
   }
 
+  /**
+   * Updates the selected study's status and comments metadata through user prompts.
+   */
   async function metaData() {
     if (!selectedStudy) return;
     const status = prompt("Status:", selectedStudy.Status || "");
@@ -562,6 +627,9 @@ window.TABS.archive = (function () {
         } }, "Save"))));
   }
 
+  /**
+   * Moves the selected study to local trash after confirming with the user.
+   */
   async function deleteStudy() {
     if (!selectedStudy) return;
     if (!confirm(`Move study for ${selectedStudy.PatientName || selectedStudy.StudyInstanceUID} to local trash?`)) return;
@@ -575,6 +643,9 @@ window.TABS.archive = (function () {
     else setStatus(`Delete failed: ${r.error}`, "error");
   }
 
+  /**
+   * Opens the storage management modal.
+   */
   async function openStorage() {
     const body = el("div", { class: "storage-modal" },
       el("h2", null, "Storage"),
@@ -585,6 +656,9 @@ window.TABS.archive = (function () {
     refreshStorageModal();
   }
 
+  /**
+   * Loads storage statistics and populates the storage modal with instance counts, disk usage, and trash management controls.
+   */
   async function refreshStorageModal() {
     const wrap = document.getElementById("storage-body");
     if (!wrap) return;
@@ -610,6 +684,11 @@ window.TABS.archive = (function () {
       trashTable(trash));
   }
 
+  /**
+   * Displays a table of trashed studies with restore and purge actions, or an empty state if no items exist.
+   * @param {Array} trash - An array of trashed study items, each containing patient name, study date, deleted object count, and timestamp.
+   * @returns {Element} A DOM element displaying the trash table or empty-state message.
+   */
   function trashTable(trash) {
     if (!trash.length) return el("div", { class: "empty" }, "Trash is empty");
     const body = el("tbody", null);
@@ -628,6 +707,10 @@ window.TABS.archive = (function () {
       body);
   }
 
+  /**
+   * Saves the trash auto-purge retention policy.
+   * @param {string|number} value - The number of days to retain trash before auto-purging.
+   */
   async function saveStoragePolicy(value) {
     const days = parseInt(value, 10);
     const r = await apiSend("/api/archive/storage/policy", "PUT", { trashAutoPurgeDays: Number.isFinite(days) ? days : 90 });
@@ -635,6 +718,9 @@ window.TABS.archive = (function () {
     refreshStorageModal();
   }
 
+  /**
+   * Removes expired items from the archive trash.
+   */
   async function purgeExpiredTrash() {
     const r = await apiSend("/api/archive/trash/purge-expired", "POST");
     const rep = r.data || {};
@@ -642,6 +728,10 @@ window.TABS.archive = (function () {
     refreshStorageModal();
   }
 
+  /**
+   * Restores a trashed study to the main archive.
+   * @param {string} uid - The study UID to restore from trash.
+   */
   async function restoreTrash(uid) {
     if (!uid) return;
     const r = await apiSend(`/api/archive/trash/${encodeURIComponent(uid)}/restore`, "POST");
@@ -650,6 +740,9 @@ window.TABS.archive = (function () {
     reloadAll();
   }
 
+  /**
+   * Permanently removes a trash entry after user confirmation.
+   */
   async function purgeTrash(uid) {
     if (!uid || !confirm("Permanently purge this trash entry?")) return;
     const r = await apiSend(`/api/archive/trash/${encodeURIComponent(uid)}`, "DELETE");
@@ -657,11 +750,17 @@ window.TABS.archive = (function () {
     refreshStorageModal();
   }
 
+  /**
+   * Initiates an archive verification check.
+   */
   async function verifyArchiveNow() {
     const r = await apiSend("/api/archive/verify", "POST");
     setStatus(r.ok && r.data && r.data.ok ? "Archive verification OK" : `Archive verification failed: ${r.error || "see result"}`, r.ok && r.data && r.data.ok ? "ok" : "error");
   }
 
+  /**
+   * Backs up the archive to a user-specified destination path.
+   */
   async function backupArchivePath() {
     const destPath = prompt("Backup destination path:");
     if (!destPath) return;
@@ -669,6 +768,9 @@ window.TABS.archive = (function () {
     setStatus(r.ok ? `Backup written to ${r.data.destinationDir || destPath}` : `Backup failed: ${r.error}`, r.ok ? "ok" : "error");
   }
 
+  /**
+   * Restores an archive from a backup to a user-specified destination path.
+   */
   async function restoreArchivePath() {
     const backupPath = prompt("Backup path:");
     if (!backupPath) return;
@@ -678,6 +780,11 @@ window.TABS.archive = (function () {
     setStatus(r.ok ? `Restored to ${destPath}` : `Restore failed: ${r.error}`, r.ok ? "ok" : "error");
   }
 
+  /**
+   * Formats a byte count as a human-readable string.
+   * @param {number} n - The number of bytes to format.
+   * @return {string} The formatted byte count with appropriate unit (B, KB, MB, GB, or TB).
+   */
   function formatBytes(n) {
     n = Number(n || 0);
     const units = ["B", "KB", "MB", "GB", "TB"];
@@ -686,6 +793,10 @@ window.TABS.archive = (function () {
     return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
   }
 
+  /**
+   * Decompresses DICOM files for the given study.
+   * @param {object} st - The study object with a StudyInstanceUID property.
+   */
   async function decompressStudy(st) {
     if (!st) return;
     setStatus("Decompressing DICOM files…");

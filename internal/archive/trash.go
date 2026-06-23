@@ -58,11 +58,20 @@ type PurgeExpiredTrashReport struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
-func (c *Catalog) TrashStudy(ctx context.Context, studyInstanceUID string) (int, error) {
-	studyInstanceUID = strings.TrimSpace(studyInstanceUID)
-	if studyInstanceUID == "" {
-		return 0, errors.New("study instance UID is required")
+func validateStudyUID(studyInstanceUID string) (string, error) {
+	uid := strings.TrimSpace(studyInstanceUID)
+	if uid == "" {
+		return "", errors.New("study instance UID is required")
 	}
+	return uid, nil
+}
+
+func (c *Catalog) TrashStudy(ctx context.Context, studyInstanceUID string) (int, error) {
+	uid, err := validateStudyUID(studyInstanceUID)
+	if err != nil {
+		return 0, err
+	}
+	studyInstanceUID = uid
 	instances, err := c.InstancesForStudy(ctx, studyInstanceUID)
 	if err != nil {
 		return 0, err
@@ -129,16 +138,22 @@ func (c *Catalog) ListTrash(ctx context.Context) ([]TrashEntry, error) {
 		result = append(result, trashEntryFromManifest(manifest))
 	}
 	sort.Slice(result, func(i, j int) bool {
+		left, leftErr := time.Parse(time.RFC3339Nano, result[i].TrashedAt)
+		right, rightErr := time.Parse(time.RFC3339Nano, result[j].TrashedAt)
+		if leftErr == nil && rightErr == nil {
+			return left.After(right)
+		}
 		return result[i].TrashedAt > result[j].TrashedAt
 	})
 	return result, nil
 }
 
 func (c *Catalog) RestoreStudy(ctx context.Context, studyInstanceUID string) (ImportReport, error) {
-	studyInstanceUID = strings.TrimSpace(studyInstanceUID)
-	if studyInstanceUID == "" {
-		return ImportReport{}, errors.New("study instance UID is required")
+	uid, err := validateStudyUID(studyInstanceUID)
+	if err != nil {
+		return ImportReport{}, err
 	}
+	studyInstanceUID = uid
 	trashPath := c.trashPathForStudy(studyInstanceUID)
 	objectsPath := c.trashObjectsPath(studyInstanceUID)
 	if _, err := readTrashManifest(filepath.Join(trashPath, trashManifestFileName)); err != nil {
@@ -158,10 +173,11 @@ func (c *Catalog) RestoreStudy(ctx context.Context, studyInstanceUID string) (Im
 }
 
 func (c *Catalog) PurgeStudy(ctx context.Context, studyInstanceUID string) error {
-	studyInstanceUID = strings.TrimSpace(studyInstanceUID)
-	if studyInstanceUID == "" {
-		return errors.New("study instance UID is required")
+	uid, err := validateStudyUID(studyInstanceUID)
+	if err != nil {
+		return err
 	}
+	studyInstanceUID = uid
 	if err := ctx.Err(); err != nil {
 		return err
 	}

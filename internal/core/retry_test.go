@@ -4,8 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	ops "github.com/ThalesMMS/Go-PACS/internal/operations"
 )
 
@@ -66,5 +68,37 @@ func TestRetryFailedImportAppendsNewSummary(t *testing.T) {
 	}
 	if history[0].RetryInput == nil || history[0].RetryInput.Path != sourceDir {
 		t.Fatalf("new RetryInput = %#v, want source path %q", history[0].RetryInput, sourceDir)
+	}
+}
+
+func TestCanRetrySummaryRejectsMoveWithoutReceiver(t *testing.T) {
+	ctx := context.Background()
+	sess := openTestSession(t)
+	node, err := sess.NodeStore().Add(nodes.Draft{
+		Name:           "move-node",
+		AETitle:        "REMOTE",
+		Host:           "127.0.0.1",
+		Port:           11112,
+		RetrieveMethod: nodes.RetrieveMethodMove,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eligibility, err := sess.CanRetrySummary(ctx, ops.Summary{
+		Version: ops.SummaryVersion,
+		Kind:    ops.KindRetrieveMove,
+		Status:  ops.StatusFailure,
+		RetryInput: &ops.RetryInput{
+			Version:  ops.RetryInputVersion,
+			NodeID:   node.ID,
+			Level:    "STUDY",
+			StudyUID: "1.2.3",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eligibility.CanRetry || !strings.Contains(eligibility.Reason, "receiver") {
+		t.Fatalf("eligibility = %#v, want receiver prerequisite failure", eligibility)
 	}
 }

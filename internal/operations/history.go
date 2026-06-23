@@ -12,6 +12,9 @@ import (
 
 const MaxHistoryEntries = 200
 
+// LoadHistory reads the task history file at path and parses its JSON contents.
+// It returns the parsed history entries on success, (nil, nil) if the file does
+// not exist or is empty, or an error if reading or parsing fails.
 func LoadHistory(path string) ([]Summary, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -30,6 +33,7 @@ func LoadHistory(path string) ([]Summary, error) {
 	return trimHistory(history), nil
 }
 
+// SaveHistory persists the task history to a file at the given path, truncating to at most MaxHistoryEntries entries. It returns an error if the write fails, nil otherwise.
 func SaveHistory(path string, history []Summary) error {
 	history = trimHistory(history)
 	data, err := json.MarshalIndent(history, "", "  ")
@@ -43,10 +47,12 @@ func SaveHistory(path string, history []Summary) error {
 	return nil
 }
 
+// RecoverFromBackup restores task history from a backup.
 func RecoverFromBackup(path string) error {
 	return jsonstore.RecoverFromBackup(path)
 }
 
+// trimHistory returns history truncated to at most MaxHistoryEntries entries.
 func trimHistory(history []Summary) []Summary {
 	if len(history) <= MaxHistoryEntries {
 		return history

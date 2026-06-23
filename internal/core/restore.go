@@ -89,6 +89,9 @@ func (s *Session) RestoreBackup(ctx context.Context, backupDir string, destDir s
 	return result, nil
 }
 
+// validateBackupLayout reads the backup manifest from backupDir, validates the
+// manifest fields, verifies all required files exist with correct object counts,
+// discovers sidecar files, and returns the validated backup layout.
 func validateBackupLayout(backupDir string) (backupLayout, error) {
 	data, err := os.ReadFile(filepath.Join(backupDir, backupManifestFileName))
 	if err != nil {
@@ -151,6 +154,7 @@ func validateBackupLayout(backupDir string) (backupLayout, error) {
 	}, nil
 }
 
+// backupSidecars returns unique sidecar filenames from the backup directory. When no manifest sidecars are provided, it discovers which known sidecar files exist. When manifest sidecars are provided, it validates each one.
 func backupSidecars(backupDir string, manifestSidecars []string) ([]string, error) {
 	if len(manifestSidecars) == 0 {
 		var sidecars []string
@@ -183,6 +187,7 @@ func backupSidecars(backupDir string, manifestSidecars []string) ([]string, erro
 	return sidecars, nil
 }
 
+// validateRestoreDestination validates that destDir is safe for restoration and is not the current archive unless explicitly allowed.
 func validateRestoreDestination(destDir string, currentArchiveDir string, allowOverwriteCurrent bool) error {
 	currentAbs, err := filepath.Abs(currentArchiveDir)
 	if err != nil {
@@ -194,6 +199,10 @@ func validateRestoreDestination(destDir string, currentArchiveDir string, allowO
 	return validateBackupDestination(destDir)
 }
 
+// copyBackupToDestination copies the backup files to the destination directory,
+// tracking what was successfully restored. It copies the catalog, objects
+// directory, and sidecar files. If copying fails, it returns the partial
+// result along with the error.
 func copyBackupToDestination(ctx context.Context, layout backupLayout, destDir string) (RestoreResult, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return RestoreResult{}, fmt.Errorf("create restore destination: %w", err)
@@ -216,6 +225,7 @@ func copyBackupToDestination(ctx context.Context, layout backupLayout, destDir s
 	return result, nil
 }
 
+// cleanBackupEntry sanitizes a relative path name for use as a backup entry, rejecting absolute paths, parent directory references, nested paths, and empty names. It returns the sanitized name or an error if validation fails.
 func cleanBackupEntry(name string) (string, error) {
 	name = filepath.Clean(strings.TrimSpace(name))
 	if name == "" || name == "." || filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(os.PathSeparator)) {
@@ -227,6 +237,7 @@ func cleanBackupEntry(name string) (string, error) {
 	return name, nil
 }
 
+// RequireRegularFile returns an error if path is not a regular file.
 func requireRegularFile(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -238,6 +249,7 @@ func requireRegularFile(path string) error {
 	return nil
 }
 
+// countRegularFiles returns the number of regular files in the specified directory.
 func countRegularFiles(dir string) (int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

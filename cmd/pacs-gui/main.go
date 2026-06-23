@@ -262,6 +262,7 @@ const (
 	listenerIncomingDecompressPolicyLabel = "Decompress compressed images"
 )
 
+// listenerSettingsDialogSize returns the configured dimensions for the listener settings dialog.
 func listenerSettingsDialogSize() fyne.Size {
 	return fyne.NewSize(listenerSettingsDialogWidth, listenerSettingsDialogHeight)
 }
@@ -1447,6 +1448,7 @@ func mainToolbarButtonLabels() []string {
 	return labels
 }
 
+// MainToolbarButtonGroups returns the toolbar buttons organized into functional groups for the main interface. Each group is a slice of button label constants representing related toolbar actions.
 func mainToolbarButtonGroups() [][]string {
 	return [][]string{
 		{
@@ -1488,10 +1490,12 @@ func mainToolbarButtonGroups() [][]string {
 	}
 }
 
+// mainToolbarDisabledLabels returns the toolbar button labels that should be disabled.
 func mainToolbarDisabledLabels() []string {
 	return nil
 }
 
+// MainToolbarIconResource returns the icon resource for the given toolbar label, or theme.InfoIcon() if not recognized.
 func mainToolbarIconResource(label string) fyne.Resource {
 	switch label {
 	case toolbarLabelImport, toolbarLabelQuery:
@@ -1726,6 +1730,7 @@ func compactThemeSize(size float32) float32 {
 	return rounded
 }
 
+// run initializes and runs the main DICOM workstation GUI application.
 func run() {
 	archiveDir := flag.String("archive-dir", defaultArchiveDir(), "directory for the local archive catalog and object store")
 	flag.Parse()
@@ -2405,6 +2410,7 @@ func taskHeaderLabel(state *uiState, col int, label string) string {
 	return sortHeaderLabel(label, state.taskSortActive && state.taskSortColumn == col, state.taskSortDescending)
 }
 
+// UpdateTaskDetail updates the task detail panel and retry control state based on the currently selected operation.
 func updateTaskDetail(state *uiState) {
 	if state == nil || state.operationDetail == nil {
 		return
@@ -2422,6 +2428,7 @@ func updateTaskDetail(state *uiState) {
 	updateTaskRetryControl(state, &summary)
 }
 
+// UpdateTaskRetryControl updates the task retry button based on operation retry eligibility and displays the reason if unavailable.
 func updateTaskRetryControl(state *uiState, summary *ops.Summary) {
 	if state == nil || state.operationRetryButton == nil {
 		return
@@ -2447,6 +2454,7 @@ func updateTaskRetryControl(state *uiState, summary *ops.Summary) {
 	}
 }
 
+// Retries the selected operation from the task history.
 func retrySelectedTask(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
 	index, err := selectedOperationHistoryIndex(state)
 	if err != nil {
@@ -2494,6 +2502,8 @@ func retrySelectedTask(w fyne.Window, status *widget.Label, tables archiveTables
 	}()
 }
 
+// SelectedOperationHistoryIndex returns the index of the currently selected operation in the full task history.
+// It returns an error if no operation is selected or if the selected operation is no longer in history.
 func selectedOperationHistoryIndex(state *uiState) (int, error) {
 	if state == nil || state.session == nil || state.selectedOperationRow < 0 || state.selectedOperationRow >= len(state.operations) {
 		return 0, errors.New("no task selected")
@@ -2510,6 +2520,7 @@ func selectedOperationHistoryIndex(state *uiState) (int, error) {
 	return index, nil
 }
 
+// replaceOperationHistory replaces the operation history in state and preserves the selected operation across re-sorting.
 func replaceOperationHistory(state *uiState, history []ops.Summary) {
 	if state == nil {
 		return
@@ -2534,6 +2545,7 @@ func replaceOperationHistory(state *uiState, history []ops.Summary) {
 	}
 }
 
+// TaskDetailText formats an operation summary as indented text for display.
 func taskDetailText(summary ops.Summary) string {
 	data, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
@@ -4548,6 +4560,7 @@ func importFolderDialog(w fyne.Window, status *widget.Label, tables archiveTable
 	picker.Show()
 }
 
+// importPathAsync imports DICOM files from the specified path and updates the archive display. Progress and results are displayed in the status label; on failure, error dialogs are shown.
 func importPathAsync(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState, path string) {
 	if path == "" {
 		return
@@ -5745,6 +5758,7 @@ func showStudyMetadataDialog(w fyne.Window, status *widget.Label, tables archive
 	form.Show()
 }
 
+// An error is returned if the catalog is unavailable, no study is selected, or metadata operations fail.
 func saveSelectedStudyMetadata(ctx context.Context, status *widget.Label, tables archiveTables, state *uiState, metadata archive.StudyMetadata) error {
 	if state == nil || state.catalog == nil {
 		return errors.New("archive catalog unavailable")
@@ -5779,6 +5793,7 @@ func saveSelectedStudyMetadata(ctx context.Context, status *widget.Label, tables
 	return nil
 }
 
+// showAnonymizeStudyDialog displays a confirmation dialog for anonymizing the selected study.
 func showAnonymizeStudyDialog(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
 	study, ok := selectedStudy(state)
 	if !ok {
@@ -5805,6 +5820,7 @@ func showAnonymizeStudyDialog(w fyne.Window, status *widget.Label, tables archiv
 	}, w)
 }
 
+// anonymizeSelectedStudy anonymizes the selected study and refreshes the archive upon completion.
 func anonymizeSelectedStudy(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
 	if state == nil || state.session == nil {
 		if status != nil {
@@ -5855,10 +5871,12 @@ func anonymizeSelectedStudy(w fyne.Window, status *widget.Label, tables archiveT
 	}()
 }
 
+// anonymizedStudyStatusText formats the outcome of a study anonymization operation into a status message for display.
 func anonymizedStudyStatusText(outcome core.AnonymizeOutcome) string {
 	return fmt.Sprintf("Anonymized study %s to %s (%d objects)", outcome.SourceStudyUID, outcome.NewStudyUID, outcome.StoredFiles)
 }
 
+// showDeleteStudyDialog displays a confirmation dialog to delete the selected study from the local archive.
 func showDeleteStudyDialog(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
 	study, ok := selectedStudy(state)
 	if !ok {
@@ -5891,6 +5909,7 @@ func showDeleteStudyDialog(w fyne.Window, status *widget.Label, tables archiveTa
 	}, w)
 }
 
+// DeleteSelectedStudy moves the selected study to trash and refreshes the archive view. The status label is updated with outcome information. It returns the number of instances deleted and any error encountered.
 func deleteSelectedStudy(ctx context.Context, status *widget.Label, tables archiveTables, state *uiState) (int, error) {
 	if state == nil || state.catalog == nil {
 		return 0, errors.New("archive catalog unavailable")
@@ -5948,6 +5967,7 @@ func deleteSelectedStudy(ctx context.Context, status *widget.Label, tables archi
 	return deleted, nil
 }
 
+// trashedStudyStatusText returns a status message indicating that a study and its objects were moved to the local trash.
 func trashedStudyStatusText(studyUID string, deleted int) string {
 	noun := "objects"
 	if deleted == 1 {
@@ -5956,6 +5976,7 @@ func trashedStudyStatusText(studyUID string, deleted int) string {
 	return fmt.Sprintf("Moved study %s to local trash (%d %s)", studyUID, deleted, noun)
 }
 
+// LocalAETitle returns the local AE title from state configuration, or a default title if the state is nil or the configured title is empty.
 func localAETitle(state *uiState) string {
 	if state == nil || strings.TrimSpace(state.appConfig.LocalAETitle) == "" {
 		return netverify.DefaultCallingAETitle
@@ -7306,6 +7327,7 @@ func retrieveMethodName(outcome retrieve.Outcome) string {
 	return retrieve.MethodMove
 }
 
+// retrieveOptionsForNode assembles retrieve options for the specified node from current application state and configuration.
 func retrieveOptionsForNode(status *widget.Label, state *uiState, node nodes.Node) retrieve.Options {
 	moveDestination := queryMoveDestination(state, node)
 	return retrieve.Options{
@@ -7319,6 +7341,7 @@ func retrieveOptionsForNode(status *widget.Label, state *uiState, node nodes.Nod
 	}
 }
 
+// RequireReceiverRunningForMove reports whether a move operation can proceed, checking that a running receiver is available for DIMSE C-MOVE operations. Returns true if the operation can proceed without a receiver or if a receiver is running; returns false if a receiver is required but not running, sets the status label, and displays an error dialog.
 func requireReceiverRunningForMove(w fyne.Window, status *widget.Label, state *uiState, node nodes.Node) bool {
 	if node.IsDICOMweb() {
 		return true
@@ -7336,6 +7359,7 @@ func requireReceiverRunningForMove(w fyne.Window, status *widget.Label, state *u
 	return false
 }
 
+// retrieveOptionMethod returns the retrieve method string constant for the node's configured retrieve method.
 func retrieveOptionMethod(node nodes.Node) string {
 	switch node.RetrieveMethodOrDefault() {
 	case nodes.RetrieveMethodMove:
@@ -7347,6 +7371,7 @@ func retrieveOptionMethod(node nodes.Node) string {
 	}
 }
 
+// RetrieveMethodSummary determines the retrieve method for a node.
 func retrieveMethodSummary(node nodes.Node) string {
 	if node.IsDICOMweb() {
 		return wadors.MethodWADORS
@@ -7361,6 +7386,7 @@ func retrieveMethodSummary(node nodes.Node) string {
 	}
 }
 
+// retrieveReceiverAddressIssue returns a warning message if the receiver is bound to a loopback address while the node is a network DIMSE node, empty string otherwise.
 func retrieveReceiverAddressIssue(state *uiState, node nodes.Node) string {
 	if node.IsDICOMweb() {
 		return ""
@@ -7683,6 +7709,7 @@ func newListenerCoreSettingsSection(items []*widget.FormItem) fyne.CanvasObject 
 	return newListenerSettingsPanel(container.NewVBox(rows...))
 }
 
+// newListenerSettingsSections organizes listener configuration sections into a list of form items for the settings dialog.
 func newListenerSettingsSections(activateListener fyne.CanvasObject, coreSettingsItems []*widget.FormItem, tlsListenerSection fyne.CanvasObject, incomingFilesSection fyne.CanvasObject, safetyLimits fyne.CanvasObject) []*widget.FormItem {
 	return []*widget.FormItem{
 		widget.NewFormItem("", newListenerActivationSection(activateListener)),
@@ -7693,6 +7720,7 @@ func newListenerSettingsSections(activateListener fyne.CanvasObject, coreSetting
 	}
 }
 
+// newListenerIncomingFilesRadio creates a radio group for selecting incoming files handling policy, with the initial selection set based on the decompressImages parameter.
 func newListenerIncomingFilesRadio(decompressImages bool) *widget.RadioGroup {
 	incomingFiles := widget.NewRadioGroup([]string{
 		listenerIncomingDontModifyLabel,
@@ -7706,10 +7734,12 @@ func newListenerIncomingFilesRadio(decompressImages bool) *widget.RadioGroup {
 	return incomingFiles
 }
 
+// Creates UI controls for configuring the listener's incoming file policy.
 func newListenerIncomingPolicyControls() fyne.CanvasObject {
 	return newListenerIncomingPolicyControlsWithRadio(newListenerIncomingFilesRadio(false))
 }
 
+// newListenerIncomingPolicyControlsWithRadio constructs controls for configuring the DICOM listener's incoming file handling, including scan intervals, file policy selection, and unreadable file handling.
 func newListenerIncomingPolicyControlsWithRadio(incomingFiles *widget.RadioGroup) fyne.CanvasObject {
 	scanSeconds := newDisabledEntryText("10")
 	scanSecondsSlot := container.NewGridWrap(fyne.NewSize(listenerIncomingScanEntrySlotWidth, scanSeconds.MinSize().Height), scanSeconds)
@@ -7861,6 +7891,7 @@ func newListenerAdvancedSafetyLimitsControls(entries listenerSafetyLimitEntries)
 	return advanced
 }
 
+// showSettingsDialog displays a settings dialog for configuring the DICOM listener, receiver address, TLS, and safety limits. On save, it validates inputs, persists configuration, and refreshes dependent UI elements and listener state.
 func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
 	localAE := widget.NewEntry()
 	localAE.SetText(localAETitle(state))
@@ -8369,10 +8400,12 @@ const (
 	nodeProtocolDICOMwebLabel = "DICOMweb"
 )
 
+// nodeProtocolOptions returns the available node communication protocols.
 func nodeProtocolOptions() []string {
 	return []string{nodeProtocolDIMSELabel, nodeProtocolDICOMwebLabel}
 }
 
+// NodeProtocolLabel returns the display label for the given network protocol.
 func nodeProtocolLabel(protocol string) string {
 	if strings.EqualFold(strings.TrimSpace(protocol), nodes.ProtocolDICOMweb) {
 		return nodeProtocolDICOMwebLabel
@@ -8380,6 +8413,9 @@ func nodeProtocolLabel(protocol string) string {
 	return nodeProtocolDIMSELabel
 }
 
+// NodeProtocolValue converts a protocol label to its protocol constant.
+// It uses case-insensitive matching with whitespace trimmed.
+// If the label matches the DICOMweb protocol label, it returns the DICOMweb protocol constant; otherwise, it returns the DIMSE protocol constant.
 func nodeProtocolValue(label string) string {
 	if strings.EqualFold(strings.TrimSpace(label), nodeProtocolDICOMwebLabel) {
 		return nodes.ProtocolDICOMweb
@@ -8387,6 +8423,7 @@ func nodeProtocolValue(label string) string {
 	return nodes.ProtocolDIMSE
 }
 
+// nodeDraftFromFormState constructs a node draft from form field values.
 func nodeDraftFromFormState(protocol string, name string, aeTitle string, host string, port uint16, baseURL string, qidoPath string, wadoPath string, stowPath string, credentialRef string, enabled bool, queryEnabled bool, retrieveMethod string, sendEnabled bool, sendTransferSyntax string, useTLS bool, tlsSettings nodeTLSSettingsState, moveDestination string, notes string) nodes.Draft {
 	return nodes.Draft{
 		Name:                     name,
@@ -8415,6 +8452,7 @@ func nodeDraftFromFormState(protocol string, name string, aeTitle string, host s
 	}
 }
 
+// newNodeDialogFormItems creates form items for configuring a network node, organizing protocol selection, enable and query flags, name, protocol-specific connection fields, and notes.
 func newNodeDialogFormItems(protocol *widget.Select, enabled *widget.Check, queryEnabled *widget.Check, sendEnabled *widget.Check, name *widget.Entry, dimseFields fyne.CanvasObject, dicomwebFields fyne.CanvasObject, notes *widget.Entry) []*widget.FormItem {
 	return []*widget.FormItem{
 		widget.NewFormItem("Protocol", protocol),
@@ -8428,6 +8466,11 @@ func newNodeDialogFormItems(protocol *widget.Select, enabled *widget.Check, quer
 	}
 }
 
+// newNodeDIMSEFields constructs a form for DIMSE network node configuration.
+//
+// The returned form organizes the provided widget components into a structured
+// layout for editing node settings including retrieve method, TLS, send syntax,
+// AETitle, address, port, and move destination.
 func newNodeDIMSEFields(retrieveMethod *widget.Select, tlsControls fyne.CanvasObject, sendSyntax *widget.Select, aeTitle *widget.Entry, host *widget.Entry, port *widget.Entry, moveDestination *widget.Entry) fyne.CanvasObject {
 	return widget.NewForm(
 		widget.NewFormItem("Retrieve", retrieveMethod),
@@ -8440,6 +8483,7 @@ func newNodeDIMSEFields(retrieveMethod *widget.Select, tlsControls fyne.CanvasOb
 	)
 }
 
+// NewNodeDICOMwebFields creates a form containing DICOMweb node configuration fields.
 func newNodeDICOMwebFields(baseURL *widget.Entry, qidoPath *widget.Entry, wadoPath *widget.Entry, stowPath *widget.Entry, credentialRef *widget.Entry) fyne.CanvasObject {
 	return widget.NewForm(
 		widget.NewFormItem("Base URL", baseURL),
@@ -8450,6 +8494,7 @@ func newNodeDICOMwebFields(baseURL *widget.Entry, qidoPath *widget.Entry, wadoPa
 	)
 }
 
+// updateNodeProtocolFields updates the visibility of node configuration fields to match the selected protocol.
 func updateNodeProtocolFields(protocol string, dimseFields fyne.CanvasObject, dicomwebFields fyne.CanvasObject) {
 	if nodeProtocolValue(protocol) == nodes.ProtocolDICOMweb {
 		dimseFields.Hide()
@@ -8797,6 +8842,7 @@ func networkFooterActionButton(label string, tapped func()) *widget.Button {
 	return widget.NewButton(label, tapped)
 }
 
+// newNetworkTab builds the network node management interface.
 func newNetworkTab(w fyne.Window, status *widget.Label, nodeTable *widget.Table, state *uiState) fyne.CanvasObject {
 	header := newNetworkHeader()
 
@@ -8864,6 +8910,7 @@ func newNetworkTab(w fyne.Window, status *widget.Label, nodeTable *widget.Table,
 	return container.NewBorder(header, footer, nil, nil, container.NewStack(nodeTable))
 }
 
+// showAddNodeDialog displays a dialog for configuring and adding a remote DICOM node.
 func showAddNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState) {
 	protocol := widget.NewSelect(nodeProtocolOptions(), nil)
 	protocol.SetSelected(nodeProtocolDIMSELabel)
@@ -8947,6 +8994,7 @@ func showAddNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table,
 	form.Show()
 }
 
+// Opens a dialog to edit the selected remote node.
 func showEditNodeDialog(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState) {
 	node, ok := selectedNode(state)
 	if !ok {
@@ -9114,6 +9162,7 @@ func parsePort(value string) (uint16, error) {
 	return uint16(port), nil
 }
 
+// VerifySelectedNode verifies the selected enabled remote node and updates the status label, query UI, and application state with the result, displaying any errors in a dialog.
 func verifySelectedNode(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState) {
 	node, ok := selectedEnabledNode(state)
 	if !ok {
@@ -9163,6 +9212,9 @@ func verifySelectedNode(w fyne.Window, status *widget.Label, table *widget.Table
 	}()
 }
 
+// startReceiver starts a DICOM receiver to accept incoming instances from configured remote nodes.
+// It loads TLS configuration if enabled, builds allowlists of calling AE titles and remote hosts from configured nodes, and updates the archive and query UI.
+// If the receiver is already running, it returns without restarting. TLS or startup errors are shown in error dialogs, and allowlist warnings are displayed in an information dialog.
 func startReceiver(w fyne.Window, status *widget.Label, state *uiState) {
 	if state.receiver != nil {
 		snapshot := state.receiver.Snapshot()
@@ -9286,6 +9338,7 @@ func stopReceiver(w fyne.Window, status *widget.Label, tables archiveTables, sta
 	}()
 }
 
+// SendSelectedStudy sends the selected study to a remote send-enabled node, recording the operation and updating the UI with status and outcome details.
 func sendSelectedStudy(w fyne.Window, status *widget.Label, state *uiState) {
 	study, ok := selectedStudy(state)
 	if !ok {
@@ -9339,6 +9392,7 @@ func sendSelectedStudy(w fyne.Window, status *widget.Label, state *uiState) {
 	}()
 }
 
+// SendMethodSummary determines the send method to use for the given node.
 func sendMethodSummary(node nodes.Node) string {
 	if node.IsDICOMweb() {
 		return send.MethodSTOWRS
@@ -9346,6 +9400,7 @@ func sendMethodSummary(node nodes.Node) string {
 	return send.MethodCStore
 }
 
+// SendSelectedSeries sends the selected series to a configured send-enabled remote node.
 func sendSelectedSeries(w fyne.Window, status *widget.Label, state *uiState) {
 	series, ok := selectedSeries(state)
 	if !ok {
@@ -9399,6 +9454,7 @@ func sendSelectedSeries(w fyne.Window, status *widget.Label, state *uiState) {
 	}()
 }
 
+// sendSelectedInstance sends the selected DICOM instance to a configured remote node.
 func sendSelectedInstance(w fyne.Window, status *widget.Label, state *uiState) {
 	instance, ok := selectedInstance(state)
 	if !ok {
@@ -9452,6 +9508,7 @@ func sendSelectedInstance(w fyne.Window, status *widget.Label, state *uiState) {
 	}()
 }
 
+// Retrieves the selected series from a remote node to the local receiver.
 func retrieveSelectedSeries(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
 	series, ok := selectedSeries(state)
 	if !ok {
@@ -9490,6 +9547,10 @@ func retrieveSelectedSeries(w fyne.Window, status *widget.Label, tables archiveT
 		studies, studyErr := loadStudies(context.Background(), state)
 		fyne.Do(func() {
 			clearActiveRetrieve(state)
+			if studyErr == nil {
+				setStudies(state, tables, studies)
+			}
+			recordOperation(state, ops.RetrieveSummary(outcome, node.ID, "SERIES", series.StudyInstanceUID, series.SeriesInstanceUID, ""))
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					status.SetText("Retrieve cancelled for " + node.Name)
@@ -9499,10 +9560,6 @@ func retrieveSelectedSeries(w fyne.Window, status *widget.Label, tables archiveT
 				dialog.ShowError(err, w)
 				return
 			}
-			if studyErr == nil {
-				setStudies(state, tables, studies)
-			}
-			recordOperation(state, ops.RetrieveSummary(outcome, node.ID, "SERIES", series.StudyInstanceUID, series.SeriesInstanceUID, ""))
 			status.SetText(fmt.Sprintf(
 				"%s %s: final=0x%04X completed %d failed %d warnings %d stored %d in %s",
 				retrieveMethodName(outcome),
@@ -9521,6 +9578,7 @@ func retrieveSelectedSeries(w fyne.Window, status *widget.Label, tables archiveT
 	}()
 }
 
+// retrieveSelectedInstance retrieves the selected DICOM image from a query-enabled remote node.
 func retrieveSelectedInstance(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
 	instance, ok := selectedInstance(state)
 	if !ok {
@@ -9563,6 +9621,10 @@ func retrieveSelectedInstance(w fyne.Window, status *widget.Label, tables archiv
 		studies, studyErr := loadStudies(context.Background(), state)
 		fyne.Do(func() {
 			clearActiveRetrieve(state)
+			if studyErr == nil {
+				setStudies(state, tables, studies)
+			}
+			recordOperation(state, ops.RetrieveSummary(outcome, node.ID, "IMAGE", instance.StudyInstanceUID, instance.SeriesInstanceUID, instance.SOPInstanceUID))
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					status.SetText("Retrieve cancelled for " + node.Name)
@@ -9572,10 +9634,6 @@ func retrieveSelectedInstance(w fyne.Window, status *widget.Label, tables archiv
 				dialog.ShowError(err, w)
 				return
 			}
-			if studyErr == nil {
-				setStudies(state, tables, studies)
-			}
-			recordOperation(state, ops.RetrieveSummary(outcome, node.ID, "IMAGE", instance.StudyInstanceUID, instance.SeriesInstanceUID, instance.SOPInstanceUID))
 			status.SetText(fmt.Sprintf(
 				"%s %s: final=0x%04X completed %d failed %d warnings %d stored %d in %s",
 				retrieveMethodName(outcome),
@@ -13476,6 +13534,7 @@ type queryRetrieveRequest struct {
 	activityLabel string
 }
 
+// retrieveSelectedQuery initiates retrieval of the selected query result.
 func retrieveSelectedQuery(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
 	match, ok := selectedQuery(state)
 	if !ok {
@@ -13489,6 +13548,7 @@ func retrieveSelectedQuery(w fyne.Window, status *widget.Label, tables archiveTa
 	startQueryRetrieve(w, status, tables, state, request)
 }
 
+// PrepareQueryRetrieveRequest prepares a retrieve request from a query match after validating the match level, node availability, and receiver configuration. Returns the prepared request and true if all validations pass, false otherwise.
 func prepareQueryRetrieveRequest(w fyne.Window, status *widget.Label, state *uiState, match query.Match) (queryRetrieveRequest, bool) {
 	level, label, ok := queryRetrieveLevelAndLabel(match)
 	if !ok {
@@ -13629,6 +13689,9 @@ func queryRetrieveValidationMessage(match query.Match) string {
 	return "Selected query result cannot be retrieved"
 }
 
+// startQueryRetrieve initiates a DICOM retrieve operation and updates the UI with status and outcome.
+// It manages a communication-timeout context, runs the retrieval asynchronously, loads updated studies,
+// records the operation in history, and handles errors by displaying dialogs and updating the query result status.
 func startQueryRetrieve(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState, request queryRetrieveRequest) {
 	baseCtx, cancel := beginRetrieve(state, request.node.Name, request.activityLabel)
 	ctx, timeoutCancel := withDICOMCommunicationTimeout(baseCtx, state)
@@ -13640,6 +13703,10 @@ func startQueryRetrieve(w fyne.Window, status *widget.Label, tables archiveTable
 		studies, studyErr := loadStudies(context.Background(), state)
 		fyne.Do(func() {
 			clearActiveRetrieve(state)
+			if studyErr == nil {
+				setStudies(state, tables, studies)
+			}
+			recordOperation(state, ops.RetrieveSummary(outcome, request.node.ID, request.level, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.match.SOPInstanceUID))
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					setStatusIfPresent(status, "Retrieve cancelled for "+request.node.Name)
@@ -13651,10 +13718,6 @@ func startQueryRetrieve(w fyne.Window, status *widget.Label, tables archiveTable
 				dialog.ShowError(err, w)
 				return
 			}
-			if studyErr == nil {
-				setStudies(state, tables, studies)
-			}
-			recordOperation(state, ops.RetrieveSummary(outcome, request.node.ID, request.level, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.match.SOPInstanceUID))
 			recordQueryRetrieveRowStatus(state, request.match, queryRetrieveSuccessRowStatus(request, outcome))
 			refreshQueryResultSummary(state)
 			setStatusIfPresent(status, fmt.Sprintf(
@@ -13687,14 +13750,17 @@ func queryRetrieveSuccessRowStatus(request queryRetrieveRequest, outcome retriev
 	)
 }
 
+// queryRetrieveFailureRowStatus formats a human-readable failure status message for a retrieve operation.
 func queryRetrieveFailureRowStatus(request queryRetrieveRequest) string {
 	return fmt.Sprintf("retrieve failed for %s from %s", request.label, request.node.Name)
 }
 
+// RunQueryRetrieveRequest executes a retrieve request from a remote node. It returns the retrieve outcome and any error encountered.
 func runQueryRetrieveRequest(ctx context.Context, state *uiState, request queryRetrieveRequest) (retrieve.Outcome, error) {
 	return runRetrieveWithNode(ctx, state, request.node, request.level, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.match.SOPInstanceUID, request.opts)
 }
 
+// RunRetrieveWithNode routes a retrieve request through either DICOMweb WADO-RS or DIMSE C-MOVE based on the node protocol, dispatching by retrieve level (study, series, or instance).
 func runRetrieveWithNode(ctx context.Context, state *uiState, node nodes.Node, level, studyUID, seriesUID, sopUID string, opts retrieve.Options) (retrieve.Outcome, error) {
 	if node.IsDICOMweb() {
 		tlsConfig, err := netverify.TLSConfigForNode(node)
@@ -13729,6 +13795,7 @@ func runRetrieveWithNode(ctx context.Context, state *uiState, node nodes.Node, l
 	}
 }
 
+// runAutoQueryAutoRetrieve batch-retrieves DICOM matches sequentially, recording outcomes and refreshing the archive upon completion. It validates all candidates into retrieve requests before beginning; if any validation fails, the operation aborts without retrieving.
 func runAutoQueryAutoRetrieve(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState, candidates []query.Match) {
 	if len(candidates) == 0 {
 		setStatusIfPresent(status, "No Auto Q/R retrieve candidates")
@@ -13755,19 +13822,30 @@ func runAutoQueryAutoRetrieve(w fyne.Window, status *widget.Label, tables archiv
 				setStatusIfPresent(status, fmt.Sprintf("Auto Q/R retrieving %d/%d %s from %s", index, len(requests), request.label, request.node.Name))
 			})
 			outcome, err := runQueryRetrieveRequest(ctx, state, request)
+			outcomes = append(outcomes, outcome)
 			if err != nil {
+				studies, studyErr := loadStudies(context.Background(), state)
 				fyne.Do(func() {
 					clearActiveRetrieve(state)
+					if studyErr == nil {
+						setStudies(state, tables, studies)
+					}
+					for i, outcome := range outcomes {
+						request := requests[i]
+						recordOperation(state, ops.RetrieveSummary(outcome, request.node.ID, request.level, request.match.StudyInstanceUID, request.match.SeriesInstanceUID, request.match.SOPInstanceUID))
+					}
 					if errors.Is(err, context.Canceled) {
 						setStatusIfPresent(status, "Auto Q/R retrieve cancelled")
 						return
 					}
 					setStatusIfPresent(status, "Auto Q/R retrieve failed for "+request.node.Name)
 					dialog.ShowError(err, w)
+					if studyErr != nil {
+						dialog.ShowError(studyErr, w)
+					}
 				})
 				return
 			}
-			outcomes = append(outcomes, outcome)
 		}
 		studies, studyErr := loadStudies(context.Background(), state)
 		fyne.Do(func() {
@@ -13854,6 +13932,7 @@ func runStudyQuery(w fyne.Window, status *widget.Label, table *widget.Table, sta
 	runStudyQueryWithSources(w, status, table, state, criteria, querySourceNodes(state), nil)
 }
 
+// Queries for studies across multiple remote nodes and updates the archive with results.
 func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState, criteria query.Criteria, sources []nodes.Node, afterMatches queryMatchesHandler) {
 	if len(sources) == 0 {
 		status.SetText("No query-enabled remote nodes configured")
@@ -13892,10 +13971,12 @@ func runStudyQueryWithSources(w fyne.Window, status *widget.Label, table *widget
 	}()
 }
 
+// RunStudyQueryCriteriaWindows executes study queries across multiple criteria windows on the specified node.
 func runStudyQueryCriteriaWindows(ctx context.Context, node nodes.Node, criteriaWindows []query.Criteria, callingAE string) (query.Result, error) {
 	return runStudyQueryCriteriaWindowsWithFind(ctx, node, criteriaWindows, callingAE, core.QueryStudySource)
 }
 
+// runStudyQueryCriteriaWindowsWithFind executes multiple study query criteria windows sequentially using the provided finder function and merges the results. It respects the MaxResults limit across all windows by calculating remaining matches before each query and stopping iteration once the limit is reached. All matches are accumulated, with the final status and aggregated duration taken from the last executed query. Returns an error if the finder is nil or if any query execution fails.
 func runStudyQueryCriteriaWindowsWithFind(ctx context.Context, node nodes.Node, criteriaWindows []query.Criteria, callingAE string, find func(context.Context, nodes.Node, query.Criteria, string) (query.Result, error)) (query.Result, error) {
 	var merged query.Result
 	if find == nil {
@@ -13963,6 +14044,7 @@ func studyQueryCriteriaWindows(criteria query.Criteria) []query.Criteria {
 	return windows
 }
 
+// RunSeriesQuery executes an asynchronous series-level DICOM query across configured remote nodes and displays the results in the provided table. If no query-enabled nodes are available, it updates the status label and returns without querying. Progress is tracked in the activity list, and errors are displayed to the user.
 func runSeriesQuery(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState, criteria query.SeriesCriteria) {
 	sources := querySourceNodes(state)
 	if len(sources) == 0 {
@@ -13998,6 +14080,7 @@ func runSeriesQuery(w fyne.Window, status *widget.Label, table *widget.Table, st
 	}()
 }
 
+// runImageQuery queries for DICOM images across configured query-enabled remote nodes and updates the UI with results and operation history.
 func runImageQuery(w fyne.Window, status *widget.Label, table *widget.Table, state *uiState, criteria query.ImageCriteria) {
 	sources := querySourceNodes(state)
 	if len(sources) == 0 {

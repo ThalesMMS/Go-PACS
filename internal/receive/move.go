@@ -80,6 +80,7 @@ func (s *Server) instancesForRetrieve(ctx context.Context, level string, identif
 	}
 }
 
+// filterRetrieveInstances filters the given instances to include only those matching the provided identifier.
 func filterRetrieveInstances(instances []archive.Instance, identifier *object.Object) []archive.Instance {
 	out := instances[:0]
 	for _, inst := range instances {

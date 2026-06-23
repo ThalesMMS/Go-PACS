@@ -14,6 +14,7 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/Go-PACS/internal/retrieve"
+	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/net/dicomweb"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/object"
@@ -22,6 +23,12 @@ import (
 const (
 	MethodWADORS   = "WADO-RS"
 	DefaultTimeout = 60 * time.Second
+)
+
+var (
+	tagStudyInstanceUID  = core.NewTag(0x0020, 0x000D)
+	tagSeriesInstanceUID = core.NewTag(0x0020, 0x000E)
+	tagSOPInstanceUID    = core.NewTag(0x0008, 0x0018)
 )
 
 type Options struct {
@@ -48,6 +55,7 @@ type Outcome struct {
 	Duration   time.Duration
 }
 
+// ClientForNode constructs a DICOMweb client for the given node with a default HTTP timeout and optional custom TLS configuration.
 func ClientForNode(node nodes.Node, tlsConfig *tls.Config) dicomweb.Client {
 	opts := dicomweb.Options{Timeout: DefaultTimeout}
 	if tlsConfig != nil {
@@ -66,6 +74,7 @@ func ClientForNode(node nodes.Node, tlsConfig *tls.Config) dicomweb.Client {
 	}
 }
 
+// RetrieveStudy retrieves all instances in a study from a WADO-RS server and imports them into the archive catalog. It validates the study instance UID, queries metadata to discover instances, and retrieves and imports each instance. The returned Outcome summarizes the operation, including counts of requested, stored, rejected, and failed instances, along with the total duration.
 func RetrieveStudy(ctx context.Context, catalog *archive.Catalog, client dicomweb.Client, studyInstanceUID string, opts Options) (Outcome, error) {
 	studyInstanceUID = strings.TrimSpace(studyInstanceUID)
 	if studyInstanceUID == "" || studyInstanceUID == "(missing)" {
@@ -85,6 +94,9 @@ func RetrieveStudy(ctx context.Context, catalog *archive.Catalog, client dicomwe
 	return outcome, err
 }
 
+// RetrieveSeries retrieves DICOM instances from a series using WADO-RS and imports them into an archive catalog.
+// Study and series instance UIDs must be non-empty and not "(missing)".
+// It returns an Outcome with retrieval statistics and any error from querying series metadata or retrieving instances.
 func RetrieveSeries(ctx context.Context, catalog *archive.Catalog, client dicomweb.Client, studyInstanceUID, seriesInstanceUID string, opts Options) (Outcome, error) {
 	studyInstanceUID = strings.TrimSpace(studyInstanceUID)
 	if studyInstanceUID == "" || studyInstanceUID == "(missing)" {
@@ -108,6 +120,7 @@ func RetrieveSeries(ctx context.Context, catalog *archive.Catalog, client dicomw
 	return outcome, err
 }
 
+// RetrieveInstance retrieves a single DICOM instance from a DICOMweb server and imports it into the archive catalog.
 func RetrieveInstance(ctx context.Context, catalog *archive.Catalog, client dicomweb.Client, ref dicomweb.InstanceRef, opts Options) (Outcome, error) {
 	ref = normalizeRef(ref)
 	if err := validateRef(ref); err != nil {
@@ -121,6 +134,7 @@ func RetrieveInstance(ctx context.Context, catalog *archive.Catalog, client dico
 	return outcome, err
 }
 
+// ToRetrieveOutcome converts a WADO-RS retrieval outcome to the standard retrieve outcome format with DIMSE status mapping.
 func ToRetrieveOutcome(outcome Outcome) retrieve.Outcome {
 	failed := outcome.Failed + outcome.Rejected
 	finalStatus := dimse.StatusSuccess
@@ -150,6 +164,7 @@ func ToRetrieveOutcome(outcome Outcome) retrieve.Outcome {
 	return converted
 }
 
+// ToRetrieveProgress converts a Progress into retrieve.Progress with DIMSE final status determination based on completion and failure counts.
 func ToRetrieveProgress(progress Progress) retrieve.Progress {
 	failed := progress.Failed + progress.Rejected
 	done := progress.Completed + failed
@@ -174,10 +189,12 @@ func ToRetrieveProgress(progress Progress) retrieve.Progress {
 	}
 }
 
+// newOutcome creates a new Outcome with the WADO-RS method.
 func newOutcome() Outcome {
 	return Outcome{Method: MethodWADORS}
 }
 
+// retrieveRefs retrieves and imports each of the provided instance references, accumulating results in the outcome and returning joined errors from all operations.
 func retrieveRefs(ctx context.Context, catalog *archive.Catalog, client dicomweb.Client, refs []dicomweb.InstanceRef, opts Options, outcome *Outcome) error {
 	var errs []error
 	for _, ref := range refs {
@@ -191,6 +208,7 @@ func retrieveRefs(ctx context.Context, catalog *archive.Catalog, client dicomweb
 	return errors.Join(errs...)
 }
 
+// An error is returned if the archive catalog is nil, the reference is invalid, retrieval fails, or imported objects are rejected.
 func retrieveOne(ctx context.Context, catalog *archive.Catalog, client dicomweb.Client, ref dicomweb.InstanceRef, opts Options, outcome *Outcome) error {
 	if catalog == nil {
 		return fmt.Errorf("archive catalog is required")
@@ -217,6 +235,7 @@ func retrieveOne(ctx context.Context, catalog *archive.Catalog, client dicomweb.
 	return nil
 }
 
+// importPart imports a received DICOM object part from a WADO-RS stream into the archive catalog and updates the outcome counters. It returns an error if the object cannot be read, parsed, or imported, or if the archive rejects the object.
 func importPart(ctx context.Context, catalog *archive.Catalog, ref dicomweb.InstanceRef, part dicomweb.ObjectPartStream, opts Options, outcome *Outcome) error {
 	data, err := readObjectPart(part.Reader, opts.MaxObjectBytes)
 	if err != nil {
@@ -226,6 +245,10 @@ func importPart(ctx context.Context, catalog *archive.Catalog, ref dicomweb.Inst
 	file, err := object.ReadFile(bytes.NewReader(data))
 	if err != nil {
 		recordFailure(outcome, fmt.Errorf("%s: %w", ref.SOPInstanceUID, err), opts)
+		return err
+	}
+	if err := validateObjectUIDs(ref, file.Dataset); err != nil {
+		recordFailure(outcome, err, opts)
 		return err
 	}
 	report, err := catalog.ImportObjectWithOptions(ctx, sourcePath(ref), file.Dataset, file.TransferSyntax, archive.ImportOptions{
@@ -253,6 +276,25 @@ func importPart(ctx context.Context, catalog *archive.Catalog, ref dicomweb.Inst
 	return nil
 }
 
+func validateObjectUIDs(ref dicomweb.InstanceRef, dataset *object.Object) error {
+	for _, item := range []struct {
+		name string
+		tag  core.Tag
+		want string
+	}{
+		{name: "StudyInstanceUID", tag: tagStudyInstanceUID, want: ref.StudyInstanceUID},
+		{name: "SeriesInstanceUID", tag: tagSeriesInstanceUID, want: ref.SeriesInstanceUID},
+		{name: "SOPInstanceUID", tag: tagSOPInstanceUID, want: ref.SOPInstanceUID},
+	} {
+		got, ok := dataset.GetUID(item.tag)
+		if !ok || got != item.want {
+			return fmt.Errorf("WADO-RS object %s mismatch: got %q want %q", item.name, got, item.want)
+		}
+	}
+	return nil
+}
+
+// readObjectPart reads all available data from r, returning an error if the data exceeds maxBytes bytes. If maxBytes is less than or equal to zero, no limit is enforced.
 func readObjectPart(r io.Reader, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		return io.ReadAll(r)
@@ -267,6 +309,7 @@ func readObjectPart(r io.Reader, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
+// recordFailure records a retrieval failure and reports progress.
 func recordFailure(outcome *Outcome, err error, opts Options) {
 	outcome.Failed++
 	if err != nil {
@@ -275,6 +318,7 @@ func recordFailure(outcome *Outcome, err error, opts Options) {
 	reportProgress(outcome, opts)
 }
 
+// reportProgress appends a progress snapshot to the outcome and invokes the optional callback.
 func reportProgress(outcome *Outcome, opts Options) {
 	progress := Progress{
 		Requested: outcome.Requested,
@@ -288,6 +332,7 @@ func reportProgress(outcome *Outcome, opts Options) {
 	}
 }
 
+// withBodyLimit sets the maximum HTTP request body size on the client if maxBytes is positive.
 func withBodyLimit(client dicomweb.Client, maxBytes int64) dicomweb.Client {
 	if maxBytes > 0 {
 		client.Options.MaxBodyBytes = maxBytes
@@ -295,6 +340,7 @@ func withBodyLimit(client dicomweb.Client, maxBytes int64) dicomweb.Client {
 	return client
 }
 
+// normalizeRef returns a new instance reference with all UIDs trimmed of whitespace.
 func normalizeRef(ref dicomweb.InstanceRef) dicomweb.InstanceRef {
 	return dicomweb.InstanceRef{
 		StudyInstanceUID:  strings.TrimSpace(ref.StudyInstanceUID),
@@ -303,6 +349,7 @@ func normalizeRef(ref dicomweb.InstanceRef) dicomweb.InstanceRef {
 	}
 }
 
+// validateRef reports an error if the instance reference has an empty or missing study, series, or SOP instance UID.
 func validateRef(ref dicomweb.InstanceRef) error {
 	if ref.StudyInstanceUID == "" || ref.StudyInstanceUID == "(missing)" {
 		return fmt.Errorf("study instance UID is required")
@@ -316,10 +363,12 @@ func validateRef(ref dicomweb.InstanceRef) error {
 	return nil
 }
 
+// sourcePath formats a WADO-RS source identifier for the instance reference.
 func sourcePath(ref dicomweb.InstanceRef) string {
 	return fmt.Sprintf("wadors://studies/%s/series/%s/instances/%s", ref.StudyInstanceUID, ref.SeriesInstanceUID, ref.SOPInstanceUID)
 }
 
+// clampUint16 clamps value to the valid range of uint16.
 func clampUint16(value int64) uint16 {
 	if value <= 0 {
 		return 0

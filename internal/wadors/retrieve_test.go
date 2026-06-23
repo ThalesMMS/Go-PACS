@@ -177,6 +177,28 @@ func TestRetrieveInstanceSupportsMultipartDICOMAndCountsBadPart(t *testing.T) {
 	}
 }
 
+func TestRetrieveInstanceRejectsMismatchedObjectUIDs(t *testing.T) {
+	mismatchedSOP := "1.2.826.0.1.3680043.10.543.3301.1.99"
+	part10 := wadoPart10(t, wadoStudyUID, wadoSeriesUID, mismatchedSOP)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/dicom")
+		_, _ = w.Write(part10)
+	}))
+	defer server.Close()
+
+	catalog := newWADOCatalog(t)
+	outcome, err := RetrieveInstance(context.Background(), catalog, ClientForNode(wadoNode(server.URL), nil), dicomweb.InstanceRef{StudyInstanceUID: wadoStudyUID, SeriesInstanceUID: wadoSeriesUID, SOPInstanceUID: wadoSOPUID}, Options{})
+	if err == nil {
+		t.Fatal("RetrieveInstance accepted object with mismatched SOP Instance UID")
+	}
+	if outcome.Stored != 0 || outcome.Failed != 1 {
+		t.Fatalf("outcome = %+v, want one failed and no stored objects", outcome)
+	}
+	if _, err := catalog.InstanceBySOPInstanceUID(context.Background(), mismatchedSOP); err == nil {
+		t.Fatal("mismatched object was imported")
+	}
+}
+
 func TestRetrieveInstanceRejectsOversizedResponse(t *testing.T) {
 	part10 := wadoPart10(t, wadoStudyUID, wadoSeriesUID, wadoSOPUID)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

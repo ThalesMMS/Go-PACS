@@ -89,6 +89,7 @@ type anonymizedPart10File struct {
 	source string
 }
 
+// writeAnonymizedPart10 opens a DICOM Part 10 file, anonymizes it using the provided UID remapper, and writes it to a temporary directory with a deterministic filename. It returns the output path, new Study Instance UID, and a source identifier formatted as "anonymized://<newStudyUID>/<newSOPUID>". It returns an error if the anonymized file does not contain non-empty Study Instance UID or SOP Instance UID values, or if any file operation fails.
 func writeAnonymizedPart10(tempDir string, index int, instance archive.Instance, uids *deid.UIDRemapper) (string, string, string, error) {
 	file, err := object.OpenFile(instance.StoredPath)
 	if err != nil {

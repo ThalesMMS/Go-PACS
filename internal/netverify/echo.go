@@ -29,6 +29,9 @@ type EchoResult struct {
 	StartedAt time.Time
 }
 
+// Echo performs a DIMSE C-ECHO verification to a target node.
+// If callingAETitle is empty, DefaultCallingAETitle is used.
+// It returns an EchoResult containing the verification outcome and any error encountered.
 func Echo(ctx context.Context, node nodes.Node, callingAETitle string) (EchoResult, error) {
 	if callingAETitle == "" {
 		callingAETitle = DefaultCallingAETitle

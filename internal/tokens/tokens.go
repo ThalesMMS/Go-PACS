@@ -42,10 +42,13 @@ type Store struct {
 	path string
 }
 
+// NewStore creates a Store that manages tokens persisted to the given file path.
 func NewStore(path string) *Store {
 	return &Store{path: path}
 }
 
+// GenerateToken generates a cryptographically secure random token.
+// It returns the token as a string, or an error if generation fails.
 func GenerateToken() (string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -54,6 +57,7 @@ func GenerateToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
+// HashToken returns the hex-encoded SHA-256 hash of a plaintext token.
 func HashToken(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
 	return hex.EncodeToString(sum[:])
@@ -150,6 +154,8 @@ func (s *Store) Revoke(id string) error {
 	return ErrTokenNotFound
 }
 
+// NormalizeRole normalizes and validates a role string.
+// It returns the canonical role ("read" or "write"), or an error if the input is invalid.
 func NormalizeRole(role string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case RoleRead:
@@ -161,6 +167,8 @@ func NormalizeRole(role string) (string, error) {
 	}
 }
 
+// RoleAllows determines whether an actual role satisfies a required role.
+// The write role satisfies any required role; other roles satisfy only if they match exactly.
 func RoleAllows(actual string, required string) bool {
 	actual, actualErr := NormalizeRole(actual)
 	required, requiredErr := NormalizeRole(required)

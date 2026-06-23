@@ -45,6 +45,7 @@ type VerifyResult struct {
 	StartedAt  time.Time     `json:"startedAt"`
 }
 
+// VerifyDICOMweb verifies a DICOMweb service endpoint for a node, resolving credentials as needed.
 func VerifyDICOMweb(ctx context.Context, node nodes.Node, resolver CredentialResolver) (VerifyResult, error) {
 	if !node.IsDICOMweb() {
 		return VerifyResult{}, errors.New("node is not a DICOMweb profile")
@@ -88,6 +89,8 @@ func VerifyDICOMweb(ctx context.Context, node nodes.Node, resolver CredentialRes
 	return result, nil
 }
 
+// optionsForCredential builds DICOMweb options from the credential.
+// It returns an error if the credential type is unsupported.
 func optionsForCredential(credential Credential) (dicomweb.Options, error) {
 	switch strings.ToLower(strings.TrimSpace(credential.Type)) {
 	case CredentialTypeNone:
