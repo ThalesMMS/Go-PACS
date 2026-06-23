@@ -15,6 +15,7 @@ window.TABS.archive = (function () {
   let openedUIDs = new Set();
   let search = { text: "" };
   let activeSearchField = "patientName";
+  let page = { limit: 100, offset: 0, total: 0 };
   const expanded = new Set();
   const seriesCache = {};
 
@@ -110,7 +111,7 @@ window.TABS.archive = (function () {
     panel.appendChild(iconToolbar());
     panel.appendChild(el("div", { class: "three-pane grow-fill" },
       el("div", { class: "sidebar", id: "arc-sidebar" }),
-      el("div", { class: "maintable" }, buildStudyTable()),
+      el("div", { class: "maintable" }, buildStudyTable(), el("div", { class: "pager", id: "arc-pager" })),
       el("div", { class: "detailpane", id: "arc-detail" }, el("div", { class: "empty" }, "No patient selected"))));
     panel.appendChild(el("input", { type: "file", id: "arc-file", multiple: true, accept: ".dcm,.zip,application/zip,application/dicom", style: "display:none", onchange: uploadImport }));
     reloadAll();
@@ -126,6 +127,7 @@ window.TABS.archive = (function () {
       send: `<span style="color:#4a90d9"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V9"/><path d="M7.5 13.5 12 9l4.5 4.5"/><path d="M5 4h14"/></svg></span>`,
       anon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.1A9.6 9.6 0 0 1 21 12a9.8 9.8 0 0 1-2.3 3.2"/><path d="M6.4 6.4A9.7 9.7 0 0 0 3 12a9.6 9.6 0 0 0 13 4.6"/></svg>`,
       meta: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>`,
+      storage: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>`,
       del: `<span style="color:#d05a52"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg></span>`,
       report: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8 13h8M8 17h5"/></svg>`,
       detail: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>`,
@@ -149,6 +151,7 @@ window.TABS.archive = (function () {
       tb("meta", "Meta-Data", metaData, "tb-meta"),
       tb("del", "Delete", deleteStudy, "tb-delete"),
       tb("report", "Report", openReport, "tb-report"),
+      tb("storage", "Storage", openStorage),
       tb("detail", "Detail", toggleDetailPane, "tb-detail"),
       el("span", { class: "grow" }),
       el("div", { class: "search" },
@@ -190,14 +193,20 @@ window.TABS.archive = (function () {
 
   function doSearch() {
     search.text = (document.getElementById("arc-search").value || "").trim();
-    applyFilters();
+    page.offset = 0;
+    reloadAll();
   }
 
   async function reloadAll() {
+    const params = studyQueryParams();
     const [st, nd, rx, ops, cfg] = await Promise.all([
-      apiGet("/api/archive/studies"), apiGet("/api/nodes"), apiGet("/api/receiver/status"), apiGet("/api/tasks"), apiGet("/api/config"),
+      apiGet("/api/archive/studies?" + params.toString()), apiGet("/api/nodes"), apiGet("/api/receiver/status"), apiGet("/api/tasks"), apiGet("/api/config"),
     ]);
-    allStudies = (st.ok && st.data) || [];
+    const data = (st.ok && st.data) || {};
+    allStudies = Array.isArray(data) ? data : (data.items || []);
+    page.total = Array.isArray(data) ? allStudies.length : (data.total || 0);
+    page.limit = Array.isArray(data) ? 100 : (data.limit || 100);
+    page.offset = Array.isArray(data) ? 0 : (data.offset || 0);
     nodes = (nd.ok && nd.data) || [];
     sendNodes = nodes;
     receiver = (rx.ok && rx.data) || { running: false };
@@ -207,6 +216,30 @@ window.TABS.archive = (function () {
     applyFilters();
   }
 
+  function studyQueryParams() {
+    const params = new URLSearchParams({ limit: String(page.limit || 100), offset: String(page.offset || 0) });
+    if (search.text) {
+      let value = search.text;
+      if (activeSearchField === "patientBirthDate") {
+        const mdate = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (mdate) value = mdate[3] + mdate[2] + mdate[1];
+      }
+      params.set(activeSearchField, value);
+    }
+    const today = todayYMD();
+    const oneHourAgo = new Date(Date.now() - 3600e3).toISOString();
+    const todayStart = startOfToday().toISOString();
+    if (activeAlbum === "comments") params.set("hasComments", "true");
+    if (activeAlbum === "interesting") params.set("status", "Interesting");
+    if (activeAlbum === "acq1h") { params.set("dateFrom", today); params.set("dateTo", today); }
+    if (activeAlbum === "add1h") params.set("importedFrom", oneHourAgo);
+    if (activeAlbum === "todayCR" || activeAlbum === "todayCT") {
+      params.set("importedFrom", todayStart);
+      params.set("modality", activeAlbum === "todayCR" ? "CR" : "CT");
+    }
+    return params;
+  }
+
   // ---- Sidebar ----
   function renderSidebar() {
     const sb = document.getElementById("arc-sidebar");
@@ -214,10 +247,10 @@ window.TABS.archive = (function () {
     sb.innerHTML = "";
     const albums = el("div", { class: "group" }, el("div", { class: "hdr" }, "Albums"));
     for (const a of ALBUMS) {
-      const count = allStudies.filter(a.match).length;
+      const count = a.id === "all" ? page.total : allStudies.filter(a.match).length;
       albums.appendChild(el("button", {
         class: "side-item" + (a.id === activeAlbum ? " active" : ""),
-        onclick: () => { activeAlbum = a.id; select(null); renderSidebar(); applyFilters(); },
+        onclick: () => { activeAlbum = a.id; page.offset = 0; select(null); renderSidebar(); reloadAll(); },
       }, el("span", { class: "ico " + a.cls }), a.label, el("span", { class: "count" }, String(count))));
     }
     sb.appendChild(albums);
@@ -244,19 +277,8 @@ window.TABS.archive = (function () {
 
   // ---- Table ----
   async function applyFilters() {
-    let base = allStudies;
-    if (search.text) {
-      let value = search.text;
-      if (activeSearchField === "patientBirthDate") {
-        const mdate = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-        if (mdate) value = mdate[3] + mdate[2] + mdate[1];
-      }
-      const qs = new URLSearchParams({ [activeSearchField]: value });
-      const r = await apiGet("/api/archive/studies?" + qs.toString());
-      base = (r.ok && r.data) || [];
-    }
     const m = ALBUMS.find((a) => a.id === activeAlbum).match;
-    displayed = base.filter(m);
+    displayed = allStudies.filter(m);
     renderRows();
   }
 
@@ -265,11 +287,28 @@ window.TABS.archive = (function () {
     if (!body) return;
     body.innerHTML = "";
     const oc = studyColumns();
-    if (!displayed.length) { body.appendChild(el("tr", null, el("td", { colspan: String(oc.length), class: "empty" }, "No studies"))); return; }
+    if (!displayed.length) {
+      body.appendChild(el("tr", null, el("td", { colspan: String(oc.length), class: "empty" }, "No studies")));
+      renderPager();
+      return;
+    }
     for (const st of displayed) {
       body.appendChild(studyRow(st, oc));
       if (expanded.has(st.StudyInstanceUID)) appendSeriesRows(body, st, oc);
     }
+    renderPager();
+  }
+
+  function renderPager() {
+    const wrap = document.getElementById("arc-pager");
+    if (!wrap) return;
+    const from = page.total === 0 ? 0 : Math.min(page.offset + 1, page.total);
+    const to = Math.min(page.offset + displayed.length, page.total);
+    wrap.innerHTML = "";
+    wrap.append(
+      el("button", { class: "btn secondary", disabled: page.offset <= 0, onclick: () => { page.offset = Math.max(0, page.offset - page.limit); reloadAll(); } }, "Previous"),
+      el("span", { class: "muted" }, `${from}-${to} of ${page.total}`),
+      el("button", { class: "btn secondary", disabled: page.offset + page.limit >= page.total, onclick: () => { page.offset += page.limit; reloadAll(); } }, "Next"));
   }
 
   function studyRow(st, oc) {
@@ -368,12 +407,17 @@ window.TABS.archive = (function () {
   // ---- Right panel: patient's studies ----
   function select(st) {
     selectedStudy = st;
+    window.gopacsSelectedStudy = st || null;
+    window.gopacsSelectedStudyUID = st ? st.StudyInstanceUID : "";
     renderRows();
     for (const id of ["tb-send", "tb-anon", "tb-meta", "tb-delete", "tb-report"]) { const b = document.getElementById(id); if (b) b.disabled = !st; }
     const d = document.getElementById("arc-detail");
     if (!st) { d.innerHTML = '<div class="empty">No patient selected</div>'; return; }
     d.innerHTML = "";
     d.appendChild(el("div", { class: "dhdr" }, el("div", { class: "t" }, st.PatientName || "(unnamed)")));
+    const preview = el("div", { class: "previewbox" }, el("div", { class: "empty" }, "Preview"));
+    d.appendChild(preview);
+    loadPreview(st, preview);
     const studies = allStudies.filter((s) => (s.PatientID && s.PatientID === st.PatientID) || s.StudyInstanceUID === st.StudyInstanceUID);
     for (const s of studies) {
       d.appendChild(el("div", { class: "pcard" + (s.StudyInstanceUID === st.StudyInstanceUID ? " selected" : ""), onclick: () => select(s) },
@@ -382,6 +426,16 @@ window.TABS.archive = (function () {
           el("div", { class: "sub" }, `${s.StudyDate || ""} · ${s.InstanceCount ?? 0} images`)),
         el("div", { class: "mod" }, mods(s).split(/[\\,]/)[0] || "")));
     }
+  }
+
+  async function loadPreview(st, wrap) {
+    const r = await apiGet(`/api/archive/studies/${encodeURIComponent(st.StudyInstanceUID)}/instances`);
+    const inst = r.ok && (r.data || []).find((x) => x.SOPInstanceUID);
+    if (!inst) { wrap.innerHTML = '<div class="empty">No preview</div>'; return; }
+    wrap.innerHTML = "";
+    const img = el("img", { src: `/api/archive/instances/${encodeURIComponent(inst.SOPInstanceUID)}/preview?size=thumb`, alt: "DICOM preview" });
+    img.onerror = () => { wrap.innerHTML = '<div class="empty">Preview unavailable</div>'; };
+    wrap.appendChild(img);
   }
 
   // ---- Toolbar actions ----
@@ -519,6 +573,117 @@ window.TABS.archive = (function () {
       reloadAll();
     }
     else setStatus(`Delete failed: ${r.error}`, "error");
+  }
+
+  async function openStorage() {
+    const body = el("div", { class: "storage-modal" },
+      el("h2", null, "Storage"),
+      el("div", { id: "storage-body" }, el("div", { class: "empty" }, "Loading…")),
+      el("div", { class: "mactions" },
+        el("button", { class: "btn secondary", onclick: closeModal }, "Close")));
+    openModal(body);
+    refreshStorageModal();
+  }
+
+  async function refreshStorageModal() {
+    const wrap = document.getElementById("storage-body");
+    if (!wrap) return;
+    const r = await apiGet("/api/archive/storage");
+    if (!r.ok) { wrap.innerHTML = `<div class="empty">Storage error: ${escapeHTML(r.error)}</div>`; return; }
+    const data = r.data || {};
+    const policy = data.policy || {};
+    const stats = data.stats || {};
+    const trash = data.trash || [];
+    const days = el("input", { type: "number", min: "0", value: String(policy.trashAutoPurgeDays ?? 90) });
+    wrap.innerHTML = "";
+    wrap.append(
+      el("div", { class: "storage-grid" },
+        el("span", { class: "muted" }, "Instances"), el("span", null, String(stats.InstanceCount ?? stats.instanceCount ?? 0)),
+        el("span", { class: "muted" }, "Bytes"), el("span", null, formatBytes(stats.TotalBytes ?? stats.totalBytes ?? 0)),
+        el("span", { class: "muted" }, "Trash auto-purge days"), days),
+      el("div", { class: "row", style: "margin:10px 0" },
+        el("button", { class: "btn", onclick: async () => saveStoragePolicy(days.value) }, "Save policy"),
+        el("button", { class: "btn secondary", onclick: verifyArchiveNow }, "Verify"),
+        el("button", { class: "btn secondary", onclick: purgeExpiredTrash }, "Purge expired"),
+        el("button", { class: "btn secondary", onclick: backupArchivePath }, "Backup path"),
+        el("button", { class: "btn secondary", onclick: restoreArchivePath }, "Restore path")),
+      trashTable(trash));
+  }
+
+  function trashTable(trash) {
+    if (!trash.length) return el("div", { class: "empty" }, "Trash is empty");
+    const body = el("tbody", null);
+    for (const item of trash) {
+      body.appendChild(el("tr", null,
+        el("td", null, item.patientName || item.PatientName || "(unnamed)"),
+        el("td", null, item.studyDate || item.StudyDate || ""),
+        el("td", null, String(item.deletedCount ?? item.DeletedCount ?? 0)),
+        el("td", null, item.trashedAt || item.TrashedAt || ""),
+        el("td", null, el("div", { class: "row", style: "gap:4px" },
+          el("button", { class: "btn secondary", onclick: () => restoreTrash(item.studyInstanceUID || item.StudyInstanceUID) }, "Restore"),
+          el("button", { class: "btn danger", onclick: () => purgeTrash(item.studyInstanceUID || item.StudyInstanceUID) }, "Purge")))));
+    }
+    return el("table", { class: "edit storage-trash" },
+      el("thead", null, el("tr", null, ...["Patient", "Date", "Objects", "Trashed", ""].map((h) => el("th", null, h)))),
+      body);
+  }
+
+  async function saveStoragePolicy(value) {
+    const days = parseInt(value, 10);
+    const r = await apiSend("/api/archive/storage/policy", "PUT", { trashAutoPurgeDays: Number.isFinite(days) ? days : 90 });
+    setStatus(r.ok ? "Storage policy saved" : `Policy failed: ${r.error}`, r.ok ? "ok" : "error");
+    refreshStorageModal();
+  }
+
+  async function purgeExpiredTrash() {
+    const r = await apiSend("/api/archive/trash/purge-expired", "POST");
+    const rep = r.data || {};
+    setStatus(r.ok ? `Purged ${rep.purged || 0} expired trash entr${(rep.purged || 0) === 1 ? "y" : "ies"}` : `Purge failed: ${r.error}`, r.ok ? "ok" : "error");
+    refreshStorageModal();
+  }
+
+  async function restoreTrash(uid) {
+    if (!uid) return;
+    const r = await apiSend(`/api/archive/trash/${encodeURIComponent(uid)}/restore`, "POST");
+    setStatus(r.ok ? "Trash entry restored" : `Restore failed: ${r.error}`, r.ok ? "ok" : "error");
+    refreshStorageModal();
+    reloadAll();
+  }
+
+  async function purgeTrash(uid) {
+    if (!uid || !confirm("Permanently purge this trash entry?")) return;
+    const r = await apiSend(`/api/archive/trash/${encodeURIComponent(uid)}`, "DELETE");
+    setStatus(r.ok ? "Trash entry purged" : `Purge failed: ${r.error}`, r.ok ? "ok" : "error");
+    refreshStorageModal();
+  }
+
+  async function verifyArchiveNow() {
+    const r = await apiSend("/api/archive/verify", "POST");
+    setStatus(r.ok && r.data && r.data.ok ? "Archive verification OK" : `Archive verification failed: ${r.error || "see result"}`, r.ok && r.data && r.data.ok ? "ok" : "error");
+  }
+
+  async function backupArchivePath() {
+    const destPath = prompt("Backup destination path:");
+    if (!destPath) return;
+    const r = await apiSend("/api/archive/backup-path", "POST", { destPath });
+    setStatus(r.ok ? `Backup written to ${r.data.destinationDir || destPath}` : `Backup failed: ${r.error}`, r.ok ? "ok" : "error");
+  }
+
+  async function restoreArchivePath() {
+    const backupPath = prompt("Backup path:");
+    if (!backupPath) return;
+    const destPath = prompt("Restore destination path:");
+    if (!destPath) return;
+    const r = await apiSend("/api/archive/restore-path", "POST", { backupPath, destPath, allowOverwrite: false });
+    setStatus(r.ok ? `Restored to ${destPath}` : `Restore failed: ${r.error}`, r.ok ? "ok" : "error");
+  }
+
+  function formatBytes(n) {
+    n = Number(n || 0);
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
   }
 
   async function decompressStudy(st) {

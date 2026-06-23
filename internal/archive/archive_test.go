@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -523,6 +524,69 @@ func TestTrashStudyAndRestore(t *testing.T) {
 	}
 }
 
+func TestPurgeExpiredTrashDeletesOnlyExpiredTrashEntries(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	sourceDir := t.TempDir()
+	oldStudyUID := "1.2.826.0.1.3680043.10.543.9701"
+	newStudyUID := "1.2.826.0.1.3680043.10.543.9702"
+	activeStudyUID := "1.2.826.0.1.3680043.10.543.9703"
+	files := map[string][]byte{
+		"old.dcm":    testPart10File(t, "TRASH^OLD", "TO001", "CT", oldStudyUID),
+		"new.dcm":    testPart10File(t, "TRASH^NEW", "TN001", "MR", newStudyUID),
+		"active.dcm": testPart10File(t, "ACTIVE^KEEP", "AK001", "US", activeStudyUID),
+	}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(sourceDir, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.TrashStudy(ctx, oldStudyUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.TrashStudy(ctx, newStudyUID); err != nil {
+		t.Fatal(err)
+	}
+	oldManifestPath := filepath.Join(catalog.trashPathForStudy(oldStudyUID), trashManifestFileName)
+	oldManifest, err := readTrashManifest(oldManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldManifest.TrashedAt = time.Now().UTC().Add(-100 * 24 * time.Hour).Format(time.RFC3339Nano)
+	if err := writeTrashManifest(oldManifestPath, oldManifest); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := catalog.PurgeExpiredTrash(ctx, time.Now().UTC().Add(-90*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Purged != 1 {
+		t.Fatalf("Purged = %d, want 1", report.Purged)
+	}
+	if _, err := os.Stat(catalog.trashPathForStudy(oldStudyUID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old trash still present: %v", err)
+	}
+	if _, err := os.Stat(catalog.trashPathForStudy(newStudyUID)); err != nil {
+		t.Fatalf("new trash missing: %v", err)
+	}
+	studies, err := catalog.Studies(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies) != 1 || studies[0].StudyInstanceUID != activeStudyUID {
+		t.Fatalf("active studies = %#v, want only %q", studies, activeStudyUID)
+	}
+}
+
 func TestStudyExistsDetectsImportedStudyUID(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
@@ -967,6 +1031,49 @@ func TestStudiesWithFilters(t *testing.T) {
 	}
 	if len(studies) != 0 {
 		t.Fatalf("imported-at past upper-bound len = %d, want 0", len(studies))
+	}
+}
+
+func TestStudiesPageWithFiltersReturnsTotalAndWindow(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	sourceDir := t.TempDir()
+	for i, patient := range []string{"Page^Alpha", "Page^Bravo", "Page^Charlie"} {
+		studyUID := fmt.Sprintf("1.2.826.0.1.3680043.10.543.980%d", i)
+		data := testPart10FileWithStudyDateTime(t, patient, fmt.Sprintf("P%d", i), "CT", studyUID, "20260604", fmt.Sprintf("13450%d", i))
+		if err := os.WriteFile(filepath.Join(sourceDir, patient+".dcm"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := catalog.ImportPath(ctx, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := catalog.StudiesPageWithFilters(ctx, StudyFilters{PatientName: "Page"}, StudyPageOptions{Limit: 2, Offset: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 3 || page.Limit != 2 || page.Offset != 1 {
+		t.Fatalf("page metadata = %#v, want total=3 limit=2 offset=1", page)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("page items = %d, want 2", len(page.Items))
+	}
+	if page.Items[0].StudyInstanceUID == page.Items[1].StudyInstanceUID {
+		t.Fatalf("page order returned duplicate study: %#v", page.Items)
+	}
+
+	legacy, err := catalog.StudiesWithFilters(ctx, StudyFilters{PatientName: "Page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy) != 3 {
+		t.Fatalf("legacy unpaged len = %d, want 3", len(legacy))
 	}
 }
 

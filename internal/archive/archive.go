@@ -154,6 +154,18 @@ type Study struct {
 	ImportedAt    time.Time
 }
 
+type StudyPageOptions struct {
+	Limit  int
+	Offset int
+}
+
+type StudyPage struct {
+	Items  []Study `json:"items"`
+	Total  int     `json:"total"`
+	Limit  int     `json:"limit"`
+	Offset int     `json:"offset"`
+}
+
 type StudyMetadata struct {
 	Status   string
 	Comments string
@@ -801,7 +813,75 @@ func (c *Catalog) Studies(ctx context.Context) ([]Study, error) {
 }
 
 func (c *Catalog) StudiesWithFilters(ctx context.Context, filters StudyFilters) ([]Study, error) {
+	page, err := c.StudiesPageWithFilters(ctx, filters, StudyPageOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
+}
+
+func (c *Catalog) StudiesPageWithFilters(ctx context.Context, filters StudyFilters, opts StudyPageOptions) (StudyPage, error) {
 	where, args := studyFilterWhere(filters)
+	total, err := c.studyTotal(ctx, where, args)
+	if err != nil {
+		return StudyPage{}, err
+	}
+	query := studySelectSQL(where)
+	queryArgs := append([]any(nil), args...)
+	limit := opts.Limit
+	if limit > 0 {
+		offset := opts.Offset
+		if offset < 0 {
+			offset = 0
+		}
+		query += "\nLIMIT ? OFFSET ?"
+		queryArgs = append(queryArgs, limit, offset)
+		opts.Offset = offset
+	} else {
+		opts.Limit = 0
+		opts.Offset = 0
+	}
+
+	rows, err := c.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return StudyPage{}, fmt.Errorf("query studies: %w", err)
+	}
+	defer rows.Close()
+
+	var studies []Study
+	for rows.Next() {
+		study, err := scanStudy(rows)
+		if err != nil {
+			return StudyPage{}, err
+		}
+		studies = append(studies, study)
+	}
+	if err := rows.Err(); err != nil {
+		return StudyPage{}, fmt.Errorf("iterate studies: %w", err)
+	}
+	return StudyPage{Items: studies, Total: total, Limit: opts.Limit, Offset: opts.Offset}, nil
+}
+
+func (c *Catalog) studyTotal(ctx context.Context, where string, args []any) (int, error) {
+	query := `
+SELECT COUNT(*)
+FROM (
+  SELECT 1
+  FROM instances
+  LEFT JOIN study_metadata sm ON sm.study_uid = COALESCE(NULLIF(instances.study_instance_uid, ''), '(missing)')
+`
+	if where != "" {
+		query += "WHERE " + where + "\n"
+	}
+	query += "GROUP BY COALESCE(NULLIF(study_instance_uid, ''), '(missing)'))"
+	var total int
+	if err := c.db.QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count studies: %w", err)
+	}
+	return total, nil
+}
+
+func studySelectSQL(where string) string {
 	query := `
 SELECT
   COALESCE(NULLIF(study_instance_uid, ''), '(missing)') AS study_instance_uid,
@@ -831,26 +911,8 @@ LEFT JOIN study_metadata sm ON sm.study_uid = COALESCE(NULLIF(instances.study_in
 	}
 	query += `
 GROUP BY COALESCE(NULLIF(study_instance_uid, ''), '(missing)')
-ORDER BY imported_at DESC, patient_name ASC`
-
-	rows, err := c.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query studies: %w", err)
-	}
-	defer rows.Close()
-
-	var studies []Study
-	for rows.Next() {
-		study, err := scanStudy(rows)
-		if err != nil {
-			return nil, err
-		}
-		studies = append(studies, study)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate studies: %w", err)
-	}
-	return studies, nil
+ORDER BY imported_at DESC, patient_name ASC, study_instance_uid ASC`
+	return query
 }
 
 func studyFilterWhere(filters StudyFilters) (string, []any) {
@@ -1333,6 +1395,11 @@ CREATE INDEX IF NOT EXISTS idx_instances_sha256 ON instances(sha256);
 CREATE INDEX IF NOT EXISTS idx_instances_sop ON instances(sop_instance_uid);
 CREATE INDEX IF NOT EXISTS idx_instances_imported_at ON instances(imported_at);
 CREATE INDEX IF NOT EXISTS idx_instances_modality_nocase ON instances(modality COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_instances_patient_name_nocase ON instances(patient_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_instances_patient_id_nocase ON instances(patient_id COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_instances_accession_nocase ON instances(accession_number COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_instances_study_description_nocase ON instances(study_description COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_instances_study_date ON instances(study_date);
 CREATE TABLE IF NOT EXISTS instance_patient_soundex (
   instance_sha256 TEXT NOT NULL,
   code TEXT NOT NULL,
@@ -1345,6 +1412,7 @@ CREATE TABLE IF NOT EXISTS study_metadata (
   comments TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_study_metadata_status_nocase ON study_metadata(status COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id TEXT NOT NULL,

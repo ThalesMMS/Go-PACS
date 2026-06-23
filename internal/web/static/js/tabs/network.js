@@ -19,6 +19,7 @@ window.TABS.network = (function () {
     panel.innerHTML = "";
     panel.appendChild(receiverCard());
     panel.appendChild(nodesCard());
+    panel.appendChild(diagnosticsCard());
     panel.appendChild(settingsCard());
     refreshStatus();
     refreshNodes();
@@ -89,8 +90,13 @@ window.TABS.network = (function () {
     const body = document.getElementById("net-nodes");
     if (!body) return;
     body.innerHTML = "";
-    if (!nodes.length) { body.appendChild(el("tr", null, el("td", { colspan: "9", class: "empty" }, "no nodes — Add new node"))); return; }
+    if (!nodes.length) {
+      body.appendChild(el("tr", null, el("td", { colspan: "9", class: "empty" }, "no nodes — Add new node")));
+      renderDiagnosticNodes();
+      return;
+    }
     for (const n of nodes) body.appendChild(nodeRow(n));
+    renderDiagnosticNodes();
   }
 
   function nodeRow(n) {
@@ -226,6 +232,94 @@ window.TABS.network = (function () {
     setStatus(r.ok ? `${node.name}: ${okText}` : `${node.name}: ${r.error}`, r.ok ? "ok" : "error");
   }
   async function verifyAll() { for (const n of nodes) await apiSend("/api/echo", "POST", { nodeID: n.id }); setStatus("Verified all nodes", "ok"); }
+
+  // ---- Network diagnostics ----
+  function diagnosticsCard() {
+    const study = el("input", { type: "text", id: "diag-study", placeholder: "Study Instance UID" });
+    const cstore = el("input", { type: "checkbox", id: "diag-cstore" });
+    return el("section", { class: "card" },
+      el("h2", null, "Diagnostics"),
+      el("div", { class: "diag-grid" },
+        el("label", { class: "k" }, "Nodes"), el("div", { id: "diag-nodes", class: "checkgrid" }),
+        el("label", { class: "k" }, "Study UID"), study,
+        el("label", { class: "k" }, "C-STORE/STOW-RS"), el("label", { class: "checkline" }, cstore, "Send selected study")),
+      el("div", { class: "row", style: "margin-top:10px" },
+        el("button", { class: "btn", onclick: runDiagnostics }, "Run diagnostics"),
+        el("button", { class: "btn secondary", onclick: () => { const st = window.gopacsSelectedStudy || {}; study.value = st.StudyInstanceUID || window.gopacsSelectedStudyUID || ""; } }, "Use selected study")),
+      el("div", { id: "diag-results", class: "diag-results" }));
+  }
+
+  function renderDiagnosticNodes() {
+    const wrap = document.getElementById("diag-nodes");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!nodes.length) { wrap.appendChild(el("span", { class: "muted" }, "No nodes")); return; }
+    for (const n of nodes) {
+      const input = el("input", { type: "checkbox", value: n.id });
+      input.checked = !n.disabled;
+      wrap.appendChild(el("label", null, input, n.name || n.aeTitle || n.id));
+    }
+  }
+
+  async function runDiagnostics() {
+    const studyInput = document.getElementById("diag-study");
+    const includeCStore = document.getElementById("diag-cstore").checked;
+    const selected = Array.from(document.querySelectorAll("#diag-nodes input:checked")).map((x) => x.value);
+    const selectedStudy = window.gopacsSelectedStudy || {};
+    const studyUID = (studyInput.value || selectedStudy.StudyInstanceUID || window.gopacsSelectedStudyUID || "").trim();
+    if (includeCStore) {
+      if (!studyUID) { setStatus("Select or enter a Study UID before C-STORE diagnostics", "error"); return; }
+      const names = nodes.filter((n) => selected.includes(n.id)).map((n) => n.name || n.aeTitle || n.id).join(", ");
+      const patient = selectedStudy.PatientName || "selected patient";
+      if (!confirm(`Send study ${studyUID} for ${patient} to ${names || "selected destinations"}?`)) return;
+    }
+    setStatus("Running network diagnostics…");
+    const r = await apiSend("/api/network/diagnostics", "POST", { nodeIDs: selected, studyUID, includeCStore });
+    if (!r.ok) { setStatus(`Diagnostics failed: ${r.error}`, "error"); return; }
+    renderDiagnosticResults(r.data || []);
+    setStatus("Diagnostics complete", "ok");
+  }
+
+  function renderDiagnosticResults(results) {
+    const wrap = document.getElementById("diag-results");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!results.length) { wrap.appendChild(el("div", { class: "empty" }, "No diagnostics results")); return; }
+    const body = el("tbody", null);
+    for (const res of results) {
+      for (const step of (res.steps || [])) {
+        body.appendChild(el("tr", null,
+          el("td", null, res.nodeName || res.nodeID || ""),
+          el("td", null, res.protocol || ""),
+          el("td", null, step.name || ""),
+          el("td", null, el("span", { class: "pill " + (step.success ? "ok" : (step.status === "skipped" ? "idle" : "fail")) }, step.status || "")),
+          el("td", null, step.statusCode || ""),
+          el("td", null, diagnosticCounts(step)),
+          el("td", null, transferSyntaxSummary(step)),
+          el("td", null, step.error || "")));
+      }
+    }
+    wrap.appendChild(el("table", { class: "edit" },
+      el("thead", null, el("tr", null, ...["Node", "Protocol", "Step", "Status", "Code", "Counts", "Transfer syntaxes", "Error"].map((h) => el("th", null, h)))),
+      body));
+  }
+
+  function diagnosticCounts(step) {
+    const parts = [];
+    if (step.count) parts.push(`matches ${step.count}`);
+    if (step.attempted) parts.push(`attempted ${step.attempted}`);
+    if (step.sent) parts.push(`sent ${step.sent}`);
+    if (step.failed) parts.push(`failed ${step.failed}`);
+    if (step.warnings) parts.push(`warn ${step.warnings}`);
+    return parts.join(" · ");
+  }
+
+  function transferSyntaxSummary(step) {
+    const req = (step.requestedTransferSyntaxUIDs || []).join(",");
+    const neg = (step.negotiatedTransferSyntaxUIDs || []).join(",");
+    if (!req && !neg) return "";
+    return `req ${req || "-"} / neg ${neg || "-"}`;
+  }
 
   // ---- Listener config (dense form) ----
   function settingsCard() {

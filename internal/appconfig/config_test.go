@@ -59,6 +59,9 @@ func TestLoadMissingConfigReturnsDefaults(t *testing.T) {
 	if cfg.MaxImportDirectoryDepth == nil || *cfg.MaxImportDirectoryDepth != DefaultMaxImportDirectoryDepth {
 		t.Fatalf("MaxImportDirectoryDepth = %#v, want %d", cfg.MaxImportDirectoryDepth, DefaultMaxImportDirectoryDepth)
 	}
+	if cfg.TrashAutoPurgeDays != DefaultTrashAutoPurgeDays {
+		t.Fatalf("TrashAutoPurgeDays = %d, want %d", cfg.TrashAutoPurgeDays, DefaultTrashAutoPurgeDays)
+	}
 }
 
 func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
@@ -75,6 +78,7 @@ func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
 		ReceiveDecompressImages:          true,
 		DICOMCommunicationTimeoutSeconds: 55,
 		DICOMConnectionTimeoutSeconds:    12,
+		TrashAutoPurgeDays:               0,
 		OpenedArchiveStudyUIDs:           []string{" study-2 ", "", "study-1", "study-2"},
 		MaxFileImportBytes:               int64Ptr(123),
 		MaxZipEntryBytes:                 int64Ptr(234),
@@ -118,6 +122,9 @@ func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
 	}
 	if loaded.DICOMConnectionTimeoutSeconds != 12 {
 		t.Fatalf("DICOMConnectionTimeoutSeconds = %d, want 12", loaded.DICOMConnectionTimeoutSeconds)
+	}
+	if loaded.TrashAutoPurgeDays != 0 {
+		t.Fatalf("TrashAutoPurgeDays = %d, want 0", loaded.TrashAutoPurgeDays)
 	}
 	if got, want := loaded.OpenedArchiveStudyUIDs, []string{"study-2", "study-1"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("OpenedArchiveStudyUIDs = %#v, want %#v", got, want)
@@ -210,6 +217,19 @@ func TestSaveRejectsInvalidDICOMTimeouts(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Save accepted invalid DICOM connection timeout")
+	}
+}
+
+func TestSaveRejectsNegativeTrashAutoPurgeDays(t *testing.T) {
+	err := Save(filepath.Join(t.TempDir(), "config.json"), Config{
+		LocalAETitle:                     "LOCAL",
+		ReceiverAddress:                  receive.DefaultAddress,
+		DICOMCommunicationTimeoutSeconds: 40,
+		DICOMConnectionTimeoutSeconds:    10,
+		TrashAutoPurgeDays:               -1,
+	})
+	if err == nil {
+		t.Fatal("Save accepted negative trashAutoPurgeDays")
 	}
 }
 

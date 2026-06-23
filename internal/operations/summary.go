@@ -25,6 +25,7 @@ const (
 	KindSendStore      Kind = "send_store"
 	KindImport         Kind = "import"
 	KindStorageSCP     Kind = "storage_scp"
+	KindStoragePolicy  Kind = "storage_policy"
 )
 
 type Status string
@@ -46,6 +47,7 @@ type Counts struct {
 	Rejected   *uint64 `json:"rejected,omitempty"`
 	Duplicates *uint64 `json:"duplicates,omitempty"`
 	Skipped    *uint64 `json:"skipped,omitempty"`
+	Purged     *uint64 `json:"purged,omitempty"`
 }
 
 type FailureDetail struct {
@@ -130,6 +132,33 @@ func ImportSummary(report archive.ImportReport, duration time.Duration, sourcePa
 			message = fmt.Sprintf("%s: %s", rejection.Path, rejection.Reason)
 		}
 		summary.Failures = append(summary.Failures, FailureDetail{Message: message})
+	}
+	return summary
+}
+
+func StoragePolicySummary(report archive.PurgeExpiredTrashReport, duration time.Duration) Summary {
+	status := StatusSuccess
+	if len(report.Errors) > 0 {
+		status = StatusWarning
+		if report.Purged == 0 {
+			status = StatusFailure
+		}
+	}
+	summary := Summary{
+		Version:    SummaryVersion,
+		Kind:       KindStoragePolicy,
+		Method:     "trash_purge_expired",
+		DurationMS: uint64(duration / time.Millisecond),
+		Status:     status,
+		Counts: Counts{
+			Requested: uint64Ptr(uint64(report.Scanned)),
+			Purged:    uint64Ptr(uint64(report.Purged)),
+			Skipped:   uint64Ptr(uint64(report.Skipped)),
+			Failed:    uint64Ptr(uint64(len(report.Errors))),
+		},
+	}
+	for _, err := range report.Errors {
+		summary.Failures = append(summary.Failures, FailureDetail{Message: err})
 	}
 	return summary
 }

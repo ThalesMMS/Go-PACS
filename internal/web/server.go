@@ -11,6 +11,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"io"
@@ -33,6 +34,7 @@ type Server struct {
 // NewServer builds a Server backed by session and registers its routes.
 func NewServer(session *core.Session) *Server {
 	s := &Server{session: session, mux: http.NewServeMux()}
+	_, _ = session.PurgeExpiredTrash(context.Background())
 	s.routes()
 	return s
 }
@@ -64,6 +66,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/archive/series/{seriesUID}/instances", s.handleArchiveSeriesInstances)
 	s.mux.HandleFunc("GET /api/archive/instances/{sopUID}", s.handleArchiveInstance)
 	s.mux.HandleFunc("GET /api/archive/instances/{sopUID}/inspect", s.handleArchiveInspect)
+	s.mux.HandleFunc("GET /api/archive/instances/{sopUID}/preview", s.handleArchivePreview)
 	s.mux.HandleFunc("GET /api/archive/studies/{studyUID}/metadata", s.handleArchiveGetMetadata)
 	s.mux.HandleFunc("PUT /api/archive/studies/{studyUID}/metadata", s.handleArchiveSetMetadata)
 	s.mux.HandleFunc("POST /api/archive/studies/{studyUID}/anonymize", s.handleArchiveAnonymizeStudy)
@@ -72,12 +75,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/archive/trash", s.handleArchiveTrashList)
 	s.mux.HandleFunc("POST /api/archive/trash/{studyUID}/restore", s.handleArchiveTrashRestore)
 	s.mux.HandleFunc("DELETE /api/archive/trash/{studyUID}", s.handleArchiveTrashPurge)
+	s.mux.HandleFunc("POST /api/archive/trash/purge-expired", s.handleArchiveTrashPurgeExpired)
+	s.mux.HandleFunc("GET /api/archive/storage", s.handleArchiveStorage)
+	s.mux.HandleFunc("PUT /api/archive/storage/policy", s.handleArchiveSetStoragePolicy)
 	s.mux.HandleFunc("GET /api/archive/export/{kind}", s.handleArchiveExport)
 	s.mux.HandleFunc("POST /api/archive/send", s.handleArchiveSend)
 	s.mux.HandleFunc("POST /api/archive/import", s.handleArchiveImport)
 	s.mux.HandleFunc("POST /api/archive/import-path", s.handleArchiveImportPath)
 	s.mux.HandleFunc("POST /api/archive/export-path", s.handleArchiveExportPath)
 	s.mux.HandleFunc("POST /api/archive/verify", s.handleArchiveVerify)
+	s.mux.HandleFunc("POST /api/archive/backup-path", s.handleArchiveBackupPath)
 	s.mux.HandleFunc("POST /api/archive/restore-path", s.handleArchiveRestorePath)
 
 	// Async job progress (SSE) + cancel
@@ -98,6 +105,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/query/series", s.handleQuerySeries)
 	s.mux.HandleFunc("POST /api/query/image", s.handleQueryImage)
 	s.mux.HandleFunc("POST /api/query/retrieve", s.handleQueryRetrieve)
+
+	// Network diagnostics
+	s.mux.HandleFunc("POST /api/network/diagnostics", s.handleNetworkDiagnostics)
 
 	// DICOM receiver / listener
 	s.mux.HandleFunc("GET /api/receiver/status", s.handleReceiverStatus)

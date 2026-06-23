@@ -4,11 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/core"
 	"github.com/ThalesMMS/Go-PACS/internal/export"
+)
+
+const (
+	defaultArchiveStudyLimit = 100
+	maxArchiveStudyLimit     = 500
 )
 
 // studyFiltersFromQuery builds archive.StudyFilters from URL query parameters so
@@ -58,12 +64,50 @@ func seriesFiltersFromQuery(r *http.Request) archive.SeriesFilters {
 }
 
 func (s *Server) handleArchiveStudies(w http.ResponseWriter, r *http.Request) {
+	if _, hasLimit := r.URL.Query()["limit"]; hasLimit || r.URL.Query().Has("offset") {
+		opts, err := studyPageOptionsFromQuery(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		page, err := s.session.Catalog().StudiesPageWithFilters(r.Context(), studyFiltersFromQuery(r), opts)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeData(w, page)
+		return
+	}
 	studies, err := s.session.Catalog().StudiesWithFilters(r.Context(), studyFiltersFromQuery(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeData(w, studies)
+}
+
+func studyPageOptionsFromQuery(r *http.Request) (archive.StudyPageOptions, error) {
+	q := r.URL.Query()
+	limit := defaultArchiveStudyLimit
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return archive.StudyPageOptions{}, fmt.Errorf("limit must be a positive integer")
+		}
+		limit = n
+	}
+	if limit > maxArchiveStudyLimit {
+		limit = maxArchiveStudyLimit
+	}
+	offset := 0
+	if raw := strings.TrimSpace(q.Get("offset")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			return archive.StudyPageOptions{}, fmt.Errorf("offset must be zero or a positive integer")
+		}
+		offset = n
+	}
+	return archive.StudyPageOptions{Limit: limit, Offset: offset}, nil
 }
 
 func (s *Server) handleArchiveSeries(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +153,27 @@ func (s *Server) handleArchiveInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, summary)
+}
+
+func (s *Server) handleArchivePreview(w http.ResponseWriter, r *http.Request) {
+	size := strings.TrimSpace(r.URL.Query().Get("size"))
+	if size != "" && size != "thumb" && size != "large" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Error: "size must be thumb or large"})
+		return
+	}
+	data, err := s.session.PreviewInstancePNG(r.Context(), r.PathValue("sopUID"), size)
+	if err != nil {
+		status := http.StatusNotFound
+		if errors.Is(err, core.ErrPreviewUnsupported) {
+			status = http.StatusUnsupportedMediaType
+		}
+		writeJSON(w, status, apiResponse{Error: err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleArchiveGetMetadata(w http.ResponseWriter, r *http.Request) {
@@ -167,6 +232,7 @@ func (s *Server) handleArchiveDeleteStudy(w http.ResponseWriter, r *http.Request
 		writeError(w, status, err)
 		return
 	}
+	_, _ = s.session.PurgeExpiredTrash(r.Context())
 	writeData(w, map[string]int{"trashedObjects": count})
 }
 
@@ -194,6 +260,7 @@ func (s *Server) handleArchiveTrashRestore(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	_, _ = s.session.PurgeExpiredTrash(r.Context())
 	writeData(w, report)
 }
 
@@ -202,7 +269,61 @@ func (s *Server) handleArchiveTrashPurge(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	_, _ = s.session.PurgeExpiredTrash(r.Context())
 	writeData(w, map[string]bool{"purged": true})
+}
+
+func (s *Server) handleArchiveTrashPurgeExpired(w http.ResponseWriter, r *http.Request) {
+	report, err := s.session.PurgeExpiredTrash(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeData(w, report)
+}
+
+func (s *Server) handleArchiveStorage(w http.ResponseWriter, r *http.Request) {
+	status, err := s.session.StorageStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeData(w, status)
+}
+
+func (s *Server) handleArchiveSetStoragePolicy(w http.ResponseWriter, r *http.Request) {
+	var policy core.StoragePolicy
+	if err := decodeJSON(r, &policy); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	policy, err := s.session.SaveStoragePolicy(policy)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeData(w, policy)
+}
+
+func (s *Server) handleArchiveBackupPath(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DestPath string `json:"destPath"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.DestPath = strings.TrimSpace(req.DestPath)
+	if req.DestPath == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Error: "destPath is required"})
+		return
+	}
+	result, err := s.session.BackupArchive(r.Context(), req.DestPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeData(w, result)
 }
 
 func (s *Server) handleArchiveRestorePath(w http.ResponseWriter, r *http.Request) {

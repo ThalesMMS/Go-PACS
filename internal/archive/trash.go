@@ -51,6 +51,13 @@ type TrashEntry struct {
 	DeletedCount     int    `json:"deletedCount"`
 }
 
+type PurgeExpiredTrashReport struct {
+	Scanned int      `json:"scanned"`
+	Purged  int      `json:"purged"`
+	Skipped int      `json:"skipped"`
+	Errors  []string `json:"errors,omitempty"`
+}
+
 func (c *Catalog) TrashStudy(ctx context.Context, studyInstanceUID string) (int, error) {
 	studyInstanceUID = strings.TrimSpace(studyInstanceUID)
 	if studyInstanceUID == "" {
@@ -166,6 +173,50 @@ func (c *Catalog) PurgeStudy(ctx context.Context, studyInstanceUID string) error
 		return fmt.Errorf("purge trash entry: %w", err)
 	}
 	return nil
+}
+
+func (c *Catalog) PurgeExpiredTrash(ctx context.Context, cutoff time.Time) (PurgeExpiredTrashReport, error) {
+	entries, err := os.ReadDir(c.trashDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return PurgeExpiredTrashReport{}, nil
+	}
+	if err != nil {
+		return PurgeExpiredTrashReport{}, fmt.Errorf("read trash directory: %w", err)
+	}
+	var report PurgeExpiredTrashReport
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		report.Scanned++
+		trashPath := filepath.Join(c.trashDir, entry.Name())
+		manifest, err := readTrashManifest(filepath.Join(trashPath, trashManifestFileName))
+		if err != nil {
+			report.Errors = append(report.Errors, err.Error())
+			report.Skipped++
+			continue
+		}
+		trashedAt, err := time.Parse(time.RFC3339Nano, manifest.TrashedAt)
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("parse trash timestamp for %s: %v", manifest.StudyInstanceUID, err))
+			report.Skipped++
+			continue
+		}
+		if !trashedAt.Before(cutoff) {
+			report.Skipped++
+			continue
+		}
+		if err := os.RemoveAll(trashPath); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("purge trash entry %s: %v", manifest.StudyInstanceUID, err))
+			report.Skipped++
+			continue
+		}
+		report.Purged++
+	}
+	return report, nil
 }
 
 func (c *Catalog) trashPathForStudy(studyInstanceUID string) string {

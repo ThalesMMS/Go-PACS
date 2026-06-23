@@ -25,6 +25,7 @@ const (
 	DefaultMaxImportDirectoryDepth                = 64
 	DefaultDICOMCommunicationTimeoutSeconds       = 40
 	DefaultDICOMConnectionTimeoutSeconds          = 10
+	DefaultTrashAutoPurgeDays                     = 90
 )
 
 type Config struct {
@@ -39,6 +40,7 @@ type Config struct {
 	ReceiveDecompressImages          bool                      `json:"receiveDecompressImages,omitempty"`
 	DICOMCommunicationTimeoutSeconds int                       `json:"dicomCommunicationTimeoutSeconds"`
 	DICOMConnectionTimeoutSeconds    int                       `json:"dicomConnectionTimeoutSeconds"`
+	TrashAutoPurgeDays               int                       `json:"trashAutoPurgeDays"`
 	UISortPreferences                map[string]SortPreference `json:"uiSortPreferences,omitempty"`
 	OpenedArchiveStudyUIDs           []string                  `json:"openedArchiveStudyUIDs,omitempty"`
 	MaxZipEntryBytes                 *int64                    `json:"max_zip_entry_bytes"`
@@ -63,6 +65,7 @@ func Defaults() Config {
 		ReceivePreferredTransferSyntax:   receive.PreferredTransferSyntaxAuto,
 		DICOMCommunicationTimeoutSeconds: DefaultDICOMCommunicationTimeoutSeconds,
 		DICOMConnectionTimeoutSeconds:    DefaultDICOMConnectionTimeoutSeconds,
+		TrashAutoPurgeDays:               DefaultTrashAutoPurgeDays,
 		MaxZipEntryBytes:                 int64Ptr(DefaultMaxZipEntryBytes),
 		MaxZipTotalBytes:                 int64Ptr(DefaultMaxZipTotalBytes),
 		MaxZipEntryCount:                 intPtr(DefaultMaxZipEntryCount),
@@ -94,6 +97,7 @@ func Load(path string) (Config, error) {
 		return Config{}, &jsonstore.LoadError{Err: fmt.Errorf("parse app config: %w", err), BackupExists: jsonstore.CheckBackupExists(path)}
 	}
 	applyMissingSafetyLimitDefaults(&cfg, raw)
+	applyMissingStoragePolicyDefaults(&cfg, raw)
 	return Normalize(cfg)
 }
 
@@ -189,6 +193,9 @@ func Normalize(cfg Config) (Config, error) {
 	if cfg.DICOMConnectionTimeoutSeconds < 0 {
 		return Config{}, fmt.Errorf("dicomConnectionTimeoutSeconds must be greater than zero")
 	}
+	if cfg.TrashAutoPurgeDays < 0 {
+		return Config{}, fmt.Errorf("trashAutoPurgeDays must be zero or greater")
+	}
 	cfg.OpenedArchiveStudyUIDs = normalizeStringList(cfg.OpenedArchiveStudyUIDs)
 	return cfg, nil
 }
@@ -248,6 +255,12 @@ func applyMissingSafetyLimitDefaults(cfg *Config, raw map[string]json.RawMessage
 	}
 	if _, ok := raw["max_import_directory_depth"]; !ok {
 		cfg.MaxImportDirectoryDepth = intPtr(DefaultMaxImportDirectoryDepth)
+	}
+}
+
+func applyMissingStoragePolicyDefaults(cfg *Config, raw map[string]json.RawMessage) {
+	if _, ok := raw["trashAutoPurgeDays"]; !ok {
+		cfg.TrashAutoPurgeDays = DefaultTrashAutoPurgeDays
 	}
 }
 
