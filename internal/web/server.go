@@ -110,6 +110,9 @@ func (s *Server) routes() {
 	// from /api, and use DICOMweb response media types instead of apiResponse
 	// envelopes on successful requests.
 	dicomwebRead := Chain(AuditMiddleware(s.session.Catalog()), BearerAuth(s.session.TokenStore(), tokens.RoleRead))
+	dicomwebWrite := Chain(AuditMiddleware(s.session.Catalog()), BearerAuth(s.session.TokenStore(), tokens.RoleWrite))
+	s.mux.HandleFunc("GET /dicomweb/capabilities", s.handleDICOMwebCapabilities)
+	s.mux.Handle("POST /dicomweb/studies", dicomwebWrite(http.HandlerFunc(s.handleDICOMwebStoreStudies)))
 	s.mux.Handle("GET /dicomweb/studies", dicomwebRead(http.HandlerFunc(s.handleDICOMwebStudies)))
 	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series", dicomwebRead(http.HandlerFunc(s.handleDICOMwebSeries)))
 	s.mux.Handle("GET /dicomweb/studies/{studyUID}/series/{seriesUID}/instances", dicomwebRead(http.HandlerFunc(s.handleDICOMwebInstances)))

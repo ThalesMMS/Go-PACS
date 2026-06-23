@@ -14,6 +14,8 @@ Current slice:
 - retrieves selected query-result studies, series, and images plus selected local series and images with DICOM C-MOVE into the local archive, with progress updates and cancellation
 - sends selected local studies, series, and images to a configured node with DICOM C-STORE
 - receives inbound C-STORE objects into the local archive with the built-in receiver or standalone receiver command, including configured object-size limits
+- queries, retrieves, and stores through DICOMweb remote node profiles with QIDO-RS, WADO-RS, and STOW-RS
+- serves the local archive under `/dicomweb` with authenticated QIDO-RS, WADO-RS, and STOW-RS routes
 - stores local AE, receiver address, AE alias, and safety-limit settings in `config.json`
 - filters local studies and loaded series, and exports the current study plus loaded series and image lists as CSV or JSON
 - parses metadata through `dicom-go` with pixel data skipped
@@ -44,7 +46,9 @@ Cross-platform packaging helpers are also available:
 ./scripts/build-windows.ps1
 ```
 
-See [SECURITY.md](SECURITY.md) for trusted-network assumptions, receiver allowlists, local PHI handling, export cautions, and import/store limits.
+See [DICOMWEB-CONFORMANCE.md](DICOMWEB-CONFORMANCE.md) for the supported `/dicomweb` QIDO-RS, WADO-RS, and STOW-RS surface. Internal `/api` routes are for the Go PACS app UI and are not a DICOMweb contract.
+
+See [SECURITY.md](SECURITY.md) for trusted-network assumptions, receiver allowlists, DICOMweb service-token handling, local PHI handling, export cautions, and import/store limits.
 
 Run the receiver without the GUI:
 

@@ -5,21 +5,44 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"net/textproto"
 
+	"github.com/ThalesMMS/Go-PACS/internal/appconfig"
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
+	dicomcore "github.com/ThalesMMS/dicom-go/core"
+	"github.com/ThalesMMS/dicom-go/object"
 )
 
 var (
 	errDICOMwebObjectUnavailable = errors.New("DICOM object unavailable")
 	errDICOMwebUnsafeStoredPath  = errors.New("stored DICOM object path is invalid")
+	errDICOMwebPartTooLarge      = errors.New("DICOMweb part exceeds max_file_import_bytes")
+)
+
+const (
+	stowReferencedSOPSequence = "00081199"
+	stowFailedSOPSequence     = "00081198"
+	stowReferencedSOPClassUID = "00081150"
+	stowReferencedSOPUID      = "00081155"
+	stowFailureReason         = "00081197"
+
+	stowFailureOutOfResources   = 0xA700
+	stowFailureCannotUnderstand = 0xC000
+)
+
+var (
+	tagDICOMwebMediaStorageSOPClassUID    = dicomcore.NewTag(0x0002, 0x0002)
+	tagDICOMwebMediaStorageSOPInstanceUID = dicomcore.NewTag(0x0002, 0x0003)
+	tagDICOMwebSOPClassUID                = dicomcore.NewTag(0x0008, 0x0016)
+	tagDICOMwebSOPInstanceUID             = dicomcore.NewTag(0x0008, 0x0018)
 )
 
 type dicomJSONDataset map[string]dicomJSONValue
@@ -27,6 +50,21 @@ type dicomJSONDataset map[string]dicomJSONValue
 type dicomJSONValue struct {
 	VR    string `json:"vr"`
 	Value []any  `json:"Value,omitempty"`
+}
+
+type dicomwebStoreReference struct {
+	SOPClassUID    string
+	SOPInstanceUID string
+}
+
+type dicomwebStoreFailure struct {
+	Reference dicomwebStoreReference
+	Reason    int
+}
+
+type dicomwebStoreResult struct {
+	Stored []dicomwebStoreReference
+	Failed []dicomwebStoreFailure
 }
 
 func (s *Server) handleDICOMwebStudies(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +173,59 @@ func (s *Server) handleDICOMwebInstanceMetadata(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeDICOMJSON(w, []dicomJSONDataset{qidoInstanceDataset(instance)})
+}
+
+func (s *Server) handleDICOMwebStoreStudies(w http.ResponseWriter, r *http.Request) {
+	reader, err := dicomwebStoreMultipartReader(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	cfg, err := s.session.LoadConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	limits := dicomwebImportLimits(cfg)
+	result := dicomwebStoreResult{}
+	partCount := 0
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("read DICOMweb multipart part: %w", err))
+			return
+		}
+		partCount++
+		if limits.MaxImportTotalFiles > 0 && partCount > limits.MaxImportTotalFiles {
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			result.Failed = append(result.Failed, dicomwebStoreFailure{Reason: stowFailureOutOfResources})
+			continue
+		}
+		ref, failure, err := s.importDICOMwebStorePart(r, part, partCount, limits)
+		_ = part.Close()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if failure != nil {
+			result.Failed = append(result.Failed, *failure)
+			continue
+		}
+		result.Stored = append(result.Stored, ref)
+	}
+	if partCount == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("STOW-RS request contains no DICOM parts"))
+		return
+	}
+	status := http.StatusOK
+	if len(result.Failed) > 0 {
+		status = http.StatusAccepted
+	}
+	writeDICOMJSONDataset(w, status, result.Dataset())
 }
 
 func (s *Server) handleDICOMwebStudyObjects(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +351,176 @@ func (s *Server) safeStoredObjectPath(instance archive.Instance) (string, error)
 		return "", errDICOMwebObjectUnavailable
 	}
 	return absPath, nil
+}
+
+func dicomwebStoreMultipartReader(r *http.Request) (*multipart.Reader, error) {
+	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return nil, fmt.Errorf("STOW-RS Content-Type is invalid: %w", err)
+	}
+	if !strings.EqualFold(mediaType, "multipart/related") {
+		return nil, fmt.Errorf("STOW-RS Content-Type must be multipart/related")
+	}
+	if params["boundary"] == "" {
+		return nil, fmt.Errorf("STOW-RS multipart boundary is required")
+	}
+	if contentType := strings.TrimSpace(params["type"]); contentType != "" && !strings.EqualFold(contentType, "application/dicom") {
+		return nil, fmt.Errorf("STOW-RS multipart type must be application/dicom")
+	}
+	return multipart.NewReader(r.Body, params["boundary"]), nil
+}
+
+func (s *Server) importDICOMwebStorePart(r *http.Request, part *multipart.Part, index int, limits archive.ImportLimits) (dicomwebStoreReference, *dicomwebStoreFailure, error) {
+	mediaType, _, err := mime.ParseMediaType(part.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/dicom") {
+		_, _ = io.Copy(io.Discard, part)
+		return dicomwebStoreReference{}, &dicomwebStoreFailure{Reason: stowFailureCannotUnderstand}, nil
+	}
+	temp, err := os.CreateTemp(s.session.ArchiveDir(), ".stow-*.dcm")
+	if err != nil {
+		return dicomwebStoreReference{}, nil, fmt.Errorf("create STOW-RS temp file: %w", err)
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+
+	_, copyErr := copyDICOMwebStorePart(temp, part, limits.MaxFileImportBytes)
+	closeErr := temp.Close()
+	if copyErr != nil && !errors.Is(copyErr, errDICOMwebPartTooLarge) {
+		return dicomwebStoreReference{}, nil, fmt.Errorf("copy STOW-RS DICOM part: %w", copyErr)
+	}
+	if closeErr != nil {
+		return dicomwebStoreReference{}, nil, fmt.Errorf("close STOW-RS temp file: %w", closeErr)
+	}
+
+	ref, _ := dicomwebStoreReferenceFromFile(tempPath)
+	if errors.Is(copyErr, errDICOMwebPartTooLarge) {
+		return ref, &dicomwebStoreFailure{Reference: ref, Reason: stowFailureOutOfResources}, nil
+	}
+
+	report, err := s.session.Catalog().ImportPart10FileWithOptions(r.Context(), tempPath, fmt.Sprintf("stow-rs://part/%d", index), archive.ImportOptions{Limits: limits})
+	if err != nil {
+		return ref, &dicomwebStoreFailure{Reference: ref, Reason: stowFailureCannotUnderstand}, nil
+	}
+	if report.StoredFiles > 0 || report.Duplicates > 0 {
+		return ref, nil, nil
+	}
+	return ref, &dicomwebStoreFailure{Reference: ref, Reason: stowFailureReasonForReport(report)}, nil
+}
+
+func copyDICOMwebStorePart(dst io.Writer, src io.Reader, maxBytes int64) (int64, error) {
+	if maxBytes <= 0 {
+		return io.Copy(dst, src)
+	}
+	limit := maxBytes + 1
+	copied, err := io.Copy(dst, io.LimitReader(src, limit))
+	if err != nil {
+		return copied, err
+	}
+	if copied > maxBytes {
+		_, _ = io.Copy(io.Discard, src)
+		return copied, errDICOMwebPartTooLarge
+	}
+	return copied, nil
+}
+
+func dicomwebStoreReferenceFromFile(path string) (dicomwebStoreReference, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return dicomwebStoreReference{}, err
+	}
+	defer file.Close()
+	dicomFile, err := object.ReadFile(file)
+	if err != nil {
+		return dicomwebStoreReference{}, err
+	}
+	defer dicomFile.Close()
+	return dicomwebStoreReference{
+		SOPClassUID:    dicomwebFileUID(dicomFile, tagDICOMwebMediaStorageSOPClassUID, tagDICOMwebSOPClassUID),
+		SOPInstanceUID: dicomwebFileUID(dicomFile, tagDICOMwebMediaStorageSOPInstanceUID, tagDICOMwebSOPInstanceUID),
+	}, nil
+}
+
+func dicomwebFileUID(file *object.File, preferred dicomcore.Tag, fallback dicomcore.Tag) string {
+	if value, ok := file.GetUID(preferred); ok {
+		return value
+	}
+	if value, ok := file.GetUID(fallback); ok {
+		return value
+	}
+	return ""
+}
+
+func stowFailureReasonForReport(report archive.ImportReport) int {
+	for _, rejection := range report.Rejections {
+		if strings.Contains(rejection.Reason, "max_file_import_bytes") {
+			return stowFailureOutOfResources
+		}
+	}
+	return stowFailureCannotUnderstand
+}
+
+func dicomwebImportLimits(cfg appconfig.Config) archive.ImportLimits {
+	d64 := func(p *int64) int64 {
+		if p != nil {
+			return *p
+		}
+		return 0
+	}
+	di := func(p *int) int {
+		if p != nil {
+			return *p
+		}
+		return 0
+	}
+	return archive.ImportLimits{
+		MaxFileImportBytes:      d64(cfg.MaxFileImportBytes),
+		MaxZipEntryBytes:        d64(cfg.MaxZipEntryBytes),
+		MaxZipTotalBytes:        d64(cfg.MaxZipTotalBytes),
+		MaxZipEntryCount:        di(cfg.MaxZipEntryCount),
+		MaxImportTotalFiles:     di(cfg.MaxImportTotalFiles),
+		MaxImportPathLength:     di(cfg.MaxImportPathLength),
+		MaxImportDirectoryDepth: di(cfg.MaxImportDirectoryDepth),
+	}
+}
+
+func (r dicomwebStoreResult) Dataset() dicomJSONDataset {
+	dataset := dicomJSONDataset{}
+	if len(r.Stored) > 0 {
+		items := make([]dicomJSONDataset, 0, len(r.Stored))
+		for _, ref := range r.Stored {
+			items = append(items, dicomwebReferencedSOPItem(ref))
+		}
+		dataset[stowReferencedSOPSequence] = dicomwebSequenceValue(items)
+	}
+	if len(r.Failed) > 0 {
+		items := make([]dicomJSONDataset, 0, len(r.Failed))
+		for _, failure := range r.Failed {
+			item := dicomwebReferencedSOPItem(failure.Reference)
+			item[stowFailureReason] = dicomJSONValue{VR: "US", Value: []any{failure.Reason}}
+			items = append(items, item)
+		}
+		dataset[stowFailedSOPSequence] = dicomwebSequenceValue(items)
+	}
+	return dataset
+}
+
+func dicomwebReferencedSOPItem(ref dicomwebStoreReference) dicomJSONDataset {
+	item := dicomJSONDataset{}
+	if strings.TrimSpace(ref.SOPClassUID) != "" {
+		item[stowReferencedSOPClassUID] = qidoValue("UI", ref.SOPClassUID)
+	}
+	if strings.TrimSpace(ref.SOPInstanceUID) != "" {
+		item[stowReferencedSOPUID] = qidoValue("UI", ref.SOPInstanceUID)
+	}
+	return item
+}
+
+func dicomwebSequenceValue(items []dicomJSONDataset) dicomJSONValue {
+	values := make([]any, 0, len(items))
+	for _, item := range items {
+		values = append(values, item)
+	}
+	return dicomJSONValue{VR: "SQ", Value: values}
 }
 
 func writeDICOMwebObjectError(w http.ResponseWriter, err error) {
@@ -493,6 +754,12 @@ func qidoValues(vr string, values []string) dicomJSONValue {
 		return dicomJSONValue{VR: vr}
 	}
 	return dicomJSONValue{VR: vr, Value: out}
+}
+
+func writeDICOMJSONDataset(w http.ResponseWriter, status int, dataset dicomJSONDataset) {
+	w.Header().Set("Content-Type", "application/dicom+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(dataset)
 }
 
 func writeDICOMJSON(w http.ResponseWriter, datasets []dicomJSONDataset) {
