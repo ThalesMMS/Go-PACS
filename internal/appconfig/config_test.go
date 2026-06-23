@@ -26,6 +26,9 @@ func TestLoadMissingConfigReturnsDefaults(t *testing.T) {
 	if cfg.ReceivePreferredTransferSyntax != receive.PreferredTransferSyntaxAuto {
 		t.Fatalf("ReceivePreferredTransferSyntax = %q, want %q", cfg.ReceivePreferredTransferSyntax, receive.PreferredTransferSyntaxAuto)
 	}
+	if cfg.ReceiveDecompressImages {
+		t.Fatal("ReceiveDecompressImages = true, want false by default")
+	}
 	if cfg.DICOMCommunicationTimeoutSeconds != DefaultDICOMCommunicationTimeoutSeconds {
 		t.Fatalf("DICOMCommunicationTimeoutSeconds = %d, want %d", cfg.DICOMCommunicationTimeoutSeconds, DefaultDICOMCommunicationTimeoutSeconds)
 	}
@@ -69,6 +72,7 @@ func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
 		ReceiverTLSKeyFile:               " /tmp/receiver.key ",
 		AdditionalAETitles:               []string{" alias ", "LOCAL"},
 		ReceivePreferredTransferSyntax:   receive.PreferredTransferSyntaxExplicitVRLittleEndian,
+		ReceiveDecompressImages:          true,
 		DICOMCommunicationTimeoutSeconds: 55,
 		DICOMConnectionTimeoutSeconds:    12,
 		OpenedArchiveStudyUIDs:           []string{" study-2 ", "", "study-1", "study-2"},
@@ -105,6 +109,9 @@ func TestSaveAndLoadConfigNormalizesValues(t *testing.T) {
 	}
 	if loaded.ReceivePreferredTransferSyntax != receive.PreferredTransferSyntaxExplicitVRLittleEndian {
 		t.Fatalf("ReceivePreferredTransferSyntax = %q, want %q", loaded.ReceivePreferredTransferSyntax, receive.PreferredTransferSyntaxExplicitVRLittleEndian)
+	}
+	if !loaded.ReceiveDecompressImages {
+		t.Fatal("ReceiveDecompressImages = false, want true")
 	}
 	if loaded.DICOMCommunicationTimeoutSeconds != 55 {
 		t.Fatalf("DICOMCommunicationTimeoutSeconds = %d, want 55", loaded.DICOMCommunicationTimeoutSeconds)

@@ -11,10 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ThalesMMS/Go-PACS/internal/nettimeout"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
-	"github.com/ThalesMMS/dicom-go/net/ul"
 )
 
 const (
@@ -40,55 +38,30 @@ func Echo(ctx context.Context, node nodes.Node, callingAETitle string) (EchoResu
 		return EchoResult{}, fmt.Errorf("calling AE title: %w", err)
 	}
 	address := net.JoinHostPort(node.Host, strconv.Itoa(int(node.Port)))
-	started := time.Now()
 	tlsConfig, err := TLSConfigForNode(node)
 	if err != nil {
 		return EchoResult{}, err
 	}
 
-	dialCtx, cancelDial := nettimeout.WithDefault(ctx, DefaultDialTimeout)
-	defer cancelDial()
-	assoc, err := ul.DialContext(dialCtx, address, ul.DialOptions{
+	result, err := dimse.VerifyCEcho(ctx, dimse.CEchoVerificationOptions{
+		Address:        address,
 		CalledAETitle:  node.AETitle,
 		CallingAETitle: callingAETitle,
-		Contexts: []ul.PresentationContext{{
-			AbstractSyntaxUID:  dimse.VerificationSOPClassUID,
-			TransferSyntaxUIDs: []string{ul.ImplicitVRLittleEndian},
-		}},
-		TLSConfig: tlsConfig,
+		TLSConfig:      tlsConfig,
+		DialTimeout:    DefaultDialTimeout,
+		ReleaseTimeout: DefaultReleaseTimeout,
+		MessageID:      1,
 	})
 	if err != nil {
-		return EchoResult{}, fmt.Errorf("associate with %s (%s): %w", node.Name, address, err)
+		return EchoResult{}, fmt.Errorf("verify C-ECHO with %s (%s): %w", node.Name, address, err)
 	}
-	released := false
-	defer func() {
-		if !released {
-			_ = assoc.Close()
-		}
-	}()
-
-	pc, ok := dimse.AcceptedVerificationContext(assoc)
-	if !ok {
-		return EchoResult{}, fmt.Errorf("verification presentation context was not accepted by %s", node.Name)
-	}
-	response, err := dimse.SendCEcho(assoc, pc.ID, 1)
-	if err != nil {
-		return EchoResult{}, fmt.Errorf("send C-ECHO to %s (%s): %w", node.Name, address, err)
-	}
-
-	releaseCtx, cancelRelease := context.WithTimeout(ctx, DefaultReleaseTimeout)
-	defer cancelRelease()
-	if err := assoc.Release(releaseCtx); err != nil {
-		return EchoResult{}, fmt.Errorf("release association with %s (%s): %w", node.Name, address, err)
-	}
-	released = true
 
 	return EchoResult{
 		NodeName:  node.Name,
 		Address:   address,
-		Status:    response.Status,
-		Duration:  time.Since(started),
-		StartedAt: started.UTC(),
+		Status:    result.Status,
+		Duration:  result.Duration,
+		StartedAt: result.StartedAt,
 	}, nil
 }
 

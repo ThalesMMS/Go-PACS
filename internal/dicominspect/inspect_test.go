@@ -84,6 +84,22 @@ func hasElement(elements []ElementSummary, tag, keyword, value string) bool {
 
 func testPart10File(t *testing.T) []byte {
 	t.Helper()
+	tagSOPClassUID := core.NewTag(0x0008, 0x0016)
+	tagSOPInstanceUID := core.NewTag(0x0008, 0x0018)
+	tagPatientName := core.NewTag(0x0010, 0x0010)
+	tagPatientID := core.NewTag(0x0010, 0x0020)
+	tagPatientBirthDate := core.NewTag(0x0010, 0x0030)
+	tagInstitutionName := core.NewTag(0x0008, 0x0080)
+	tagStudyDate := core.NewTag(0x0008, 0x0020)
+	tagStudyTime := core.NewTag(0x0008, 0x0030)
+	tagModality := core.NewTag(0x0008, 0x0060)
+	tagAccessionNumber := core.NewTag(0x0008, 0x0050)
+	tagSeriesDescription := core.NewTag(0x0008, 0x103E)
+	tagStudyInstanceUID := core.NewTag(0x0020, 0x000D)
+	tagSeriesUID := core.NewTag(0x0020, 0x000E)
+	tagSeriesNumber := core.NewTag(0x0020, 0x0011)
+	tagInstanceNumber := core.NewTag(0x0020, 0x0013)
+
 	dataset := []core.Element{
 		testutil.StringElement(tagSOPClassUID, core.VRUI, "1.2.840.10008.5.1.4.1.1.2"),
 		testutil.StringElement(tagSOPInstanceUID, core.VRUI, "1.2.826.0.1.3680043.10.543.1001"),

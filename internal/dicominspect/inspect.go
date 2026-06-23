@@ -5,10 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	dicom "github.com/ThalesMMS/dicom-go"
-	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/object"
 )
@@ -20,27 +18,6 @@ const (
 	DefaultMaxSequenceDepth       = 64
 )
 
-var (
-	tagPatientName       = core.NewTag(0x0010, 0x0010)
-	tagPatientID         = core.NewTag(0x0010, 0x0020)
-	tagPatientBirthDate  = core.NewTag(0x0010, 0x0030)
-	tagInstitutionName   = core.NewTag(0x0008, 0x0080)
-	tagStudyDate         = core.NewTag(0x0008, 0x0020)
-	tagSeriesDate        = core.NewTag(0x0008, 0x0021)
-	tagStudyTime         = core.NewTag(0x0008, 0x0030)
-	tagSeriesTime        = core.NewTag(0x0008, 0x0031)
-	tagStudyDescription  = core.NewTag(0x0008, 0x1030)
-	tagModality          = core.NewTag(0x0008, 0x0060)
-	tagAccessionNumber   = core.NewTag(0x0008, 0x0050)
-	tagSeriesDescription = core.NewTag(0x0008, 0x103E)
-	tagStudyInstanceUID  = core.NewTag(0x0020, 0x000D)
-	tagSeriesUID         = core.NewTag(0x0020, 0x000E)
-	tagSeriesNumber      = core.NewTag(0x0020, 0x0011)
-	tagSOPClassUID       = core.NewTag(0x0008, 0x0016)
-	tagSOPInstanceUID    = core.NewTag(0x0008, 0x0018)
-	tagInstanceNumber    = core.NewTag(0x0020, 0x0013)
-)
-
 type Options struct {
 	MaxTotalBytes    int64
 	MaxElementBytes  int64
@@ -49,29 +26,35 @@ type Options struct {
 }
 
 type Summary struct {
-	FileName          string           `json:"fileName,omitempty"`
-	TransferSyntaxUID string           `json:"transferSyntaxUID"`
-	TransferSyntax    string           `json:"transferSyntax"`
-	PatientName       string           `json:"patientName,omitempty"`
-	PatientID         string           `json:"patientID,omitempty"`
-	PatientBirthDate  string           `json:"patientBirthDate,omitempty"`
-	InstitutionName   string           `json:"institutionName,omitempty"`
-	StudyDate         string           `json:"studyDate,omitempty"`
-	StudyTime         string           `json:"studyTime,omitempty"`
-	SeriesDate        string           `json:"seriesDate,omitempty"`
-	SeriesTime        string           `json:"seriesTime,omitempty"`
-	StudyDescription  string           `json:"studyDescription,omitempty"`
-	Modality          string           `json:"modality,omitempty"`
-	AccessionNumber   string           `json:"accessionNumber,omitempty"`
-	SeriesDescription string           `json:"seriesDescription,omitempty"`
-	StudyInstanceUID  string           `json:"studyInstanceUID,omitempty"`
-	SeriesInstanceUID string           `json:"seriesInstanceUID,omitempty"`
-	SeriesNumber      string           `json:"seriesNumber,omitempty"`
-	SOPClassUID       string           `json:"sopClassUID,omitempty"`
-	SOPInstanceUID    string           `json:"sopInstanceUID,omitempty"`
-	InstanceNumber    string           `json:"instanceNumber,omitempty"`
-	ElementCount      int              `json:"elementCount"`
-	Elements          []ElementSummary `json:"elements"`
+	FileName          string `json:"fileName,omitempty"`
+	TransferSyntaxUID string `json:"transferSyntaxUID"`
+	TransferSyntax    string `json:"transferSyntax"`
+	PatientName       string `json:"patientName,omitempty"`
+	PatientID         string `json:"patientID,omitempty"`
+	PatientBirthDate  string `json:"patientBirthDate,omitempty"`
+	InstitutionName   string `json:"institutionName,omitempty"`
+	StudyDate         string `json:"studyDate,omitempty"`
+	StudyTime         string `json:"studyTime,omitempty"`
+	SeriesDate        string `json:"seriesDate,omitempty"`
+	SeriesTime        string `json:"seriesTime,omitempty"`
+	StudyDescription  string `json:"studyDescription,omitempty"`
+	Modality          string `json:"modality,omitempty"`
+	AccessionNumber   string `json:"accessionNumber,omitempty"`
+	SeriesDescription string `json:"seriesDescription,omitempty"`
+	StudyInstanceUID  string `json:"studyInstanceUID,omitempty"`
+	SeriesInstanceUID string `json:"seriesInstanceUID,omitempty"`
+	SeriesNumber      string `json:"seriesNumber,omitempty"`
+	SOPClassUID       string `json:"sopClassUID,omitempty"`
+	SOPInstanceUID    string `json:"sopInstanceUID,omitempty"`
+	InstanceNumber    string `json:"instanceNumber,omitempty"`
+
+	StudyID                 string `json:"studyID,omitempty"`
+	BodyPartExamined        string `json:"bodyPartExamined,omitempty"`
+	ReferringPhysicianName  string `json:"referringPhysicianName,omitempty"`
+	PerformingPhysicianName string `json:"performingPhysicianName,omitempty"`
+
+	ElementCount int              `json:"elementCount"`
+	Elements     []ElementSummary `json:"elements"`
 }
 
 type ElementSummary struct {
@@ -110,28 +93,34 @@ func InspectReader(fileName string, r io.Reader, opts Options) (Summary, error) 
 	}
 	defer file.Close()
 
+	metadata := file.Metadata()
 	summary := Summary{
 		FileName:          fileName,
-		TransferSyntaxUID: file.TransferSyntax.UID,
-		TransferSyntax:    file.TransferSyntax.Name,
-		PatientName:       getString(file, tagPatientName),
-		PatientID:         getString(file, tagPatientID),
-		PatientBirthDate:  getString(file, tagPatientBirthDate),
-		InstitutionName:   getString(file, tagInstitutionName),
-		StudyDate:         getString(file, tagStudyDate),
-		StudyTime:         getString(file, tagStudyTime),
-		SeriesDate:        getString(file, tagSeriesDate),
-		SeriesTime:        getString(file, tagSeriesTime),
-		StudyDescription:  getString(file, tagStudyDescription),
-		Modality:          getString(file, tagModality),
-		AccessionNumber:   getString(file, tagAccessionNumber),
-		SeriesDescription: getString(file, tagSeriesDescription),
-		StudyInstanceUID:  getString(file, tagStudyInstanceUID),
-		SeriesInstanceUID: getString(file, tagSeriesUID),
-		SeriesNumber:      getString(file, tagSeriesNumber),
-		SOPClassUID:       getString(file, tagSOPClassUID),
-		SOPInstanceUID:    getString(file, tagSOPInstanceUID),
-		InstanceNumber:    getString(file, tagInstanceNumber),
+		TransferSyntaxUID: metadata.TransferSyntaxUID,
+		TransferSyntax:    metadata.TransferSyntaxName,
+		PatientName:       metadata.PatientName,
+		PatientID:         metadata.PatientID,
+		PatientBirthDate:  metadata.PatientBirthDate,
+		InstitutionName:   metadata.InstitutionName,
+		StudyDate:         metadata.StudyDate,
+		StudyTime:         metadata.StudyTime,
+		SeriesDate:        metadata.SeriesDate,
+		SeriesTime:        metadata.SeriesTime,
+		StudyDescription:  metadata.StudyDescription,
+		Modality:          metadata.Modality,
+		AccessionNumber:   metadata.AccessionNumber,
+		SeriesDescription: metadata.SeriesDescription,
+		StudyInstanceUID:  metadata.StudyInstanceUID,
+		SeriesInstanceUID: metadata.SeriesInstanceUID,
+		SeriesNumber:      metadata.SeriesNumber,
+		SOPClassUID:       metadata.SOPClassUID,
+		SOPInstanceUID:    metadata.SOPInstanceUID,
+		InstanceNumber:    metadata.InstanceNumber,
+
+		StudyID:                 metadata.StudyID,
+		BodyPartExamined:        metadata.BodyPartExamined,
+		ReferringPhysicianName:  metadata.ReferringPhysicianName,
+		PerformingPhysicianName: metadata.PerformingPhysicianName,
 	}
 	summary.Elements = append(summary.Elements, summarizeObject("meta", file.Meta)...)
 	summary.Elements = append(summary.Elements, summarizeObject("dataset", file.Dataset)...)
@@ -165,70 +154,24 @@ func withDefaults(opts Options) Options {
 	return opts
 }
 
-func getString(file *dicom.File, tag core.Tag) string {
-	value, ok := file.GetString(tag)
-	if !ok {
-		return ""
-	}
-	return value
-}
-
 func summarizeObject(source string, obj *object.Object) []ElementSummary {
-	if obj == nil {
-		return nil
-	}
-	elements := obj.SortedElements()
-	out := make([]ElementSummary, 0, len(elements))
-	for _, elem := range elements {
-		entry, hasEntry := std.Dictionary.ByTag(elem.Tag())
-		item := ElementSummary{
-			Source:  source,
-			Tag:     elem.Tag().String(),
-			VR:      elem.VR().String(),
-			Length:  elem.Length().String(),
-			Value:   previewValue(elem),
-			Private: elem.Tag().IsPrivate(),
-		}
-		if hasEntry {
-			item.Keyword = entry.Keyword
-			item.Name = entry.Name
-		}
-		out = append(out, item)
+	rows := object.SummarizeElements(obj, object.SummaryOptions{
+		Dictionary:     std.Dictionary,
+		Source:         source,
+		MaxValueLength: 160,
+	})
+	out := make([]ElementSummary, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ElementSummary{
+			Source:  row.Source,
+			Tag:     row.TagString(),
+			VR:      row.VRString(),
+			Keyword: row.Keyword,
+			Name:    row.Name,
+			Length:  row.LengthString(),
+			Value:   row.Value,
+			Private: row.Private,
+		})
 	}
 	return out
-}
-
-func previewValue(elem core.Element) string {
-	if elem.Value == nil {
-		if elem.Tag() == core.TagPixelData {
-			return "<pixel data skipped>"
-		}
-		return "<value skipped>"
-	}
-	switch value := elem.Value.(type) {
-	case core.SequenceValue:
-		return fmt.Sprintf("%d item(s)", len(value.Items))
-	case core.FragmentSequence:
-		return fmt.Sprintf("%d fragment(s)", len(value.Fragments))
-	case core.BulkDataValue:
-		return value.URI
-	}
-	if !elem.VR().IsStringLike() {
-		return ""
-	}
-	values := elem.StringValues()
-	if len(values) == 0 {
-		return ""
-	}
-	return truncate(strings.Join(values, "\\"), 160)
-}
-
-func truncate(value string, max int) string {
-	if len(value) <= max {
-		return value
-	}
-	if max <= 1 {
-		return value[:max]
-	}
-	return value[:max-1] + "..."
 }

@@ -56,3 +56,26 @@ func trimHistory(history []Summary) []Summary {
 	}
 	return history[:MaxHistoryEntries]
 }
+
+// Prepend returns history with entry inserted as the most recent item, trimmed
+// to MaxHistoryEntries. The input slice is not mutated. This is the canonical
+// "record a new operation" policy shared by every frontend.
+func Prepend(history []Summary, entry Summary) []Summary {
+	updated := make([]Summary, 0, len(history)+1)
+	updated = append(updated, entry)
+	updated = append(updated, history...)
+	return trimHistory(updated)
+}
+
+// RemoveAt returns history with the entry at index removed, plus whether the
+// index was in range. When index is out of range the original slice is returned
+// unchanged and ok is false. The input slice is not mutated.
+func RemoveAt(history []Summary, index int) (result []Summary, ok bool) {
+	if index < 0 || index >= len(history) {
+		return history, false
+	}
+	updated := make([]Summary, 0, len(history)-1)
+	updated = append(updated, history[:index]...)
+	updated = append(updated, history[index+1:]...)
+	return updated, true
+}

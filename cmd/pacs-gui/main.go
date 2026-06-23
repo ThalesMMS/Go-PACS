@@ -31,6 +31,7 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/appconfig"
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/autoquery"
+	"github.com/ThalesMMS/Go-PACS/internal/core"
 	"github.com/ThalesMMS/Go-PACS/internal/dicominspect"
 	studyexport "github.com/ThalesMMS/Go-PACS/internal/export"
 	"github.com/ThalesMMS/Go-PACS/internal/netverify"
@@ -46,6 +47,14 @@ const maxTaskHistory = ops.MaxHistoryEntries
 const defaultWindowWidth float32 = 1600
 const defaultWindowHeight float32 = 900
 const workstationCompactScale float32 = 0.86
+
+// Workstation density overrides. The Horos reference is a native macOS app with
+// ~16-19px logical table rows; Fyne's default padding pushes rows to ~30px+. To
+// approach that density we shrink the inner/outer padding well below the scaled
+// base values (Fyne base inner padding is 8, padding 4). Native controls
+// (checkbox/select) still floor the network table rows.
+const workstationInnerPadding float32 = 3
+const workstationPadding float32 = 2
 
 var queryModalityCodes = []string{
 	"CR", "CT", "MG", "XA", "RF", "NM", "DX", "ES", "PT",
@@ -136,7 +145,6 @@ const (
 	queryDateFilterPanelMinWidth       float32 = 560
 	queryModalityFilterPanelMinWidth   float32 = 152
 	queryModalityCheckSlotWidth        float32 = 64
-	queryCriteriaViewportRatio         float32 = 0.72
 	querySearchBarEntryWidth           float32 = 820
 	queryRetrieveDestinationSlotWidth  float32 = 520
 	queryRefreshCadenceSlotWidth       float32 = 220
@@ -247,7 +255,10 @@ const listenerPrimaryEntrySlotWidth float32 = 540
 const listenerAddressEntrySlotWidth float32 = 806
 const listenerIncomingUnreadableIndentWidth float32 = 304
 
-const listenerIncomingCompressPolicyLabel = "Compress non-compressed images with JPEG (See General Preferences)"
+const (
+	listenerIncomingDontModifyLabel       = "Don't modify"
+	listenerIncomingDecompressPolicyLabel = "Decompress compressed images"
+)
 
 func listenerSettingsDialogSize() fyne.Size {
 	return fyne.NewSize(listenerSettingsDialogWidth, listenerSettingsDialogHeight)
@@ -1476,9 +1487,7 @@ func mainToolbarButtonGroups() [][]string {
 }
 
 func mainToolbarDisabledLabels() []string {
-	return []string{
-		toolbarLabelAnonymize,
-	}
+	return nil
 }
 
 func mainToolbarIconResource(label string) fyne.Resource {
@@ -1694,6 +1703,10 @@ func (t workstationCompactTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
 	case theme.SizeNameInputBorder, theme.SizeNameSeparatorThickness:
 		return size
+	case theme.SizeNameInnerPadding:
+		return workstationInnerPadding
+	case theme.SizeNamePadding:
+		return workstationPadding
 	default:
 		return compactThemeSize(size)
 	}
@@ -1720,48 +1733,44 @@ func run() {
 	w := a.NewWindow("go-pacs")
 	w.Resize(defaultWindowSize())
 
-	catalog, err := archive.Open(*archiveDir)
+	session, err := core.Open(*archiveDir)
 	if err != nil {
 		dialog.ShowError(err, w)
 		return
 	}
-	defer catalog.Close()
+	defer session.Close()
 
-	configPath := filepath.Join(*archiveDir, "config.json")
-	appCfg, err := appconfig.Load(configPath)
+	appCfg, err := session.LoadConfig()
 	if err != nil {
 		dialog.ShowError(err, w)
 		return
 	}
-	operationHistoryPath := filepath.Join(*archiveDir, "tasks.json")
-	operationHistory, err := ops.LoadHistory(operationHistoryPath)
+	operationHistory, err := session.LoadHistory()
 	if err != nil {
 		dialog.ShowError(err, w)
 		return
 	}
-
-	nodeStore := nodes.NewStore(filepath.Join(*archiveDir, "nodes.json"))
-	nodeList, err := nodeStore.List()
+	nodeList, err := session.ListNodes()
 	if err != nil {
 		dialog.ShowError(err, w)
 		return
 	}
-	autoQueryProfileStore := autoquery.NewStore(filepath.Join(*archiveDir, "auto-query-profiles.json"))
-	autoQueryProfiles, err := autoQueryProfileStore.List()
+	autoQueryProfiles, err := session.ListAutoQueryProfiles()
 	if err != nil {
 		dialog.ShowError(err, w)
 		return
 	}
 
 	state := &uiState{
-		catalog:                catalog,
-		nodeStore:              nodeStore,
-		autoQueryProfileStore:  autoQueryProfileStore,
+		session:                session,
+		catalog:                session.Catalog(),
+		nodeStore:              session.NodeStore(),
+		autoQueryProfileStore:  session.AutoQueryStore(),
 		nodes:                  nodeList,
 		appConfig:              appCfg,
-		appConfigPath:          configPath,
+		appConfigPath:          session.ConfigPath(),
 		operations:             operationHistory,
-		operationHistoryPath:   operationHistoryPath,
+		operationHistoryPath:   session.HistoryPath(),
 		openedArchiveStudyUIDs: openedArchiveStudyUIDMap(appCfg.OpenedArchiveStudyUIDs),
 	}
 	loadAutoQueryProfiles(state, autoQueryProfiles)
@@ -1834,7 +1843,9 @@ func run() {
 	cancelRetrieveButton := mainToolbarAction(toolbarLabelCancel, mainToolbarIconResource(toolbarLabelCancel), func() {
 		cancelActiveRetrieve(status, state)
 	})
-	anonymizeButton := disabledMainToolbarAction(toolbarLabelAnonymize, mainToolbarIconResource(toolbarLabelAnonymize))
+	anonymizeButton := mainToolbarAction(toolbarLabelAnonymize, mainToolbarIconResource(toolbarLabelAnonymize), func() {
+		showAnonymizeStudyDialog(w, status, tables, state)
+	})
 	metaDataButton := mainToolbarAction(toolbarLabelMetaData, mainToolbarIconResource(toolbarLabelMetaData), func() {
 		openMetadataInspector(tabs, status, state, func() {
 			inspectSelectedArchiveInstance(w, status, summary, elementTable, state)
@@ -1936,6 +1947,7 @@ func run() {
 }
 
 type uiState struct {
+	session                         *core.Session
 	elements                        []dicominspect.ElementSummary
 	studies                         []archive.Study
 	archiveRows                     []archiveBrowserRow
@@ -2036,6 +2048,9 @@ type uiState struct {
 	selectedOperationRow            int
 	studyFilters                    archive.StudyFilters
 	seriesFilters                   archive.SeriesFilters
+	selectedPatientKey              string
+	archiveSelectRow                func(archiveBrowserRow)
+	archiveToggleRow                func(archiveBrowserRow)
 	selectedStudyRow                int
 	selectedSeriesRow               int
 	selectedInstanceRow             int
@@ -2079,10 +2094,7 @@ func recordOperation(state *uiState, summary ops.Summary) {
 	if state == nil {
 		return
 	}
-	state.operations = append([]ops.Summary{summary}, state.operations...)
-	if len(state.operations) > maxTaskHistory {
-		state.operations = state.operations[:maxTaskHistory]
-	}
+	state.operations = ops.Prepend(state.operations, summary)
 	if state.operationHistoryPath != "" {
 		_ = ops.SaveHistory(state.operationHistoryPath, state.operations)
 	}
@@ -2105,12 +2117,9 @@ type archiveActivityRow struct {
 	IndeterminateProgress bool
 }
 
-type queryActivityProgress struct {
-	Attempted int
-	Total     int
-	Matches   int
-	Failures  int
-}
+// queryActivityProgress is the GUI's local name for the frontend-agnostic
+// progress value emitted by the multi-source query runner in internal/core.
+type queryActivityProgress = core.QueryProgress
 
 type sourceStatusHistoryEntry struct {
 	At       time.Time
@@ -2164,7 +2173,7 @@ func dismissOperationAt(status *widget.Label, state *uiState, operationIndex int
 		}
 		return
 	}
-	state.operations = append(state.operations[:operationIndex], state.operations[operationIndex+1:]...)
+	state.operations, _ = ops.RemoveAt(state.operations, operationIndex)
 	switch {
 	case len(state.operations) == 0:
 		state.selectedOperationRow = -1
@@ -2589,7 +2598,7 @@ func newArchiveWorkbench(w fyne.Window, status *widget.Label, tables archiveTabl
 	centerFooter := container.NewVBox(selectedDetails, newArchiveFooter(state.archiveResultSummary))
 	center := container.NewBorder(archiveControls, centerFooter, nil, nil, archiveBrowser)
 	centerAndSummary := container.NewHSplit(center, summary)
-	centerAndSummary.SetOffset(0.88)
+	centerAndSummary.SetOffset(0.80)
 	workbench := container.NewHSplit(sidebar, centerAndSummary)
 	workbench.SetOffset(0.11)
 	refreshArchiveChrome(state)
@@ -2597,17 +2606,14 @@ func newArchiveWorkbench(w fyne.Window, status *widget.Label, tables archiveTabl
 }
 
 func newArchiveBrowser(studyTable *widget.Table, seriesTable *widget.Table, instanceTable *widget.Table, state *uiState) fyne.CanvasObject {
-	seriesAndInstances := container.NewVSplit(
-		labeledTableWithFooter("Series", seriesTable, state.archiveSeriesSummary),
-		labeledTableWithFooter("Instances", instanceTable, state.archiveInstancesSummary),
-	)
-	seriesAndInstances.SetOffset(0.42)
-	archiveBrowser := container.NewVSplit(
-		container.NewStack(studyTable),
-		seriesAndInstances,
-	)
-	archiveBrowser.SetOffset(0.94)
-	return archiveBrowser
+	// The Horos reference uses a single hierarchical patient/study/series/image
+	// table plus the right-hand study pane. The study table already expands
+	// series and instances inline, so the separate Series/Instances tables are
+	// not stacked below it; they remain constructed and wired so selection,
+	// sorting, and detail updates keep working off-screen.
+	_ = seriesTable
+	_ = instanceTable
+	return container.NewStack(studyTable)
 }
 
 func newArchiveSidebar(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) fyne.CanvasObject {
@@ -2996,7 +3002,7 @@ const (
 	compactArchiveAlbumCountSlotWidth   float32 = 36
 	compactArchiveActivityProgressWidth float32 = 184
 	archiveSidebarMinWidth              float32 = 192
-	archiveSummaryPaneMinWidth          float32 = 220
+	archiveSummaryPaneMinWidth          float32 = 300
 	archivePatientStudyMetricsSlotWidth float32 = 80
 	archiveActivityVerticalPadding      float32 = 3
 	compactArchiveRailListRowHeight     float32 = 28
@@ -3078,8 +3084,10 @@ func newArchiveSummaryPane(w fyne.Window, status *widget.Label, tables archiveTa
 }
 
 func newArchiveSummaryPaneBody(summary fyne.CanvasObject, patientStudyList fyne.CanvasObject) fyne.CanvasObject {
+	// Show the selected-study metadata expanded by default so the widened right
+	// pane reads like the Horos study panel instead of starting empty.
 	details := widget.NewAccordion(widget.NewAccordionItem("Selected Study Details", summary))
-	details.CloseAll()
+	details.Open(0)
 	return container.NewVBox(patientStudyList, details)
 }
 
@@ -5382,7 +5390,8 @@ func loadStudies(ctx context.Context, state *uiState) ([]archive.Study, error) {
 func setStudies(state *uiState, tables archiveTables, studies []archive.Study) {
 	selectedStudyUID := selectedArchiveStudyUID(state)
 	state.studies = studies
-	state.collapsedPatientGroups = retainCollapsedPatientGroups(state.collapsedPatientGroups, studies)
+	retainedPatientGroups := retainCollapsedPatientGroups(state.collapsedPatientGroups, studies)
+	state.collapsedPatientGroups = collapsePatientGroupsByDefault(retainedPatientGroups, studies, patientKeyForStudyUID(studies, selectedStudyUID))
 	state.collapsedArchiveStudies = retainCollapsedArchiveStudies(state.collapsedArchiveStudies, studies)
 	state.collapsedArchiveSeries = retainCollapsedArchiveSeries(state.collapsedArchiveSeries, state.archiveInstancesBySeries)
 	applySavedArchiveSortPreferenceForSelectedUID(state, selectedStudyUID)
@@ -5407,14 +5416,55 @@ func retainCollapsedPatientGroups(collapsed map[string]bool, studies []archive.S
 	}
 	retained := map[string]bool{}
 	for key, isCollapsed := range collapsed {
-		if isCollapsed && valid[key] {
-			retained[key] = true
+		// Keep both collapsed (true) and explicitly-expanded (false) entries for
+		// patients still present, so a patient the user opened stays open across
+		// refreshes while untracked patients fall back to the collapsed default.
+		if valid[key] {
+			retained[key] = isCollapsed
 		}
 	}
 	if len(retained) == 0 {
 		return nil
 	}
 	return retained
+}
+
+// collapsePatientGroupsByDefault marks every patient group collapsed unless it
+// was explicitly tracked already, so the archive list opens showing one row per
+// patient/exam with their studies hidden until the disclosure arrow is used.
+// The patient that owns the selected study is kept expanded so the current
+// selection stays visible.
+func collapsePatientGroupsByDefault(existing map[string]bool, studies []archive.Study, expandedPatientKey string) map[string]bool {
+	result := map[string]bool{}
+	for key, collapsed := range existing {
+		result[key] = collapsed
+	}
+	for _, study := range studies {
+		key := archivePatientKey(study)
+		if _, tracked := result[key]; !tracked {
+			result[key] = true
+		}
+	}
+	if expandedPatientKey != "" {
+		result[expandedPatientKey] = false
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func patientKeyForStudyUID(studies []archive.Study, studyUID string) string {
+	studyUID = strings.TrimSpace(studyUID)
+	if studyUID == "" {
+		return ""
+	}
+	for _, study := range studies {
+		if strings.TrimSpace(study.StudyInstanceUID) == studyUID {
+			return archivePatientKey(study)
+		}
+	}
+	return ""
 }
 
 func retainCollapsedArchiveStudies(collapsed map[string]bool, studies []archive.Study) map[string]bool {
@@ -5594,6 +5644,86 @@ func saveSelectedStudyMetadata(ctx context.Context, status *widget.Label, tables
 		status.SetText("Updated study status/comments")
 	}
 	return nil
+}
+
+func showAnonymizeStudyDialog(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
+	study, ok := selectedStudy(state)
+	if !ok {
+		if status != nil {
+			status.SetText("Select a study to anonymize")
+		}
+		return
+	}
+	studyUID := strings.TrimSpace(study.StudyInstanceUID)
+	if studyUID == "" {
+		if status != nil {
+			status.SetText("Selected study has no Study Instance UID")
+		}
+		return
+	}
+	message := fmt.Sprintf("Create an anonymized copy of study %s?", studyUID)
+	if strings.TrimSpace(study.StudyDescription) != "" {
+		message = fmt.Sprintf("%s\n\n%s", message, study.StudyDescription)
+	}
+	dialog.ShowConfirm("Anonymize Study", message, func(ok bool) {
+		if ok {
+			anonymizeSelectedStudy(w, status, tables, state)
+		}
+	}, w)
+}
+
+func anonymizeSelectedStudy(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
+	if state == nil || state.session == nil {
+		if status != nil {
+			status.SetText("Archive session unavailable")
+		}
+		return
+	}
+	study, ok := selectedStudy(state)
+	if !ok {
+		if status != nil {
+			status.SetText("Select a study to anonymize")
+		}
+		return
+	}
+	studyUID := strings.TrimSpace(study.StudyInstanceUID)
+	if studyUID == "" {
+		if status != nil {
+			status.SetText("Selected study has no Study Instance UID")
+		}
+		return
+	}
+	if status != nil {
+		status.SetText("Anonymizing study " + studyUID)
+	}
+	go func() {
+		outcome, err := state.session.AnonymizeStudy(context.Background(), studyUID)
+		studies, studyErr := loadStudies(context.Background(), state)
+		fyne.Do(func() {
+			if err != nil {
+				if status != nil {
+					status.SetText("Anonymize study failed")
+				}
+				dialog.ShowError(err, w)
+				return
+			}
+			if studyErr != nil {
+				if status != nil {
+					status.SetText("Anonymize completed, refresh failed")
+				}
+				dialog.ShowError(studyErr, w)
+				return
+			}
+			setStudies(state, tables, studies)
+			if status != nil {
+				status.SetText(anonymizedStudyStatusText(outcome))
+			}
+		})
+	}()
+}
+
+func anonymizedStudyStatusText(outcome core.AnonymizeOutcome) string {
+	return fmt.Sprintf("Anonymized study %s to %s (%d objects)", outcome.SourceStudyUID, outcome.NewStudyUID, outcome.StoredFiles)
 }
 
 func showDeleteStudyDialog(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
@@ -6640,10 +6770,7 @@ func configureQuerySourceCheck(check *widget.Check, state *uiState, id widget.Li
 }
 
 func nodeVerifyKey(node nodes.Node) string {
-	if strings.TrimSpace(node.ID) != "" {
-		return "id:" + strings.TrimSpace(node.ID)
-	}
-	return fmt.Sprintf("endpoint:%s:%s:%d", strings.TrimSpace(node.Name), strings.TrimSpace(node.Host), node.Port)
+	return node.Key()
 }
 
 func querySourceNodeName(node nodes.Node) string {
@@ -7410,14 +7537,26 @@ func newListenerSettingsSections(activateListener fyne.CanvasObject, coreSetting
 	}
 }
 
+func newListenerIncomingFilesRadio(decompressImages bool) *widget.RadioGroup {
+	incomingFiles := widget.NewRadioGroup([]string{
+		listenerIncomingDontModifyLabel,
+		listenerIncomingDecompressPolicyLabel,
+	}, nil)
+	if decompressImages {
+		incomingFiles.SetSelected(listenerIncomingDecompressPolicyLabel)
+	} else {
+		incomingFiles.SetSelected(listenerIncomingDontModifyLabel)
+	}
+	return incomingFiles
+}
+
 func newListenerIncomingPolicyControls() fyne.CanvasObject {
+	return newListenerIncomingPolicyControlsWithRadio(newListenerIncomingFilesRadio(false))
+}
+
+func newListenerIncomingPolicyControlsWithRadio(incomingFiles *widget.RadioGroup) fyne.CanvasObject {
 	scanSeconds := newDisabledEntryText("10")
 	scanSecondsSlot := container.NewGridWrap(fyne.NewSize(listenerIncomingScanEntrySlotWidth, scanSeconds.MinSize().Height), scanSeconds)
-	incomingFiles := newDisabledRadioGroup([]string{
-		"Don't modify",
-		"Decompress compressed images",
-		listenerIncomingCompressPolicyLabel,
-	}, listenerIncomingCompressPolicyLabel)
 	unreadableObjects := newDisabledRadioGroup([]string{
 		"Delete it",
 		"Move it to the NOT READABLE folder",
@@ -7653,7 +7792,8 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 	}
 	_, _, tlsListenerControls := newListenerTLSControls(tlsListener, showTLSSettings)
 	tlsListenerSection := newListenerTLSSection(tlsListenerControls)
-	incomingPolicy := newListenerIncomingPolicyControls()
+	incomingFiles := newListenerIncomingFilesRadio(state.appConfig.ReceiveDecompressImages)
+	incomingPolicy := newListenerIncomingPolicyControlsWithRadio(incomingFiles)
 	incomingFilesSection := newListenerIncomingFilesSection(incomingPolicy)
 	metadataPolicy := newListenerMetadataPolicyControls()
 	metadataPolicySection := newListenerMetadataPolicySection(metadataPolicy)
@@ -7776,6 +7916,7 @@ func showSettingsDialog(w fyne.Window, status *widget.Label, tables archiveTable
 			ReceiverTLSKeyFile:               receiverTLSKeyFile,
 			AdditionalAETitles:               parseAETitleList(additionalAEs.Text),
 			ReceivePreferredTransferSyntax:   receivePreferredSyntaxValue(preferredReceiveSyntax.Selected),
+			ReceiveDecompressImages:          incomingFiles.Selected == listenerIncomingDecompressPolicyLabel,
 			DICOMCommunicationTimeoutSeconds: communicationTimeout,
 			DICOMConnectionTimeoutSeconds:    connectionTimeout,
 			MaxFileImportBytes:               fileLimit,
@@ -8761,6 +8902,7 @@ func startReceiver(w fyne.Window, status *widget.Label, state *uiState) {
 		AllowedRemoteHosts:      allowedRemoteHosts,
 		MaxStoreObjectBytes:     optionalInt64Value(state.appConfig.MaxStoreObjectBytes),
 		PreferredTransferSyntax: state.appConfig.ReceivePreferredTransferSyntax,
+		DecompressImages:        state.appConfig.ReceiveDecompressImages,
 		TLSConfig:               tlsConfig,
 	})
 	if err != nil {
@@ -9166,6 +9308,9 @@ type archiveBrowserRow struct {
 	patientBirthDate   string
 	institutionName    string
 	modalities         string
+	studyDate          string
+	studyTime          string
+	importedAt         time.Time
 	seriesCount        int
 	instanceCount      int
 }
@@ -9227,6 +9372,15 @@ func archiveBrowserRowsWithInlineSeriesInstancesAndCollapsed(studies []archive.S
 		group.row.seriesCount += study.SeriesCount
 		group.row.instanceCount += study.InstanceCount
 		group.row.modalities = mergeModalities(group.row.modalities, study.Modalities)
+		// Surface the most recent acquisition/import on the collapsed patient row
+		// so the exam list shows Date Acquired / Date Added without expanding.
+		if strings.TrimSpace(study.StudyDate) > strings.TrimSpace(group.row.studyDate) {
+			group.row.studyDate = study.StudyDate
+			group.row.studyTime = study.StudyTime
+		}
+		if study.ImportedAt.After(group.row.importedAt) {
+			group.row.importedAt = study.ImportedAt
+		}
 		group.studyIndexes = append(group.studyIndexes, index)
 	}
 
@@ -9325,7 +9479,7 @@ func archiveBrowserCell(row archiveBrowserRow, studies []archive.Study, col int)
 	if row.kind == archiveRowInstance {
 		switch col {
 		case archiveStudyTableColumnPatient:
-			return "          " + archiveInlineInstanceLabel(row.instance)
+			return archiveInlineInstanceLabel(row.instance)
 		case archiveStudyTableColumnModality:
 			return row.instance.Modality
 		case archiveStudyTableColumnDescription:
@@ -9344,7 +9498,7 @@ func archiveBrowserCell(row archiveBrowserRow, studies []archive.Study, col int)
 	if row.kind == archiveRowSeries {
 		switch col {
 		case archiveStudyTableColumnPatient:
-			return "      " + archiveInlineSeriesLabel(row.series)
+			return archiveInlineSeriesLabel(row.series)
 		case archiveStudyTableColumnModality:
 			return row.series.Modality
 		case archiveStudyTableColumnDescription:
@@ -9377,30 +9531,24 @@ func archiveBrowserCell(row archiveBrowserRow, studies []archive.Study, col int)
 			if label == "" {
 				label = strings.TrimSpace(study.StudyInstanceUID)
 			}
-			prefix := "   "
-			if row.studyHasSeries {
-				prefix = "  ▸ "
-				if row.studySeriesLoaded {
-					prefix = "  ▾ "
-				}
-			}
-			return prefix + emptyDash(label)
+			return emptyDash(label)
 		}
 		return studyCell(study, col)
 	}
 
 	switch col {
 	case archiveStudyTableColumnPatient:
-		if row.collapsed {
-			return "▸ " + emptyDash(row.patientName)
-		}
-		return "▾ " + emptyDash(row.patientName)
+		return emptyDash(row.patientName)
 	case archiveStudyTableColumnPatientID:
 		return emptyDash(row.patientID)
 	case archiveStudyTableColumnDOB:
 		return emptyDash(compactDisplayDate(row.patientBirthDate))
 	case archiveStudyTableColumnModality:
 		return row.modalities
+	case archiveStudyTableColumnStudyDate:
+		return archiveDateTimeCell(row.studyDate, row.studyTime)
+	case archiveStudyTableColumnAdded:
+		return archiveTimestampCell(row.importedAt)
 	case archiveStudyTableColumnInstitution:
 		return emptyDash(row.institutionName)
 	case archiveStudyTableColumnSeries:
@@ -9634,19 +9782,6 @@ func querySourceNodes(state *uiState) []nodes.Node {
 	return out
 }
 
-func annotateQueryMatches(matches []query.Match, node nodes.Node) []query.Match {
-	out := make([]query.Match, len(matches))
-	for i, match := range matches {
-		match.SourceNodeID = node.ID
-		match.SourceNodeName = node.Name
-		match.SourceAETitle = node.AETitle
-		match.SourceHost = node.Host
-		match.SourcePort = node.Port
-		out[i] = match
-	}
-	return out
-}
-
 type queryLocalCatalog interface {
 	StudyMetadata(context.Context, string) (archive.StudyMetadata, error)
 	StudyExists(context.Context, string) (bool, error)
@@ -9870,7 +10005,7 @@ var (
 	archiveEvenRowColor                  = color.NRGBA{R: 34, G: 34, B: 34, A: 255}
 	archiveSeriesRowColor                = color.NRGBA{R: 24, G: 24, B: 24, A: 255}
 	archiveInstanceRowColor              = color.NRGBA{R: 18, G: 18, B: 18, A: 255}
-	archiveSelectedRowColor              = color.NRGBA{R: 45, G: 85, B: 128, A: 255}
+	archiveSelectedRowColor              = color.NRGBA{R: 40, G: 92, B: 200, A: 255}
 	archiveSummarySelectedStudyRowColor  = color.NRGBA{R: 48, G: 48, B: 48, A: 255}
 	nodeDisabledRowColor                 = color.NRGBA{R: 26, G: 26, B: 26, A: 255}
 	tableColumnDividerColor              = color.NRGBA{R: 90, G: 90, B: 90, A: 255}
@@ -9880,10 +10015,10 @@ var (
 )
 
 const tableColumnDividerWidth float32 = 1
-const compactTableRowHeight float32 = 38
-const archiveTableRowHeight float32 = compactTableRowHeight + 4
+const compactTableRowHeight float32 = 25
+const archiveTableRowHeight float32 = compactTableRowHeight + 1
 const queryTableRowHeight float32 = archiveTableRowHeight
-const networkTableRowHeight float32 = compactTableRowHeight + 8
+const networkTableRowHeight float32 = compactTableRowHeight + 5
 const archiveMetadataGlyphSlotWidth float32 = 18
 
 const (
@@ -9930,14 +10065,19 @@ func (queryWorkspaceLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) 
 	criteria := visible[0]
 	results := visible[1]
 	resultsMinHeight := fyne.Max(results.MinSize().Height, queryResultsViewportMinHeight)
-	criteriaMinHeight := criteria.MinSize().Height
-	criteriaHeight := size.Height * queryCriteriaViewportRatio
+	// Give the criteria only as much height as its content needs so the results
+	// table fills the rest of the window instead of leaving a dead gap. The
+	// criteria is wrapped in a vertical scroll whose own MinSize is tiny, so
+	// measure the scrolled content directly. When the criteria are taller than
+	// the available space (e.g. Advanced Criteria open) they are capped and
+	// scroll, keeping the results table at its minimum.
+	criteriaHeight := criteria.MinSize().Height
+	if scroll, ok := criteria.(*container.Scroll); ok && scroll.Content != nil {
+		criteriaHeight = scroll.Content.MinSize().Height
+	}
 	maxCriteriaHeight := size.Height - resultsMinHeight
 	if criteriaHeight > maxCriteriaHeight {
 		criteriaHeight = maxCriteriaHeight
-	}
-	if criteriaHeight < criteriaMinHeight {
-		criteriaHeight = criteriaMinHeight
 	}
 	if criteriaHeight > size.Height {
 		criteriaHeight = size.Height
@@ -10086,6 +10226,181 @@ type archiveTableCell struct {
 	sortLabel         *widget.Label
 	statusDot         *canvas.Circle
 	statusDotBox      *fyne.Container
+	disclosure        *archiveDisclosureArrow
+}
+
+const (
+	archiveDisclosureArrowHitWidth float32 = 16 // glyph slot width (also the hit target)
+	archiveDisclosureIndentUnit    float32 = 12 // leading indent added per tree depth
+)
+
+// archiveDisclosureArrow is the tappable tree-disclosure control shown at the
+// leading edge of the patient column. Because the Fyne driver dispatches a tap
+// to the innermost fyne.Tappable under the cursor, tapping the arrow toggles
+// expansion (its onTap) while tapping the row text falls through to the table's
+// own selection handling. It carries the per-depth indentation so leaf and
+// branch rows line up. It renders the same monochrome chevron resources Fyne's
+// own tree uses, which avoids the colour-emoji presentation of the Unicode
+// triangle code points.
+type archiveDisclosureArrow struct {
+	widget.BaseWidget
+	glyph  *widget.Label
+	indent float32
+	onTap  func()
+}
+
+func newArchiveDisclosureArrow() *archiveDisclosureArrow {
+	label := widget.NewLabel("")
+	label.Alignment = fyne.TextAlignCenter
+	a := &archiveDisclosureArrow{glyph: label}
+	a.ExtendBaseWidget(a)
+	return a
+}
+
+func (a *archiveDisclosureArrow) Tapped(_ *fyne.PointEvent) {
+	if a.onTap != nil {
+		a.onTap()
+	}
+}
+
+func (a *archiveDisclosureArrow) configure(glyph string, indentLevel int, onTap func()) {
+	a.glyph.SetText(glyph)
+	a.indent = float32(indentLevel) * archiveDisclosureIndentUnit
+	a.onTap = onTap
+	a.Refresh()
+}
+
+func (a *archiveDisclosureArrow) CreateRenderer() fyne.WidgetRenderer {
+	return &archiveDisclosureArrowRenderer{arrow: a}
+}
+
+type archiveDisclosureArrowRenderer struct {
+	arrow *archiveDisclosureArrow
+}
+
+func (r *archiveDisclosureArrowRenderer) Layout(size fyne.Size) {
+	glyphSize := r.arrow.glyph.MinSize()
+	r.arrow.glyph.Resize(glyphSize)
+	r.arrow.glyph.Move(fyne.NewPos(r.arrow.indent, (size.Height-glyphSize.Height)/2))
+}
+
+func (r *archiveDisclosureArrowRenderer) MinSize() fyne.Size {
+	glyphSize := r.arrow.glyph.MinSize()
+	return fyne.NewSize(r.arrow.indent+archiveDisclosureArrowHitWidth, glyphSize.Height)
+}
+
+func (r *archiveDisclosureArrowRenderer) Refresh() {
+	r.arrow.glyph.Refresh()
+	canvas.Refresh(r.arrow)
+}
+
+func (r *archiveDisclosureArrowRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.arrow.glyph}
+}
+
+func (r *archiveDisclosureArrowRenderer) Destroy() {}
+
+func archiveRowIndentLevel(row archiveBrowserRow) int {
+	switch row.kind {
+	case archiveRowStudy:
+		return 1
+	case archiveRowSeries:
+		return 2
+	case archiveRowInstance:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func archiveRowExpandable(row archiveBrowserRow) bool {
+	switch row.kind {
+	case archiveRowPatient:
+		return true
+	case archiveRowStudy:
+		return row.studyHasSeries
+	case archiveRowSeries:
+		return row.seriesHasImages || row.series.InstanceCount > 0
+	default:
+		return false
+	}
+}
+
+func archiveRowExpanded(row archiveBrowserRow) bool {
+	switch row.kind {
+	case archiveRowPatient:
+		return !row.collapsed
+	case archiveRowStudy:
+		return row.studySeriesLoaded
+	case archiveRowSeries:
+		return row.seriesImagesLoaded
+	default:
+		return false
+	}
+}
+
+func archiveRowDisclosureGlyph(row archiveBrowserRow) string {
+	if !archiveRowExpandable(row) {
+		return ""
+	}
+	if archiveRowExpanded(row) {
+		return "▾"
+	}
+	return "▸"
+}
+
+// configureArchiveDisclosure wires the disclosure arrow for a rendered cell.
+// Only the patient column carries the arrow; for expandable rows it toggles, and
+// for leaf rows it still occupies the indent and selects the row so taps in the
+// leading gutter behave like taps on the name.
+func configureArchiveDisclosure(cell *archiveTableCell, col int, row archiveBrowserRow, state *uiState) {
+	if cell == nil || cell.disclosure == nil {
+		return
+	}
+	if col != archiveStudyTableColumnPatient {
+		cell.disclosure.Hide()
+		return
+	}
+	indent := archiveRowIndentLevel(row)
+	captured := row
+	if archiveRowExpandable(row) {
+		cell.disclosure.configure(archiveRowDisclosureGlyph(row), indent, func() {
+			if state != nil && state.archiveToggleRow != nil {
+				state.archiveToggleRow(captured)
+			}
+		})
+	} else {
+		cell.disclosure.configure("", indent, func() {
+			if state != nil && state.archiveSelectRow != nil {
+				state.archiveSelectRow(captured)
+			}
+		})
+	}
+	cell.disclosure.Show()
+}
+
+func storeArchiveSeries(state *uiState, studyUID string, series []archive.Series) {
+	if state == nil || strings.TrimSpace(studyUID) == "" {
+		return
+	}
+	if state.archiveSeriesByStudy == nil {
+		state.archiveSeriesByStudy = map[string][]archive.Series{}
+	}
+	state.archiveSeriesByStudy[studyUID] = series
+}
+
+func storeArchiveInstances(state *uiState, seriesUID string, instances []archive.Instance) {
+	if state == nil || strings.TrimSpace(seriesUID) == "" {
+		return
+	}
+	if state.archiveInstancesBySeries == nil {
+		state.archiveInstancesBySeries = map[string][]archive.Instance{}
+	}
+	if len(instances) == 0 {
+		delete(state.archiveInstancesBySeries, seriesUID)
+		return
+	}
+	state.archiveInstancesBySeries[seriesUID] = instances
 }
 
 func newArchiveTableCell() *archiveTableCell {
@@ -10103,7 +10418,10 @@ func newArchiveTableCell() *archiveTableCell {
 	statusDot := newSourceStatusDot()
 	statusDotBox := container.NewPadded(sourceStatusDotBox(statusDot))
 	statusDotBox.Hide()
-	labelRow := container.NewBorder(nil, nil, statusDotBox, sortLabel, label)
+	disclosure := newArchiveDisclosureArrow()
+	disclosure.Hide()
+	leftSlot := container.NewHBox(disclosure, statusDotBox)
+	labelRow := container.NewBorder(nil, nil, leftSlot, sortLabel, label)
 	cell := &archiveTableCell{
 		Container:         container.NewStack(background, statusChip, container.New(archiveMetadataGlyphSlotLayout{}, metadataGlyphSlot), newCompactTableCellContent(labelRow), newTableColumnDividerLayer(), newTableRowDividerLayer()),
 		background:        background,
@@ -10113,6 +10431,7 @@ func newArchiveTableCell() *archiveTableCell {
 		sortLabel:         sortLabel,
 		statusDot:         statusDot,
 		statusDotBox:      statusDotBox,
+		disclosure:        disclosure,
 	}
 	cell.ExtendBaseWidget(cell)
 	return cell
@@ -10183,6 +10502,9 @@ func applyArchiveTableCellWithColumn(cell *archiveTableCell, tableRow int, table
 	cell.statusDotBox.Hide()
 	cell.statusChip.Hide()
 	cell.sortLabel.Hide()
+	if cell.disclosure != nil {
+		cell.disclosure.Hide()
+	}
 	cell.statusChip.FillColor = color.NRGBA{}
 	cell.metadataGlyphSlot.Hide()
 	cell.metadataGlyphSlot.FillColor = color.NRGBA{}
@@ -10241,6 +10563,8 @@ func archiveBrowserRowSelected(row archiveBrowserRow, state *uiState) bool {
 		return false
 	}
 	switch row.kind {
+	case archiveRowPatient:
+		return strings.TrimSpace(row.groupKey) != "" && row.groupKey == state.selectedPatientKey
 	case archiveRowStudy:
 		return row.studyIndex >= 0 && row.studyIndex == state.selectedStudyRow && state.selectedSeriesRow < 0
 	case archiveRowSeries:
@@ -10314,10 +10638,8 @@ func archiveVisibleStudyColumns() []int {
 		archiveStudyTableColumnPatient,
 		archiveStudyTableColumnModality,
 		archiveStudyTableColumnInstances,
-		archiveStudyTableColumnSeries,
 		archiveStudyTableColumnPatientID,
 		archiveStudyTableColumnDOB,
-		archiveStudyTableColumnAccession,
 		archiveStudyTableColumnStudyDate,
 		archiveStudyTableColumnAdded,
 		archiveStudyTableColumnInstitution,
@@ -10402,6 +10724,7 @@ func newStudyTable(state *uiState) *widget.Table {
 			row := state.archiveRows[id.Row-1]
 			selected := archiveBrowserRowSelected(row, state)
 			applyArchiveTableCellWithColumn(cell, id.Row, col, archiveBrowserCell(row, state.studies, col), row, false, selected)
+			configureArchiveDisclosure(cell, col, row, state)
 		},
 	)
 	state.selectedStudyRow = -1
@@ -10416,7 +10739,7 @@ func newStudyTable(state *uiState) *widget.Table {
 const archiveSortPreferenceKey = "archiveStudies"
 
 func archiveStudyColumnWidths() []float32 {
-	return []float32{330, 95, 70, 78, 120, 110, 95, 155, 155, 90, 110, 170}
+	return []float32{330, 95, 70, 120, 110, 155, 155, 90, 110, 170}
 }
 
 func applyArchiveSort(state *uiState, col int) bool {
@@ -10911,7 +11234,209 @@ func workstationCountCell(value string) string {
 	return b.String()
 }
 
+// archiveSelectArchiveRow selects a row in the hierarchical study table without
+// changing any expand/collapse state. Expansion is driven exclusively by the
+// disclosure arrow (see archiveToggleArchiveRow), so clicking a name only
+// updates the selection and the right-hand study pane.
+func archiveSelectArchiveRow(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState, row archiveBrowserRow, metadataColumn bool) {
+	setStatus := func(text string) {
+		if status != nil {
+			status.SetText(text)
+		}
+	}
+	switch row.kind {
+	case archiveRowPatient:
+		state.selectedPatientKey = row.groupKey
+		state.selectedStudyRow = -1
+		state.selectedSeriesRow = -1
+		state.selectedInstanceRow = -1
+		state.series = nil
+		state.instances = nil
+		tables.studies.Refresh()
+		refreshArchiveChrome(state)
+		return
+	case archiveRowStudy:
+		if row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
+			return
+		}
+		study := state.studies[row.studyIndex]
+		state.selectedPatientKey = ""
+		state.selectedStudyRow = row.studyIndex
+		state.selectedSeriesRow = -1
+		state.selectedInstanceRow = -1
+		state.series = state.archiveSeriesByStudy[study.StudyInstanceUID]
+		state.instances = nil
+		recordOpenedArchiveStudy(state, study)
+		tables.studies.Refresh()
+		refreshArchiveChrome(state)
+		if metadataColumn {
+			setStatus("Editing status/comments for " + emptyDash(study.StudyInstanceUID))
+			if w != nil {
+				showStudyMetadataDialog(w, status, tables, state)
+			}
+			return
+		}
+		setStatus("Selected study " + emptyDash(study.StudyInstanceUID))
+		return
+	case archiveRowSeries:
+		if row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
+			return
+		}
+		study := state.studies[row.studyIndex]
+		seriesRows := state.archiveSeriesByStudy[study.StudyInstanceUID]
+		if row.seriesIndex < 0 || row.seriesIndex >= len(seriesRows) {
+			return
+		}
+		series := seriesRows[row.seriesIndex]
+		state.selectedPatientKey = ""
+		state.selectedStudyRow = row.studyIndex
+		state.selectedSeriesRow = row.seriesIndex
+		state.selectedInstanceRow = -1
+		state.series = seriesRows
+		state.instances = state.archiveInstancesBySeries[strings.TrimSpace(series.SeriesInstanceUID)]
+		recordOpenedArchiveStudy(state, study)
+		tables.studies.Refresh()
+		refreshArchiveChrome(state)
+		setStatus("Selected series " + emptyDash(series.SeriesInstanceUID))
+		return
+	case archiveRowInstance:
+		if row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
+			return
+		}
+		study := state.studies[row.studyIndex]
+		seriesRows := state.archiveSeriesByStudy[study.StudyInstanceUID]
+		if row.seriesIndex < 0 || row.seriesIndex >= len(seriesRows) {
+			return
+		}
+		series := seriesRows[row.seriesIndex]
+		instanceRows := state.archiveInstancesBySeries[strings.TrimSpace(series.SeriesInstanceUID)]
+		if row.instanceIndex < 0 || row.instanceIndex >= len(instanceRows) {
+			return
+		}
+		state.selectedPatientKey = ""
+		state.selectedStudyRow = row.studyIndex
+		state.selectedSeriesRow = row.seriesIndex
+		state.selectedInstanceRow = row.instanceIndex
+		state.series = seriesRows
+		state.instances = instanceRows
+		recordOpenedArchiveStudy(state, study)
+		tables.studies.Refresh()
+		refreshArchiveChrome(state)
+		setStatus("Selected image " + emptyDash(instanceRows[row.instanceIndex].SOPInstanceUID))
+		return
+	}
+}
+
+// archiveToggleArchiveRow expands or collapses the row's children, lazily
+// loading series or instances the first time a branch is opened. It never
+// changes the current selection, so the disclosure arrow and the row name act
+// independently.
+func archiveToggleArchiveRow(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState, row archiveBrowserRow) {
+	setStatus := func(text string) {
+		if status != nil {
+			status.SetText(text)
+		}
+	}
+	switch row.kind {
+	case archiveRowPatient:
+		if toggleArchivePatientGroup(state, row) {
+			tables.studies.Refresh()
+			refreshArchiveChrome(state)
+		}
+		return
+	case archiveRowStudy:
+		if row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
+			return
+		}
+		studyUID := strings.TrimSpace(state.studies[row.studyIndex].StudyInstanceUID)
+		if toggleArchiveStudySeries(state, row) {
+			tables.studies.Refresh()
+			refreshArchiveChrome(state)
+			if state.collapsedArchiveStudies[studyUID] {
+				setStatus("Collapsed series for " + studyUID)
+			} else {
+				setStatus("Expanded series for " + studyUID)
+			}
+			return
+		}
+		setStatus("Loading series for " + studyUID)
+		filters := state.seriesFilters
+		go func(studyUID string, filters archive.SeriesFilters) {
+			series, err := state.catalog.SeriesForStudyWithFilters(context.Background(), studyUID, filters)
+			fyne.Do(func() {
+				if err != nil {
+					setStatus("Load series failed")
+					if w != nil {
+						dialog.ShowError(err, w)
+					}
+					return
+				}
+				storeArchiveSeries(state, studyUID, series)
+				if state.collapsedArchiveStudies == nil {
+					state.collapsedArchiveStudies = map[string]bool{}
+				}
+				state.collapsedArchiveStudies[studyUID] = false
+				state.archiveRows = archiveBrowserRowsForState(state)
+				tables.studies.Refresh()
+				refreshArchiveChrome(state)
+				setStatus(fmt.Sprintf("%d series for study %s", len(series), studyUID))
+			})
+		}(studyUID, filters)
+		return
+	case archiveRowSeries:
+		seriesUID := strings.TrimSpace(row.series.SeriesInstanceUID)
+		if seriesUID == "" && row.studyIndex >= 0 && row.studyIndex < len(state.studies) {
+			seriesRows := state.archiveSeriesByStudy[state.studies[row.studyIndex].StudyInstanceUID]
+			if row.seriesIndex >= 0 && row.seriesIndex < len(seriesRows) {
+				seriesUID = strings.TrimSpace(seriesRows[row.seriesIndex].SeriesInstanceUID)
+			}
+		}
+		if toggleArchiveSeriesImages(state, row) {
+			tables.studies.Refresh()
+			refreshArchiveChrome(state)
+			if state.collapsedArchiveSeries[seriesUID] {
+				setStatus("Collapsed images for " + seriesUID)
+			} else {
+				setStatus("Expanded images for " + seriesUID)
+			}
+			return
+		}
+		if seriesUID == "" {
+			return
+		}
+		setStatus("Loading images for " + seriesUID)
+		go func(seriesUID string) {
+			instances, err := state.catalog.InstancesForSeries(context.Background(), seriesUID)
+			fyne.Do(func() {
+				if err != nil {
+					setStatus("Load images failed")
+					if w != nil {
+						dialog.ShowError(err, w)
+					}
+					return
+				}
+				storeArchiveInstances(state, seriesUID, instances)
+				if state.collapsedArchiveSeries == nil {
+					state.collapsedArchiveSeries = map[string]bool{}
+				}
+				state.collapsedArchiveSeries[seriesUID] = false
+				state.archiveRows = archiveBrowserRowsForState(state)
+				tables.studies.Refresh()
+				refreshArchiveChrome(state)
+				setStatus(fmt.Sprintf("%d images for series %s", len(instances), seriesUID))
+			})
+		}(seriesUID)
+		return
+	}
+}
+
 func wireArchiveTables(w fyne.Window, status *widget.Label, tables archiveTables, state *uiState) {
+	state.archiveSelectRow = func(row archiveBrowserRow) {
+		archiveSelectArchiveRow(w, status, tables, state, row, false)
+	}
+	state.archiveToggleRow = func(row archiveBrowserRow) {
+		archiveToggleArchiveRow(w, status, tables, state, row)
+	}
 	tables.studies.OnSelected = func(id widget.TableCellID) {
 		if id.Row <= 0 {
 			col, ok := archiveVisibleStudyColumn(id.Col)
@@ -10923,6 +11448,7 @@ func wireArchiveTables(w fyne.Window, status *widget.Label, tables archiveTables
 				status.SetText("Sorted Archive by " + archiveTableHeaders()[id.Col])
 				return
 			}
+			state.selectedPatientKey = ""
 			state.selectedStudyRow = -1
 			clearArchiveDetails(state, tables)
 			refreshArchiveChrome(state)
@@ -10933,148 +11459,7 @@ func wireArchiveTables(w fyne.Window, status *widget.Label, tables archiveTables
 		if rowIndex < 0 || rowIndex >= len(state.archiveRows) {
 			return
 		}
-		row := state.archiveRows[rowIndex]
-		if row.kind == archiveRowPatient {
-			if toggleArchivePatientGroup(state, row) {
-				clearArchiveDetails(state, tables)
-				tables.studies.Refresh()
-				refreshArchiveChrome(state)
-			}
-			return
-		}
-		if row.kind == archiveRowSeries {
-			if row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
-				return
-			}
-			study := state.studies[row.studyIndex]
-			seriesRows := state.archiveSeriesByStudy[study.StudyInstanceUID]
-			if row.seriesIndex < 0 || row.seriesIndex >= len(seriesRows) {
-				return
-			}
-			state.selectedStudyRow = row.studyIndex
-			recordOpenedArchiveStudy(state, state.studies[row.studyIndex])
-			state.series = seriesRows
-			state.selectedSeriesRow = row.seriesIndex
-			series := seriesRows[row.seriesIndex]
-			seriesUID := strings.TrimSpace(series.SeriesInstanceUID)
-			state.instances = state.archiveInstancesBySeries[seriesUID]
-			state.selectedInstanceRow = -1
-			if toggleArchiveSeriesImages(state, row) {
-				tables.studies.Refresh()
-				tables.series.Refresh()
-				tables.instances.Refresh()
-				refreshArchiveChrome(state)
-				if state.collapsedArchiveSeries[seriesUID] {
-					status.SetText("Collapsed images for " + series.SeriesInstanceUID)
-					return
-				}
-				status.SetText("Expanded images for " + series.SeriesInstanceUID)
-				return
-			}
-			tables.studies.Refresh()
-			tables.series.Refresh()
-			tables.instances.Refresh()
-			refreshArchiveChrome(state)
-			status.SetText("Loading instances for " + series.SeriesInstanceUID)
-			go func(selectedStudyRow int, selectedSeriesRow int, seriesUID string) {
-				instances, err := state.catalog.InstancesForSeries(context.Background(), seriesUID)
-				fyne.Do(func() {
-					if state.selectedStudyRow != selectedStudyRow ||
-						state.selectedSeriesRow != selectedSeriesRow ||
-						selectedSeriesRow < 0 ||
-						selectedSeriesRow >= len(state.series) ||
-						state.series[selectedSeriesRow].SeriesInstanceUID != seriesUID {
-						return
-					}
-					if err != nil {
-						status.SetText("Load instances failed")
-						dialog.ShowError(err, w)
-						return
-					}
-					setInstances(state, tables, instances)
-					status.SetText(fmt.Sprintf("%d instances for series %s", len(instances), seriesUID))
-				})
-			}(row.studyIndex, row.seriesIndex, series.SeriesInstanceUID)
-			return
-		}
-		if row.kind == archiveRowInstance {
-			if row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
-				return
-			}
-			study := state.studies[row.studyIndex]
-			seriesRows := state.archiveSeriesByStudy[study.StudyInstanceUID]
-			if row.seriesIndex < 0 || row.seriesIndex >= len(seriesRows) {
-				return
-			}
-			series := seriesRows[row.seriesIndex]
-			instanceRows := state.archiveInstancesBySeries[strings.TrimSpace(series.SeriesInstanceUID)]
-			if row.instanceIndex < 0 || row.instanceIndex >= len(instanceRows) {
-				return
-			}
-			state.selectedStudyRow = row.studyIndex
-			recordOpenedArchiveStudy(state, study)
-			state.series = seriesRows
-			state.selectedSeriesRow = row.seriesIndex
-			state.instances = instanceRows
-			state.selectedInstanceRow = row.instanceIndex
-			tables.studies.Refresh()
-			tables.series.Refresh()
-			tables.instances.Refresh()
-			refreshArchiveChrome(state)
-			status.SetText("Selected image " + emptyDash(instanceRows[row.instanceIndex].SOPInstanceUID))
-			return
-		}
-		if row.kind != archiveRowStudy || row.studyIndex < 0 || row.studyIndex >= len(state.studies) {
-			return
-		}
-		state.selectedStudyRow = row.studyIndex
-		study := state.studies[row.studyIndex]
-		if archiveStudyMetadataColumn(id.Col) {
-			clearArchiveDetails(state, tables)
-			tables.studies.Refresh()
-			refreshArchiveChrome(state)
-			if status != nil {
-				status.SetText("Editing status/comments for " + emptyDash(study.StudyInstanceUID))
-			}
-			if w != nil {
-				showStudyMetadataDialog(w, status, tables, state)
-			}
-			return
-		}
-		recordOpenedArchiveStudy(state, study)
-		if toggleArchiveStudySeries(state, row) {
-			tables.studies.Refresh()
-			refreshArchiveChrome(state)
-			if state.collapsedArchiveStudies[study.StudyInstanceUID] {
-				status.SetText("Collapsed series for " + study.StudyInstanceUID)
-				return
-			}
-			status.SetText("Expanded series for " + study.StudyInstanceUID)
-			return
-		}
-		clearArchiveDetails(state, tables)
-		tables.studies.Refresh()
-		refreshArchiveChrome(state)
-		status.SetText("Loading series for " + study.StudyInstanceUID)
-		filters := state.seriesFilters
-		go func(selectedRow int, studyUID string, filters archive.SeriesFilters) {
-			series, err := state.catalog.SeriesForStudyWithFilters(context.Background(), studyUID, filters)
-			fyne.Do(func() {
-				if state.selectedStudyRow != selectedRow ||
-					selectedRow < 0 ||
-					selectedRow >= len(state.studies) ||
-					state.studies[selectedRow].StudyInstanceUID != studyUID {
-					return
-				}
-				if err != nil {
-					status.SetText("Load series failed")
-					dialog.ShowError(err, w)
-					return
-				}
-				setSeries(state, tables, series)
-				status.SetText(fmt.Sprintf("%d series for study %s", len(series), studyUID))
-			})
-		}(row.studyIndex, study.StudyInstanceUID, filters)
+		archiveSelectArchiveRow(w, status, tables, state, state.archiveRows[rowIndex], archiveStudyMetadataColumn(id.Col))
 	}
 
 	tables.series.OnSelected = func(id widget.TableCellID) {
@@ -11370,7 +11755,7 @@ func newAutoQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, 
 	})
 	sourceMoveDown.Importance = widget.LowImportance
 	sourceHeader := newDicomNodesHeader(container.NewHBox(sourceMoveUp, sourceMoveDown))
-	sourcePanel := newDicomNodesSourcePanel(sourceHeader, container.NewVBox(newQuerySourceColumnHeader(), sourceList))
+	sourcePanel := newDicomNodesSourcePanel(sourceHeader, container.NewBorder(newQuerySourceColumnHeader(), nil, nil, nil, sourceList))
 
 	destinationSelect := newQueryMoveDestinationEntry(state)
 	refreshCadence := widget.NewSelect(autoQueryRefreshModeOptions, nil)
@@ -12265,7 +12650,7 @@ func newQueryTab(w fyne.Window, status *widget.Label, tables archiveTables, node
 	})
 	moveDownButton.Importance = widget.LowImportance
 	sourceHeader := newDicomNodesHeader(container.NewHBox(moveUpButton, moveDownButton))
-	sourcePanel := newDicomNodesSourcePanel(sourceHeader, container.NewVBox(newQuerySourceColumnHeader(), sourceList))
+	sourcePanel := newDicomNodesSourcePanel(sourceHeader, container.NewBorder(newQuerySourceColumnHeader(), nil, nil, nil, sourceList))
 	advancedCriteria := newQueryAdvancedCriteria(queryAdvancedCriteriaEntries{
 		patientName:      patientName,
 		patientID:        patientID,
@@ -12336,23 +12721,22 @@ func queryRetrieveDestinationSlot(destination fyne.CanvasObject) fyne.CanvasObje
 }
 
 func newQueryPrimaryActionButton(text string, tapped func()) *widget.Button {
+	// High importance renders a clearly filled push button that stands out from
+	// the dark action strip; low/medium importance read as flat text on it.
 	button := widget.NewButton(text, tapped)
-	button.Importance = widget.LowImportance
+	button.Importance = widget.HighImportance
 	return button
 }
 
 func queryPrimaryActionStripObjects(objects []fyne.CanvasObject) []fyne.CanvasObject {
 	out := make([]fyne.CanvasObject, 0, len(objects))
-	for index, object := range objects {
+	for _, object := range objects {
 		if _, ok := object.(*widget.Button); ok {
 			size := object.MinSize()
 			if size.Width < queryPrimaryActionButtonMinWidth {
 				size.Width = queryPrimaryActionButtonMinWidth
 			}
 			object = container.NewGridWrap(size, object)
-		}
-		if index < len(objects)-1 {
-			object = container.NewStack(object, newTableColumnDividerLayer())
 		}
 		out = append(out, object)
 	}
@@ -12641,62 +13025,21 @@ func refreshLastQuery(w fyne.Window, status *widget.Label, table *widget.Table, 
 }
 
 type queryMatchesHandler func()
-type queryAcrossSourceFunc func(context.Context, nodes.Node) (query.Result, error)
+
+// The multi-source query runner, its source func type, and the aggregated
+// failures type live in internal/core so every frontend shares one
+// implementation. core reports progress through the core.QueryObserver
+// interface; the GUI's observer (queryProgressCallback) marshals updates onto
+// the Fyne UI thread. The alias and thin wrappers keep call sites readable.
+type queryAcrossSourceFunc = core.QuerySourceFunc
 type queryActivityProgressFunc func(queryActivityProgress)
 
-type querySourceFailures struct {
-	successes  int
-	failures   []string
-	failedKeys map[string]bool
-}
-
-func (err *querySourceFailures) Error() string {
-	return strings.Join(err.failures, "; ")
-}
-
-func (err *querySourceFailures) failed(node nodes.Node) bool {
-	return err != nil && err.failedKeys[nodeVerifyKey(node)]
-}
-
 func runQueryAcrossSources(ctx context.Context, sources []nodes.Node, run queryAcrossSourceFunc) (query.Result, error) {
-	return runQueryAcrossSourcesWithProgress(ctx, sources, run, nil)
+	return core.RunQueryAcrossSources(ctx, sources, run, nil)
 }
 
 func runQueryAcrossSourcesWithProgress(ctx context.Context, sources []nodes.Node, run queryAcrossSourceFunc, onProgress queryActivityProgressFunc) (query.Result, error) {
-	var merged query.Result
-	var failures []string
-	failedKeys := map[string]bool{}
-	successes := 0
-	for i, source := range sources {
-		result, err := run(ctx, source)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %s", emptyDash(source.Name), err.Error()))
-			failedKeys[nodeVerifyKey(source)] = true
-			reportQueryActivityProgress(onProgress, i+1, len(sources), len(merged.Matches), len(failures))
-			continue
-		}
-		successes++
-		merged.Matches = append(merged.Matches, annotateQueryMatches(result.Matches, source)...)
-		merged.FinalStatus = result.FinalStatus
-		merged.Duration += result.Duration
-		reportQueryActivityProgress(onProgress, i+1, len(sources), len(merged.Matches), len(failures))
-	}
-	if len(failures) > 0 {
-		return merged, &querySourceFailures{successes: successes, failures: failures, failedKeys: failedKeys}
-	}
-	return merged, nil
-}
-
-func reportQueryActivityProgress(onProgress queryActivityProgressFunc, attempted int, total int, matches int, failures int) {
-	if onProgress == nil {
-		return
-	}
-	onProgress(queryActivityProgress{
-		Attempted: attempted,
-		Total:     total,
-		Matches:   matches,
-		Failures:  failures,
-	})
+	return core.RunQueryAcrossSources(ctx, sources, run, core.QueryObserverFunc(onProgress))
 }
 
 func querySourcesLabel(sources []nodes.Node) string {
@@ -12710,8 +13053,8 @@ func queryFailureWithoutResults(result query.Result, err error) bool {
 	if err == nil {
 		return false
 	}
-	var sourceFailures *querySourceFailures
-	if errors.As(err, &sourceFailures) && sourceFailures.successes > 0 {
+	var sourceFailures *core.QuerySourceFailures
+	if errors.As(err, &sourceFailures) && sourceFailures.Successes > 0 {
 		return false
 	}
 	return len(result.Matches) == 0
@@ -12797,13 +13140,13 @@ func recordQuerySourceStatuses(state *uiState, sources []nodes.Node, err error) 
 	if state == nil {
 		return
 	}
-	var sourceFailures *querySourceFailures
+	var sourceFailures *core.QuerySourceFailures
 	hasSourceFailures := errors.As(err, &sourceFailures)
 	if err != nil && !hasSourceFailures {
 		return
 	}
 	for _, source := range sources {
-		if hasSourceFailures && sourceFailures.failed(source) {
+		if hasSourceFailures && sourceFailures.Failed(source) {
 			recordQuerySourceStatus(state, source, querySourceFail)
 			continue
 		}
@@ -15220,9 +15563,5 @@ func tableCell(elem dicominspect.ElementSummary, col int) string {
 }
 
 func defaultArchiveDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil || dir == "" {
-		return filepath.Join(".", ".go-pacs")
-	}
-	return filepath.Join(dir, "go-pacs")
+	return core.DefaultArchiveDir()
 }

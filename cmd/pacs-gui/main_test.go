@@ -24,6 +24,7 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/appconfig"
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/autoquery"
+	appcore "github.com/ThalesMMS/Go-PACS/internal/core"
 	"github.com/ThalesMMS/Go-PACS/internal/dicominspect"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
 	"github.com/ThalesMMS/Go-PACS/internal/operations"
@@ -82,7 +83,7 @@ func TestConfigureAppAppearanceUsesCompactWorkbenchSizes(t *testing.T) {
 }
 
 func TestApplyCompactTableRowsSetsDenseDefaultHeight(t *testing.T) {
-	fynetest.NewApp()
+	configureAppAppearance(fynetest.NewApp())
 	table := widget.NewTable(
 		func() (int, int) { return 3, 2 },
 		func() fyne.CanvasObject { return newArchiveTableCell() },
@@ -2852,7 +2853,7 @@ func TestArchiveWorkbenchExposesCollapsedSelectedArchiveDetails(t *testing.T) {
 	}
 }
 
-func TestArchiveWorkbenchUsesNarrowReferenceSummaryPane(t *testing.T) {
+func TestArchiveWorkbenchUsesReferenceSummaryPane(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
 	status := widget.NewLabel("")
@@ -2861,11 +2862,11 @@ func TestArchiveWorkbenchUsesNarrowReferenceSummaryPane(t *testing.T) {
 	offsets := collectSplitOffsets(workbench)
 
 	for _, offset := range offsets {
-		if offset >= 0.86 && offset <= 0.90 {
+		if offset >= 0.76 && offset <= 0.84 {
 			return
 		}
 	}
-	t.Fatalf("archive workbench split offsets = %#v, want center/summary offset around 0.88 for a narrow right summary pane", offsets)
+	t.Fatalf("archive workbench split offsets = %#v, want center/summary offset around 0.80 so the right study pane is wide enough to read", offsets)
 }
 
 func TestArchiveWorkbenchUsesNarrowReferenceLeftRail(t *testing.T) {
@@ -3346,16 +3347,24 @@ func TestQueryPrimaryActionStripUsesStableButtonSlots(t *testing.T) {
 	}
 }
 
-func TestQueryPrimaryActionStripUsesInternalDividers(t *testing.T) {
+func TestQueryPrimaryActionStripKeepsButtonsDiscrete(t *testing.T) {
 	fynetest.NewApp()
-	queryButton := widget.NewButton(queryActionLabelQuery, nil)
-	patientButton := widget.NewButton(queryActionLabelPatient, nil)
-	retrieveButton := widget.NewButton(queryActionLabelRetrieve, nil)
-
-	strip := newQueryPrimaryActionStrip(queryButton, patientButton, retrieveButton)
-
-	if got := countCanvasRectanglesWithColor(strip, tableColumnDividerColor); got < 4 {
-		t.Fatalf("Query primary action strip divider rectangles = %d, want internal action dividers plus outer chrome", got)
+	one := countCanvasRectanglesWithColor(
+		newQueryPrimaryActionStrip(widget.NewButton(queryActionLabelQuery, nil)),
+		tableColumnDividerColor,
+	)
+	three := countCanvasRectanglesWithColor(
+		newQueryPrimaryActionStrip(
+			widget.NewButton(queryActionLabelQuery, nil),
+			widget.NewButton(queryActionLabelPatient, nil),
+			widget.NewButton(queryActionLabelRetrieve, nil),
+		),
+		tableColumnDividerColor,
+	)
+	// Adding more actions must not add internal segment dividers; the actions
+	// are discrete push buttons rather than a flat segmented bar.
+	if three != one {
+		t.Fatalf("Query primary action strip added %d internal divider(s); buttons should be discrete, not segmented", three-one)
 	}
 }
 
@@ -3506,7 +3515,7 @@ func TestQueryAutoRetrieveRowAlignsUnderRefreshCadence(t *testing.T) {
 	}
 }
 
-func TestQueryPrimaryActionButtonsUseCompactImportance(t *testing.T) {
+func TestQueryPrimaryActionButtonsRenderAsRealButtons(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
 	status := widget.NewLabel("")
@@ -3518,8 +3527,10 @@ func TestQueryPrimaryActionButtonsUseCompactImportance(t *testing.T) {
 		if button == nil {
 			t.Fatalf("Query tab should expose %q action", label)
 		}
-		if button.Importance != widget.LowImportance {
-			t.Fatalf("Query action %q importance = %v, want LowImportance", label, button.Importance)
+		// High importance renders a clearly filled push button; low importance
+		// made the actions read as flat text rather than buttons.
+		if button.Importance != widget.HighImportance {
+			t.Fatalf("Query action %q importance = %v, want HighImportance so it looks like a button", label, button.Importance)
 		}
 	}
 }
@@ -3569,10 +3580,9 @@ func TestMainToolbarButtonGroupsSeparateOperationalClusters(t *testing.T) {
 
 func TestMainToolbarDisabledLabelsExposeUnavailableParityActions(t *testing.T) {
 	labels := mainToolbarDisabledLabels()
-	want := []string{"Anonymize"}
 
-	if strings.Join(labels, "|") != strings.Join(want, "|") {
-		t.Fatalf("disabled toolbar labels = %q, want %q", strings.Join(labels, "|"), strings.Join(want, "|"))
+	if len(labels) != 0 {
+		t.Fatalf("disabled toolbar labels = %q, want none", strings.Join(labels, "|"))
 	}
 }
 
@@ -7659,7 +7669,7 @@ func TestQuerySourceNodesReturnCheckedNodesInPriorityOrder(t *testing.T) {
 
 func TestAnnotateQueryMatchesAddsSourceNode(t *testing.T) {
 	node := nodes.Node{ID: "node-1", Name: "RADIANT", AETitle: "RADIANTAE", Host: "192.168.100.26", Port: 11112}
-	matches := annotateQueryMatches([]query.Match{{PatientName: "DOE^JANE"}}, node)
+	matches := appcore.AnnotateMatches([]query.Match{{PatientName: "DOE^JANE"}}, node)
 
 	if len(matches) != 1 {
 		t.Fatalf("len(matches) = %d, want 1", len(matches))
@@ -7900,7 +7910,7 @@ func TestQueryFailureWithoutResultsRequiresErrorAndNoMatches(t *testing.T) {
 	if queryFailureWithoutResults(query.Result{Matches: []query.Match{{PatientName: "DOE^JANE"}}}, errors.New("one source failed")) {
 		t.Fatal("errored query with partial matches should not be a hard failure")
 	}
-	if queryFailureWithoutResults(query.Result{}, &querySourceFailures{successes: 1, failures: []string{"offline: association failed"}}) {
+	if queryFailureWithoutResults(query.Result{}, &appcore.QuerySourceFailures{Successes: 1, Messages: []string{"offline: association failed"}}) {
 		t.Fatal("errored query with a successful zero-match source should not be a hard failure")
 	}
 	if queryFailureWithoutResults(query.Result{}, nil) {
@@ -7930,10 +7940,10 @@ func TestRecordQuerySourceStatusesMarksPartialFailure(t *testing.T) {
 		{ID: "node-2", Name: "online", Host: "10.0.0.2", Port: 105},
 	}
 	state := &uiState{nodes: nodesList}
-	err := &querySourceFailures{
-		successes: 1,
-		failures:  []string{"offline: association failed"},
-		failedKeys: map[string]bool{
+	err := &appcore.QuerySourceFailures{
+		Successes: 1,
+		Messages:  []string{"offline: association failed"},
+		FailedKeys: map[string]bool{
 			nodeVerifyKey(nodesList[0]): true,
 		},
 	}
@@ -8512,7 +8522,7 @@ func TestNewReceiverPortControlsUseReferenceEntrySlot(t *testing.T) {
 	}
 }
 
-func TestListenerIncomingPolicyControlsExposeDisabledIncomingPolicyChoices(t *testing.T) {
+func TestListenerIncomingPolicyControlsExposeIncomingPolicyChoices(t *testing.T) {
 	fynetest.NewApp()
 
 	panel := newListenerIncomingPolicyControls()
@@ -8530,15 +8540,15 @@ func TestListenerIncomingPolicyControlsExposeDisabledIncomingPolicyChoices(t *te
 			t.Fatalf("incoming policy controls missing %q in %#v", want, texts)
 		}
 	}
-	incomingFiles := findRadioGroupWithOption(panel, "Compress non-compressed images with JPEG (See General Preferences)")
+	incomingFiles := findRadioGroupWithOption(panel, listenerIncomingDecompressPolicyLabel)
 	if incomingFiles == nil {
-		t.Fatal("incoming file processing choices should be a disabled radio group")
+		t.Fatal("incoming file processing choices should be present")
 	}
-	if incomingFiles.Selected != listenerIncomingCompressPolicyLabel {
-		t.Fatalf("incoming file selected choice = %q, want reference compress policy", incomingFiles.Selected)
+	if incomingFiles.Selected != listenerIncomingDontModifyLabel {
+		t.Fatalf("incoming file selected choice = %q, want %q", incomingFiles.Selected, listenerIncomingDontModifyLabel)
 	}
-	if !incomingFiles.Disabled() {
-		t.Fatal("incoming file radio group should be disabled until policy support is implemented")
+	if incomingFiles.Disabled() {
+		t.Fatal("incoming file radio group should be enabled")
 	}
 	unreadableObjects := findRadioGroupWithOption(panel, "Move it to the NOT READABLE folder")
 	if unreadableObjects == nil {
@@ -8557,8 +8567,22 @@ func TestListenerIncomingFilesRadioLabelSharesReferenceRow(t *testing.T) {
 
 	panel := newListenerIncomingPolicyControls()
 
-	if !findDirectContainerWithLabelAndRadioOption(panel, "Incoming files:", "Don't modify") {
+	if !findDirectContainerWithLabelAndRadioOption(panel, "Incoming files:", listenerIncomingDontModifyLabel) {
 		t.Fatal("Incoming files label should share the first radio row like listener_config.png")
+	}
+}
+
+func TestListenerIncomingPolicyControlsSelectsDecompressWhenConfigured(t *testing.T) {
+	fynetest.NewApp()
+
+	radio := newListenerIncomingFilesRadio(true)
+	panel := newListenerIncomingPolicyControlsWithRadio(radio)
+	incomingFiles := findRadioGroupWithOption(panel, listenerIncomingDecompressPolicyLabel)
+	if incomingFiles == nil {
+		t.Fatal("incoming file processing choices should be present")
+	}
+	if incomingFiles.Selected != listenerIncomingDecompressPolicyLabel {
+		t.Fatalf("incoming file selected choice = %q, want %q", incomingFiles.Selected, listenerIncomingDecompressPolicyLabel)
 	}
 }
 
@@ -8595,8 +8619,8 @@ func TestListenerIncomingFilesSectionUsesReferenceTitle(t *testing.T) {
 	if !slices.Contains(texts, "Incoming files:") {
 		t.Fatalf("incoming section texts = %#v, want policy sublabel preserved", texts)
 	}
-	if findRadioGroupWithOption(section, listenerIncomingCompressPolicyLabel) == nil {
-		t.Fatal("incoming section should preserve the disabled incoming policy choices")
+	if findRadioGroupWithOption(section, listenerIncomingDecompressPolicyLabel) == nil {
+		t.Fatal("incoming section should preserve incoming policy choices")
 	}
 }
 
@@ -9802,7 +9826,7 @@ func TestArchiveSummaryPaneUsesWorkbenchChrome(t *testing.T) {
 	}
 }
 
-func TestArchiveSummaryPaneUsesNarrowReferenceMinimum(t *testing.T) {
+func TestArchiveSummaryPaneUsesReferenceMinimum(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{}
 
@@ -9813,15 +9837,15 @@ func TestArchiveSummaryPaneUsesNarrowReferenceMinimum(t *testing.T) {
 		if scroll.Direction != container.ScrollVerticalOnly {
 			continue
 		}
-		if got := scroll.MinSize().Width; got > 220 {
-			t.Fatalf("archive summary pane scroll minimum width = %.1f, want at most 220 for the narrow reference side pane", got)
+		if got := scroll.MinSize().Width; got < 280 {
+			t.Fatalf("archive summary pane scroll minimum width = %.1f, want at least 280 so the right study pane reads like the Horos study panel", got)
 		}
 		return
 	}
 	t.Fatal("archive summary pane should expose a vertical scroll body")
 }
 
-func TestArchiveSummaryPaneBodyPlacesStudyListBeforeCollapsedMetadata(t *testing.T) {
+func TestArchiveSummaryPaneBodyPlacesStudyListBeforeExpandedMetadata(t *testing.T) {
 	fynetest.NewApp()
 	summary := widget.NewLabel("Patient ID: P123")
 	list := widget.NewList(
@@ -9843,10 +9867,10 @@ func TestArchiveSummaryPaneBodyPlacesStudyListBeforeCollapsedMetadata(t *testing
 	}
 	details := findAccordionItem(containerBody.Objects[1], "Selected Study Details")
 	if details == nil {
-		t.Fatal("summary pane body should keep selected-study metadata in a collapsed details section")
+		t.Fatal("summary pane body should keep selected-study metadata in a details section")
 	}
-	if details.Open {
-		t.Fatal("Selected Study Details should default collapsed so the right summary starts with the study list")
+	if !details.Open {
+		t.Fatal("Selected Study Details should default expanded so the widened right pane reads like the Horos study panel")
 	}
 	if !slices.Contains(collectWidgetTexts(details.Detail), "Patient ID: P123") {
 		t.Fatal("Selected Study Details should preserve the metadata summary text")
@@ -10462,16 +10486,16 @@ func TestArchiveBrowserPrioritizesTreeTableHeight(t *testing.T) {
 	)
 
 	browser := newArchiveBrowser(table, table, table, state)
-	split, ok := browser.(*container.Split)
-	if !ok {
-		t.Fatalf("archive browser = %T, want split", browser)
+	if _, ok := browser.(*container.Split); ok {
+		t.Fatal("archive browser should be a single hierarchical study table, not a split with stacked detail tables")
 	}
-	if split.Offset < 0.74 {
-		t.Fatalf("archive browser main tree offset = %.2f, want at least 0.74 so the tree-table dominates like the reference", split.Offset)
+	cont, ok := browser.(*fyne.Container)
+	if !ok || len(cont.Objects) == 0 || cont.Objects[0] != table {
+		t.Fatalf("archive browser should render the hierarchical study table, got %T", browser)
 	}
 }
 
-func TestArchiveBrowserKeepsDetailTablesAsCompactTransitionBand(t *testing.T) {
+func TestArchiveBrowserConsolidatesDetailTables(t *testing.T) {
 	fynetest.NewApp()
 	state := &uiState{
 		archiveSeriesSummary:    widget.NewLabel(""),
@@ -10484,12 +10508,10 @@ func TestArchiveBrowserKeepsDetailTablesAsCompactTransitionBand(t *testing.T) {
 	)
 
 	browser := newArchiveBrowser(table, table, table, state)
-	split, ok := browser.(*container.Split)
-	if !ok {
-		t.Fatalf("archive browser = %T, want split", browser)
-	}
-	if split.Offset < 0.94 {
-		t.Fatalf("archive browser main tree offset = %.2f, want at least 0.94 so Series/Instances remain a compact transition band", split.Offset)
+	// The Horos reference uses one hierarchical table plus the right study pane;
+	// the separate Series/Instances tables must not be stacked below it.
+	if findLabelContaining(browser, "Series") != nil || findLabelContaining(browser, "Instances") != nil {
+		t.Fatal("archive browser should not stack separate Series/Instances detail tables")
 	}
 }
 
@@ -10509,9 +10531,6 @@ func TestArchiveBrowserOmitsRedundantStudiesTitle(t *testing.T) {
 
 	if findLabelContaining(browser, "Studies") != nil {
 		t.Fatal("Archive primary tree-table should not add a redundant Studies title above the column header")
-	}
-	if findLabelContaining(browser, "Series") == nil || findLabelContaining(browser, "Instances") == nil {
-		t.Fatal("Archive secondary detail tables should keep their Series and Instances titles")
 	}
 }
 
@@ -10583,8 +10602,11 @@ func TestArchiveBrowserRowsHideCollapsedPatientStudies(t *testing.T) {
 	if rows[1].kind != archiveRowPatient || rows[2].studyIndex != 2 {
 		t.Fatalf("remaining rows = %#v %#v, want second patient and study", rows[1], rows[2])
 	}
-	if got := archiveBrowserCell(rows[0], studies, 0); got != "▸ DOE JANE" {
-		t.Fatalf("collapsed patient cell = %q", got)
+	if got := archiveBrowserCell(rows[0], studies, 0); got != "DOE JANE" {
+		t.Fatalf("collapsed patient cell = %q, want plain name", got)
+	}
+	if got := archiveRowDisclosureGlyph(rows[0]); got != "▸" {
+		t.Fatalf("collapsed patient glyph = %q, want ▸", got)
 	}
 }
 
@@ -10634,8 +10656,22 @@ func TestSetStudiesPreservesSelectedStudyWhenStillVisible(t *testing.T) {
 	if state.selectedSeriesRow != -1 || state.selectedInstanceRow != -1 || len(state.series) != 0 || len(state.instances) != 0 {
 		t.Fatalf("details after setStudies = series row %d instance row %d series %#v instances %#v", state.selectedSeriesRow, state.selectedInstanceRow, state.series, state.instances)
 	}
-	if !archiveBrowserRowSelected(state.archiveRows[3], state) {
-		t.Fatalf("visible selected study row should remain highlighted: %#v", state.archiveRows)
+	// Patients are collapsed by default, but the patient owning the selected
+	// study is kept expanded so the selection stays visible and highlighted.
+	var selectedStudyRowFound bool
+	for _, row := range state.archiveRows {
+		if row.kind == archiveRowStudy && row.studyIndex == state.selectedStudyRow {
+			selectedStudyRowFound = true
+			if !archiveBrowserRowSelected(row, state) {
+				t.Fatalf("selected study row should remain highlighted: %#v", row)
+			}
+		}
+		if row.kind == archiveRowStudy && row.studyIndex != state.selectedStudyRow {
+			t.Fatalf("non-selected patient should stay collapsed, found visible study row %#v", row)
+		}
+	}
+	if !selectedStudyRowFound {
+		t.Fatalf("selected study's patient should be expanded so the study row is visible: %#v", state.archiveRows)
 	}
 }
 
@@ -10643,7 +10679,8 @@ func TestSetStudiesPrunesObsoleteCollapsedArchiveState(t *testing.T) {
 	oldVisible := archive.Study{StudyInstanceUID: "study-keep", PatientName: "DOE^JANE", PatientID: "P123"}
 	oldHidden := archive.Study{StudyInstanceUID: "study-drop", PatientName: "SMITH^JOHN", PatientID: "P999"}
 	state := &uiState{
-		studies: []archive.Study{oldVisible, oldHidden},
+		studies:          []archive.Study{oldVisible, oldHidden},
+		selectedStudyRow: -1,
 		collapsedPatientGroups: map[string]bool{
 			archivePatientKey(oldVisible): true,
 			archivePatientKey(oldHidden):  true,
@@ -10683,8 +10720,11 @@ func TestArchiveBrowserCellRendersPatientAndIndentedStudyRows(t *testing.T) {
 	}}
 	rows := archiveBrowserRows(studies)
 
-	if got := archiveBrowserCell(rows[0], studies, 0); got != "▾ DOE JANE" {
-		t.Fatalf("patient cell = %q", got)
+	if got := archiveBrowserCell(rows[0], studies, 0); got != "DOE JANE" {
+		t.Fatalf("patient cell = %q, want plain name (disclosure now drawn by the arrow widget)", got)
+	}
+	if got := archiveRowDisclosureGlyph(rows[0]); got != "▾" {
+		t.Fatalf("expanded patient disclosure glyph = %q, want ▾", got)
 	}
 	if got := archiveBrowserCell(rows[0], studies, archiveStudyTableColumnSeries); got != "2" {
 		t.Fatalf("patient series cell = %q, want 2", got)
@@ -10692,8 +10732,14 @@ func TestArchiveBrowserCellRendersPatientAndIndentedStudyRows(t *testing.T) {
 	if got := archiveBrowserCell(rows[0], studies, archiveStudyTableColumnDOB); got != "2/1/70" {
 		t.Fatalf("patient DOB cell = %q, want compact display date", got)
 	}
-	if got := archiveBrowserCell(rows[1], studies, 0); got != "  ▸ CT Abdomen" {
-		t.Fatalf("study cell = %q", got)
+	if got := archiveBrowserCell(rows[1], studies, 0); got != "CT Abdomen" {
+		t.Fatalf("study cell = %q, want plain description (disclosure now drawn by the arrow widget)", got)
+	}
+	if got := archiveRowDisclosureGlyph(rows[1]); got != "▸" {
+		t.Fatalf("collapsed study disclosure glyph = %q, want ▸", got)
+	}
+	if got := archiveRowIndentLevel(rows[1]); got != 1 {
+		t.Fatalf("study indent level = %d, want 1", got)
 	}
 	if got := archiveBrowserCell(rows[1], studies, archiveStudyTableColumnStudyDate); got != "31/5/26" {
 		t.Fatalf("study date cell = %q", got)
@@ -10706,7 +10752,7 @@ func TestArchiveBrowserCellRendersPatientAndIndentedStudyRows(t *testing.T) {
 func TestArchiveTableHeadersIncludeWorkstationDisplayFields(t *testing.T) {
 	headers := strings.Join(archiveTableHeaders(), "|")
 
-	for _, want := range []string{"Patient name", "Date of Birth", "Date Acquired", "Date Added", "# im", "# ser...", "Institution", "Status", "Comments"} {
+	for _, want := range []string{"Patient name", "Date of Birth", "Date Acquired", "Date Added", "# im", "Institution", "Status", "Comments"} {
 		if !strings.Contains(headers, want) {
 			t.Fatalf("headers missing %q in %q", want, headers)
 		}
@@ -10720,20 +10766,20 @@ func TestArchiveTableHeadersHideSeparateTimeAndDescriptionByDefault(t *testing.T
 	headers := archiveTableHeaders()
 	joined := strings.Join(headers, "|")
 
-	for _, hidden := range []string{"Time", "Description"} {
+	for _, hidden := range []string{"Time", "Description", "# ser...", "Accession..."} {
 		if strings.Contains(joined, hidden) {
 			t.Fatalf("default Archive headers should not include separate %q column: %q", hidden, joined)
 		}
 	}
 
-	want := []string{"Patient name", "Modality", "# im", "# ser...", "Patient ID", "Date of Birth", "Accession...", "Date Acquired", "Date Added", "Institution", "Status", "Comments"}
+	want := []string{"Patient name", "Modality", "# im", "Patient ID", "Date of Birth", "Date Acquired", "Date Added", "Institution", "Status", "Comments"}
 	if strings.Join(headers, "|") != strings.Join(want, "|") {
 		t.Fatalf("archive headers = %q, want %q", strings.Join(headers, "|"), strings.Join(want, "|"))
 	}
 }
 
 func TestArchiveTableHeadersFollowWorkstationPrimaryOrder(t *testing.T) {
-	want := []string{"Patient name", "Modality", "# im", "# ser...", "Patient ID", "Date of Birth", "Accession...", "Date Acquired", "Date Added", "Institution", "Status", "Comments"}
+	want := []string{"Patient name", "Modality", "# im", "Patient ID", "Date of Birth", "Date Acquired", "Date Added", "Institution", "Status", "Comments"}
 
 	if got := archiveTableHeaders(); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("archive headers = %q, want %q", strings.Join(got, "|"), strings.Join(want, "|"))
@@ -10752,14 +10798,15 @@ func TestArchiveStudyColumnWidthsMatchReferenceRhythm(t *testing.T) {
 		want float32
 	}{
 		{name: "patient", col: 0, want: 330},
+		{name: "modality", col: 1, want: 95},
 		{name: "image count", col: 2, want: 70},
-		{name: "series count", col: 3, want: 78},
-		{name: "accession", col: 6, want: 95},
-		{name: "date acquired", col: 7, want: 155},
-		{name: "date added", col: 8, want: 155},
-		{name: "institution", col: 9, want: 90},
-		{name: "status", col: 10, want: 110},
-		{name: "comments", col: 11, want: 170},
+		{name: "patient id", col: 3, want: 120},
+		{name: "date of birth", col: 4, want: 110},
+		{name: "date acquired", col: 5, want: 155},
+		{name: "date added", col: 6, want: 155},
+		{name: "institution", col: 7, want: 90},
+		{name: "status", col: 8, want: 110},
+		{name: "comments", col: 9, want: 170},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -11506,8 +11553,11 @@ func TestArchiveBrowserRowsIncludeLoadedInstancesBelowSeries(t *testing.T) {
 	if rows[4].kind != archiveRowInstance || rows[4].instanceIndex != 1 {
 		t.Fatalf("second image row = %#v", rows[4])
 	}
-	if got := archiveBrowserCell(rows[2], studies, archiveStudyTableColumnPatient); got != "      Portal Venous" {
-		t.Fatalf("loaded series label = %q, want clinical description without series disclosure marker", got)
+	if got := archiveBrowserCell(rows[2], studies, archiveStudyTableColumnPatient); got != "Portal Venous" {
+		t.Fatalf("loaded series label = %q, want clinical description without indent/disclosure marker", got)
+	}
+	if got := archiveRowIndentLevel(rows[2]); got != 2 {
+		t.Fatalf("series indent level = %d, want 2", got)
 	}
 }
 
@@ -11530,8 +11580,158 @@ func TestArchiveBrowserRowsHideCollapsedLoadedStudySeries(t *testing.T) {
 	if rows[1].kind != archiveRowStudy || !rows[1].studyHasSeries || rows[1].studySeriesLoaded {
 		t.Fatalf("study row = %#v, want collapsed loaded study", rows[1])
 	}
-	if got := archiveBrowserCell(rows[1], studies, 0); got != "  ▸ CT Abdomen" {
-		t.Fatalf("collapsed study cell = %q", got)
+	if got := archiveBrowserCell(rows[1], studies, 0); got != "CT Abdomen" {
+		t.Fatalf("collapsed study cell = %q, want plain description", got)
+	}
+	if got := archiveRowDisclosureGlyph(rows[1]); got != "▸" {
+		t.Fatalf("collapsed study glyph = %q, want ▸", got)
+	}
+}
+
+func TestQueryTabSourceListIsTallEnoughToShowNodes(t *testing.T) {
+	fynetest.NewApp()
+	dir := t.TempDir()
+	catalog, err := archive.Open(filepath.Join(dir, "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	state := &uiState{
+		catalog:   catalog,
+		nodeStore: nodes.NewStore(filepath.Join(dir, "nodes.json")),
+		nodes: []nodes.Node{
+			{ID: "1", Name: "NODE_A", AETitle: "A", Host: "10.0.0.1", Port: 104},
+			{ID: "2", Name: "NODE_B", AETitle: "B", Host: "10.0.0.2", Port: 104},
+		},
+		openedArchiveStudyUIDs: map[string]bool{},
+	}
+	status := widget.NewLabel("")
+	studyTable := newStudyTable(state)
+	tables := archiveTables{studies: studyTable, series: newSeriesTable(state), instances: newInstanceTable(state)}
+	nodeTable := newNodeTable(status, state)
+	queryTab := newQueryTab(nil, status, tables, nodeTable, state)
+
+	w := fynetest.NewWindow(queryTab)
+	defer w.Close()
+	w.Resize(fyne.NewSize(1400, 900))
+	w.Canvas().Capture() // force a layout pass
+
+	if state.querySourceList == nil {
+		t.Fatal("query source list was not created")
+	}
+	// The list must fill the DICOM Nodes panel; a VBox would collapse it to ~0
+	// and hide the registered nodes.
+	if got := state.querySourceList.Size().Height; got < compactSourceListRowHeight*3 {
+		t.Fatalf("query source list height = %.0f, want room for several node rows so registered nodes are visible", got)
+	}
+}
+
+func TestArchiveListDefaultsToCollapsedSeries(t *testing.T) {
+	fynetest.NewApp()
+	ctx := context.Background()
+	dir := t.TempDir()
+	catalog, err := archive.Open(filepath.Join(dir, "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A study with two series, each with one image.
+	importTestArchiveObject(t, catalog, filepath.Join(src, "a.dcm"), "DOE^JANE", "P1", "CT", "1.2.3", "9.8.7", "1.1")
+	importTestArchiveObject(t, catalog, filepath.Join(src, "b.dcm"), "DOE^JANE", "P1", "CT", "1.2.3", "9.8.8", "1.2")
+
+	state := &uiState{catalog: catalog, openedArchiveStudyUIDs: map[string]bool{}}
+	studyTable := newStudyTable(state)
+	tables := archiveTables{studies: studyTable, series: newSeriesTable(state), instances: newInstanceTable(state)}
+	wireArchiveTables(nil, widget.NewLabel(""), tables, state)
+
+	studies, err := loadStudies(ctx, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStudies(state, tables, studies)
+
+	for _, r := range state.archiveRows {
+		if r.kind != archiveRowPatient {
+			t.Fatalf("default archive view should show only collapsed patient rows, found %#v", r)
+		}
+	}
+	if len(state.archiveRows) == 0 {
+		t.Fatal("expected at least one patient row")
+	}
+}
+
+func TestArchiveTreeSelectionAndExpansionAreIndependent(t *testing.T) {
+	fynetest.NewApp()
+	state := &uiState{
+		studies: []archive.Study{{
+			StudyInstanceUID: "1.2.3", PatientName: "DOE^JANE", PatientID: "P1",
+			StudyDescription: "CT Abdomen", SeriesCount: 1,
+		}},
+		archiveSeriesByStudy: map[string][]archive.Series{
+			"1.2.3": {{SeriesInstanceUID: "9.8.7", SeriesDescription: "Portal Venous"}},
+		},
+	}
+	state.archiveRows = archiveBrowserRowsForState(state)
+	studyTable := newStudyTable(state)
+	tables := archiveTables{studies: studyTable, series: newSeriesTable(state), instances: newInstanceTable(state)}
+	wireArchiveTables(nil, widget.NewLabel(""), tables, state)
+
+	studyRow := -1
+	for i, r := range state.archiveRows {
+		if r.kind == archiveRowStudy {
+			studyRow = i
+			break
+		}
+	}
+	if studyRow < 0 {
+		t.Fatal("expected a study row in the tree")
+	}
+
+	// Selecting the name selects the study but must not change expansion.
+	studyTable.OnSelected(widget.TableCellID{Row: studyRow + 1, Col: 0})
+	if state.selectedStudyRow != 0 || state.selectedSeriesRow != -1 {
+		t.Fatalf("after select: study=%d series=%d, want study=0 series=-1", state.selectedStudyRow, state.selectedSeriesRow)
+	}
+	if state.collapsedArchiveStudies["1.2.3"] {
+		t.Fatal("selecting a study must not collapse its series")
+	}
+
+	// The disclosure arrow toggles expansion without disturbing the selection.
+	state.archiveToggleRow(state.archiveRows[studyRow])
+	if state.selectedStudyRow != 0 {
+		t.Fatalf("toggling expansion must not change selection, got study=%d", state.selectedStudyRow)
+	}
+	if !state.collapsedArchiveStudies["1.2.3"] {
+		t.Fatal("arrow toggle should collapse loaded series")
+	}
+
+	// Re-toggling the same row collapses back the other way (the re-click bug):
+	// re-find the rebuilt study row and toggle again.
+	studyRow = -1
+	for i, r := range state.archiveRows {
+		if r.kind == archiveRowStudy {
+			studyRow = i
+			break
+		}
+	}
+	state.archiveToggleRow(state.archiveRows[studyRow])
+	if state.collapsedArchiveStudies["1.2.3"] {
+		t.Fatal("toggling the same row again should re-expand it")
+	}
+}
+
+func TestArchiveDisclosureArrowTapInvokesConfiguredHandler(t *testing.T) {
+	fynetest.NewApp()
+	arrow := newArchiveDisclosureArrow()
+	tapped := 0
+	arrow.configure("▸", 1, func() { tapped++ })
+	arrow.Tapped(&fyne.PointEvent{})
+	if tapped != 1 {
+		t.Fatalf("disclosure arrow tap fired %d times, want 1", tapped)
 	}
 }
 
@@ -11594,8 +11794,8 @@ func TestToggleArchiveSeriesImagesCollapsesAndExpandsLoadedRows(t *testing.T) {
 	if !state.collapsedArchiveSeries["9.8.7"] || len(state.archiveRows) != 3 {
 		t.Fatalf("collapsed state = %#v rows=%#v", state.collapsedArchiveSeries, state.archiveRows)
 	}
-	if got := archiveBrowserCell(state.archiveRows[2], state.studies, archiveStudyTableColumnPatient); got != "      Portal Venous" {
-		t.Fatalf("collapsed series cell = %q, want stable clinical label without series disclosure marker", got)
+	if got := archiveBrowserCell(state.archiveRows[2], state.studies, archiveStudyTableColumnPatient); got != "Portal Venous" {
+		t.Fatalf("collapsed series cell = %q, want stable clinical label without indent/disclosure marker", got)
 	}
 	if !toggleArchiveSeriesImages(state, state.archiveRows[2]) {
 		t.Fatal("second toggle returned false, want true")
@@ -11618,11 +11818,14 @@ func TestArchiveBrowserCellRendersInlineSeriesRows(t *testing.T) {
 	}
 	rows := archiveBrowserRowsWithInlineSeries(studies, nil, map[string][]archive.Series{"1.2.3": {series}})
 
-	if got := archiveBrowserCell(rows[1], studies, 0); got != "  ▾ CT Abdomen" {
-		t.Fatalf("loaded study cell = %q", got)
+	if got := archiveBrowserCell(rows[1], studies, 0); got != "CT Abdomen" {
+		t.Fatalf("loaded study cell = %q, want plain description", got)
 	}
-	if got := archiveBrowserCell(rows[2], studies, 0); got != "      Portal Venous" {
-		t.Fatalf("series description cell = %q", got)
+	if got := archiveRowDisclosureGlyph(rows[1]); got != "▾" {
+		t.Fatalf("expanded study glyph = %q, want ▾", got)
+	}
+	if got := archiveBrowserCell(rows[2], studies, 0); got != "Portal Venous" {
+		t.Fatalf("series description cell = %q, want plain description", got)
 	}
 	if got := archiveBrowserCell(rows[2], studies, archiveStudyTableColumnModality); got != "CT" {
 		t.Fatalf("series modality cell = %q", got)
@@ -11653,8 +11856,11 @@ func TestArchiveBrowserCellRendersInlineInstanceRows(t *testing.T) {
 	rows := archiveBrowserRowsWithInlineSeriesAndInstances(studies, nil, map[string][]archive.Series{"1.2.3": {series}}, map[string][]archive.Instance{"9.8.7": {instance}})
 
 	got := archiveBrowserCell(rows[3], studies, archiveStudyTableColumnPatient)
-	if got != "          • Image 12" {
-		t.Fatalf("inline image label = %q, want leaf marker and image number", got)
+	if got != "• Image 12" {
+		t.Fatalf("inline image label = %q, want leaf marker and image number without indent", got)
+	}
+	if lvl := archiveRowIndentLevel(rows[3]); lvl != 3 {
+		t.Fatalf("instance indent level = %d, want 3", lvl)
 	}
 	if strings.Contains(got, instance.SOPInstanceUID) {
 		t.Fatalf("visible image label leaked SOP Instance UID: %q", got)
@@ -11680,8 +11886,8 @@ func TestArchiveBrowserCellDoesNotUseSeriesUIDAsVisibleInlineLabel(t *testing.T)
 	rows := archiveBrowserRowsWithInlineSeries(studies, nil, map[string][]archive.Series{"1.2.3": {series}})
 
 	got := archiveBrowserCell(rows[2], studies, archiveStudyTableColumnPatient)
-	if got != "      Series 7" {
-		t.Fatalf("series fallback label = %q, want compact non-UID label", got)
+	if got != "Series 7" {
+		t.Fatalf("series fallback label = %q, want compact non-UID label without indent", got)
 	}
 	if strings.Contains(got, series.SeriesInstanceUID) {
 		t.Fatalf("visible series label leaked UID: %q", got)
@@ -11915,7 +12121,7 @@ func TestWorkstationTableCellsRenderTextWhenUsedAsCanvasObjects(t *testing.T) {
 }
 
 func TestWorkstationTableRowHeightsFitCellContent(t *testing.T) {
-	fynetest.NewApp()
+	configureAppAppearance(fynetest.NewApp())
 	tests := []struct {
 		name      string
 		rowHeight float32
@@ -13604,6 +13810,7 @@ func TestNodeTableCellUsesHeaderAndStripedStyling(t *testing.T) {
 }
 
 func TestNodeTableUsesReferenceRowHeight(t *testing.T) {
+	configureAppAppearance(fynetest.NewApp())
 	table := newNodeTable(nil, &uiState{nodes: []nodes.Node{{Name: "RADIANT"}}})
 
 	rowHeights := reflect.ValueOf(table).Elem().FieldByName("rowHeights")

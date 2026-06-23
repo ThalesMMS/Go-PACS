@@ -36,6 +36,7 @@ type Config struct {
 	ReceiverTLSKeyFile               string                    `json:"receiverTLSKeyFile,omitempty"`
 	AdditionalAETitles               []string                  `json:"additionalAETitles,omitempty"`
 	ReceivePreferredTransferSyntax   string                    `json:"receivePreferredTransferSyntax"`
+	ReceiveDecompressImages          bool                      `json:"receiveDecompressImages,omitempty"`
 	DICOMCommunicationTimeoutSeconds int                       `json:"dicomCommunicationTimeoutSeconds"`
 	DICOMConnectionTimeoutSeconds    int                       `json:"dicomConnectionTimeoutSeconds"`
 	UISortPreferences                map[string]SortPreference `json:"uiSortPreferences,omitempty"`

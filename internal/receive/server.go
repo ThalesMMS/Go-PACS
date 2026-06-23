@@ -1,12 +1,10 @@
 package receive
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strings"
 	"sync"
@@ -15,10 +13,8 @@ import (
 	"github.com/ThalesMMS/Go-PACS/internal/archive"
 	"github.com/ThalesMMS/Go-PACS/internal/netverify"
 	"github.com/ThalesMMS/Go-PACS/internal/nodes"
-	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/net/ul"
-	"github.com/ThalesMMS/dicom-go/object"
 	"github.com/ThalesMMS/dicom-go/transfer"
 )
 
@@ -29,15 +25,6 @@ const (
 	PreferredTransferSyntaxAuto                   = "auto"
 	PreferredTransferSyntaxExplicitVRLittleEndian = "1.2.840.10008.1.2.1"
 	PreferredTransferSyntaxImplicitVRLittleEndian = "1.2.840.10008.1.2"
-	statusOutOfResources                          = 0xA700
-	statusDataSetDoesNotMatch                     = 0xA900
-	statusCannotUnderstand                        = 0xC000
-)
-
-var (
-	errStoreObjectLimitExceeded = errors.New("max_store_object_bytes exceeded")
-	tagSOPClassUID              = core.NewTag(0x0008, 0x0016)
-	tagSOPInstanceUID           = core.NewTag(0x0008, 0x0018)
 )
 
 type Config struct {
@@ -50,6 +37,7 @@ type Config struct {
 	MaxAssociations         int
 	MaxStoreObjectBytes     int64
 	PreferredTransferSyntax string
+	DecompressImages        bool
 	TLSConfig               *tls.Config
 }
 
@@ -74,6 +62,7 @@ type Server struct {
 	associationSlots            chan struct{}
 	maxStoreObjectBytes         int64
 	supportedTransferSyntaxUIDs []string
+	decompressImages            bool
 	tlsConfig                   *tls.Config
 	ctx                         context.Context
 	cancel                      context.CancelFunc
@@ -127,6 +116,9 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.DecompressImages {
+		supportedTransferSyntaxes = appendUniqueTransferSyntaxUIDs(supportedTransferSyntaxes, decompressionTransferSyntaxUIDs()...)
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	listener, err := ul.Listen(ul.ListenOptions{Address: cfg.Address, Context: ctx})
@@ -145,6 +137,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 		associationSlots:            make(chan struct{}, maxAssociations),
 		maxStoreObjectBytes:         cfg.MaxStoreObjectBytes,
 		supportedTransferSyntaxUIDs: supportedTransferSyntaxes,
+		decompressImages:            cfg.DecompressImages,
 		tlsConfig:                   cfg.TLSConfig,
 		ctx:                         ctx,
 		cancel:                      cancel,
@@ -278,33 +271,17 @@ func (s *Server) releaseAssociationSlot() {
 
 func (s *Server) handleAssociation(assoc *ul.Association) error {
 	defer assoc.Close()
-	for {
-		incoming, err := receiveCommandOrRelease(assoc)
-		if err != nil {
-			return err
-		}
-		if incoming.release {
-			return assoc.WritePDU(&ul.ReleaseRP{})
-		}
-
-		field, err := dimse.CommandUint16(incoming.command, dimse.CommandField)
-		if err != nil {
-			return err
-		}
-		switch field {
-		case dimse.CEchoRQ:
-			if err := handleCEchoCommand(assoc, incoming); err != nil {
-				return err
+	return dimse.ServeStorageAssociation(s.ctx, assoc, dimse.StorageSCPOptions{
+		MaxDataSetBytes: s.maxStoreObjectBytes,
+		StoreHandler: dimse.CStoreHandlerFunc(func(ctx context.Context, req dimse.CStoreRequestContext) (uint16, error) {
+			return s.storeCStore(ctx, assoc, req)
+		}),
+		OnCStoreResponse: func(_ context.Context, _ dimse.CStoreRequestContext, status uint16) {
+			if status != dimse.StatusSuccess {
+				s.failed.Add(1)
 			}
-		case dimse.CStoreRQ:
-			if err := s.handleCStoreCommand(assoc, incoming); err != nil {
-				return err
-			}
-		default:
-			_ = assoc.Abort(ul.AbortReasonNotSpecified)
-			return fmt.Errorf("unsupported DIMSE command 0x%04X", field)
-		}
-	}
+		},
+	})
 }
 
 func normalizeAllowedCalledAETitles(primary string, aeTitles []string) (map[string]struct{}, error) {
@@ -389,239 +366,21 @@ func (s *Server) allowsRemoteHost(assoc *ul.Association) bool {
 	return ok
 }
 
-func handleCEchoCommand(assoc *ul.Association, incoming incomingCommand) error {
-	messageID, err := dimse.CommandUint16(incoming.command, dimse.MessageID)
-	if err != nil {
-		return err
-	}
-	dataSetType, err := dimse.CommandUint16(incoming.command, dimse.CommandDataSetType)
-	if err != nil {
-		return err
-	}
-	if dataSetType != dimse.NoDataSet {
-		return fmt.Errorf("C-ECHO request dataset type 0x%04X, want no dataset", dataSetType)
-	}
-	return dimse.SendCEchoResponse(assoc, incoming.pcID, messageID, dimse.StatusSuccess)
-}
-
-func (s *Server) handleCStoreCommand(assoc *ul.Association, incoming incomingCommand) error {
-	req, err := dimse.ParseCStoreRequest(incoming.command)
-	if err != nil {
-		return err
-	}
-	pc, err := acceptedContextByID(assoc, incoming.pcID)
-	if err != nil {
-		return err
-	}
-	syntax, ok := transfer.DefaultRegistry.Get(pc.TransferSyntaxUID)
-	if !ok {
-		return fmt.Errorf("%w: %q", transfer.ErrUnknownTransferSyntax, pc.TransferSyntaxUID)
-	}
-
+func (s *Server) storeCStore(ctx context.Context, assoc *ul.Association, req dimse.CStoreRequestContext) (uint16, error) {
+	report, err := s.catalog.ImportObjectWithOptions(ctx, sourcePath(assoc, &req.Request), req.DataSet, req.DataSetSyntax, archive.ImportOptions{
+		DecompressImages: s.decompressImages,
+		Limits:           archive.ImportLimits{MaxFileImportBytes: s.maxStoreObjectBytes},
+	})
 	status := uint16(dimse.StatusSuccess)
-	dataset, err := receiveDataSet(assoc, incoming, syntax, s.maxStoreObjectBytes)
 	if err != nil {
-		if errors.Is(err, errStoreObjectLimitExceeded) {
-			status = statusOutOfResources
-		} else {
-			status = statusCannotUnderstand
-		}
-	} else if err := validateCStoreDataSet(req.AffectedSOPClassUID, req.AffectedSOPInstanceUID, pc, dataset); err != nil {
-		status = statusDataSetDoesNotMatch
+		status = dimse.StatusCStoreOutOfResources
+	} else if report.InvalidFiles > 0 || len(report.Rejections) > 0 {
+		status = dimse.StatusCStoreCannotUnderstand
 	} else {
-		report, importErr := s.catalog.ImportObject(assoc.Context, sourcePath(assoc, req), dataset, syntax)
-		if importErr != nil {
-			status = statusOutOfResources
-		} else if report.InvalidFiles > 0 || len(report.Rejections) > 0 {
-			status = statusCannotUnderstand
-		} else {
-			s.stored.Add(int64(report.StoredFiles))
-			s.duplicates.Add(int64(report.Duplicates))
-		}
+		s.stored.Add(int64(report.StoredFiles))
+		s.duplicates.Add(int64(report.Duplicates))
 	}
-	if status != dimse.StatusSuccess {
-		s.failed.Add(1)
-	}
-
-	rsp := dimse.CStoreResponse{
-		AffectedSOPClassUID:       req.AffectedSOPClassUID,
-		MessageIDBeingRespondedTo: req.MessageID,
-		AffectedSOPInstanceUID:    req.AffectedSOPInstanceUID,
-		Status:                    status,
-	}
-	if rspErr := dimse.SendCStoreResponse(assoc, incoming.pcID, rsp); rspErr != nil {
-		return rspErr
-	}
-	return nil
-}
-
-type incomingCommand struct {
-	release    bool
-	pcID       byte
-	command    *object.Object
-	dataPrefix []byte
-	dataLast   bool
-}
-
-func receiveCommandOrRelease(assoc *ul.Association) (incomingCommand, error) {
-	var command bytes.Buffer
-	var out incomingCommand
-	commandDone := false
-
-	for !commandDone {
-		pdu, err := assoc.ReadPDU()
-		if err != nil {
-			return incomingCommand{}, err
-		}
-		switch pdu := pdu.(type) {
-		case *ul.ReleaseRQ:
-			return incomingCommand{release: true}, nil
-		case *ul.PDataTF:
-			for _, value := range pdu.Values {
-				if out.pcID == 0 {
-					out.pcID = value.PresentationContextID
-				}
-				if value.PresentationContextID != out.pcID {
-					return incomingCommand{}, fmt.Errorf("%w: got %d, want %d", dimse.ErrPresentationContextMismatch, value.PresentationContextID, out.pcID)
-				}
-				if value.IsCommand {
-					if commandDone {
-						return incomingCommand{}, errors.New("unexpected command PDV after command completion")
-					}
-					command.Write(value.Data)
-					if value.IsLast {
-						commandDone = true
-					}
-					continue
-				}
-				if !commandDone {
-					return incomingCommand{}, errors.New("dataset PDV received before complete command")
-				}
-				out.dataPrefix = append(out.dataPrefix, value.Data...)
-				if value.IsLast {
-					out.dataLast = true
-				}
-			}
-		default:
-			return incomingCommand{}, fmt.Errorf("%w: got %T while waiting for command P-DATA or A-RELEASE-RQ", ul.ErrUnexpectedPDU, pdu)
-		}
-	}
-
-	obj, err := dimse.DecodeCommandSet(command.Bytes())
-	if err != nil {
-		return incomingCommand{}, err
-	}
-	out.command = obj
-	return out, nil
-}
-
-func receiveDataSet(assoc *ul.Association, incoming incomingCommand, syntax transfer.Syntax, maxBytes int64) (*object.Object, error) {
-	if maxBytes > 0 && int64(len(incoming.dataPrefix)) > maxBytes {
-		if !incoming.dataLast {
-			_, _ = io.Copy(io.Discard, dimse.NewPDataReader(assoc, incoming.pcID))
-		}
-		return nil, storeObjectLimitExceeded(int64(len(incoming.dataPrefix)), maxBytes)
-	}
-	if incoming.dataLast {
-		return object.ReadDataSet(storeObjectLimitReader(bytes.NewReader(incoming.dataPrefix), maxBytes), syntax)
-	}
-	pdataReader := dimse.NewPDataReader(assoc, incoming.pcID)
-	if len(incoming.dataPrefix) == 0 {
-		dataset, err := object.ReadDataSet(storeObjectLimitReader(pdataReader, maxBytes), syntax)
-		drainDataSetPDataOnError(pdataReader, err)
-		return dataset, err
-	}
-	reader := io.MultiReader(bytes.NewReader(incoming.dataPrefix), pdataReader)
-	dataset, err := object.ReadDataSet(storeObjectLimitReader(reader, maxBytes), syntax)
-	drainDataSetPDataOnError(pdataReader, err)
-	return dataset, err
-}
-
-func drainDataSetPDataOnError(reader *dimse.PDataReader, err error) {
-	if !shouldDrainDataSetPDataOnError(err) {
-		return
-	}
-	_, _ = io.Copy(io.Discard, reader)
-}
-
-func shouldDrainDataSetPDataOnError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return !errors.Is(err, net.ErrClosed) &&
-		!errors.Is(err, ul.ErrAssociationAborted) &&
-		!errors.Is(err, ul.ErrAssociationTimeout) &&
-		!errors.Is(err, io.EOF) &&
-		!errors.Is(err, io.ErrUnexpectedEOF) &&
-		!errors.Is(err, context.Canceled) &&
-		!errors.Is(err, context.DeadlineExceeded)
-}
-
-func storeObjectLimitReader(reader io.Reader, maxBytes int64) io.Reader {
-	if maxBytes <= 0 {
-		return reader
-	}
-	return &limitedStoreObjectReader{reader: reader, maxBytes: maxBytes}
-}
-
-type limitedStoreObjectReader struct {
-	reader   io.Reader
-	maxBytes int64
-	read     int64
-}
-
-func (r *limitedStoreObjectReader) Read(p []byte) (int, error) {
-	remaining := r.maxBytes - r.read
-	if remaining <= 0 {
-		return 0, storeObjectLimitExceeded(r.read+1, r.maxBytes)
-	}
-	if remaining < int64(len(p)) {
-		p = p[:int(remaining)+1]
-	}
-	n, err := r.reader.Read(p)
-	r.read += int64(n)
-	if r.read > r.maxBytes {
-		return n, storeObjectLimitExceeded(r.read, r.maxBytes)
-	}
-	return n, err
-}
-
-func storeObjectLimitExceeded(got, max int64) error {
-	return fmt.Errorf("%w: %d > %d", errStoreObjectLimitExceeded, got, max)
-}
-
-func acceptedContextByID(assoc *ul.Association, pcID byte) (ul.AcceptedContext, error) {
-	if assoc == nil {
-		return ul.AcceptedContext{}, errors.New("nil association")
-	}
-	for _, pc := range assoc.AcceptedContexts {
-		if pc.ID == pcID {
-			return pc, nil
-		}
-	}
-	return ul.AcceptedContext{}, fmt.Errorf("no accepted presentation context with ID %d", pcID)
-}
-
-func validateCStoreDataSet(affectedSOPClassUID, affectedSOPInstanceUID string, pc ul.AcceptedContext, dataset *object.Object) error {
-	if dataset == nil {
-		return errors.New("missing dataset")
-	}
-	if affectedSOPClassUID == "" {
-		return errors.New("missing affected SOP Class UID")
-	}
-	if affectedSOPInstanceUID == "" {
-		return errors.New("missing affected SOP Instance UID")
-	}
-	if pc.AbstractSyntaxUID != affectedSOPClassUID {
-		return fmt.Errorf("presentation context SOP Class UID %q does not match request %q", pc.AbstractSyntaxUID, affectedSOPClassUID)
-	}
-	if sopClassUID, ok := dataset.GetUID(tagSOPClassUID); !ok || sopClassUID != affectedSOPClassUID {
-		return errors.New("dataset SOP Class UID does not match request")
-	}
-	if sopInstanceUID, ok := dataset.GetUID(tagSOPInstanceUID); !ok || sopInstanceUID != affectedSOPInstanceUID {
-		return errors.New("dataset SOP Instance UID does not match request")
-	}
-	return nil
+	return status, err
 }
 
 func sourcePath(assoc *ul.Association, req *dimse.CStoreRequest) string {
@@ -644,48 +403,44 @@ func StorageSOPClassUIDs() []string {
 }
 
 func storageSOPClassUIDs() []string {
-	return []string{
-		"1.2.840.10008.5.1.4.1.1.1",
-		"1.2.840.10008.5.1.4.1.1.2",
-		"1.2.840.10008.5.1.4.1.1.2.1",
-		"1.2.840.10008.5.1.4.1.1.4",
-		"1.2.840.10008.5.1.4.1.1.4.1",
-		"1.2.840.10008.5.1.4.1.1.6.1",
-		"1.2.840.10008.5.1.4.1.1.7",
-		"1.2.840.10008.5.1.4.1.1.7.1",
-		"1.2.840.10008.5.1.4.1.1.7.2",
-		"1.2.840.10008.5.1.4.1.1.7.3",
-		"1.2.840.10008.5.1.4.1.1.7.4",
-		"1.2.840.10008.5.1.4.1.1.12.1",
-		"1.2.840.10008.5.1.4.1.1.12.2",
-		"1.2.840.10008.5.1.4.1.1.20",
-		"1.2.840.10008.5.1.4.1.1.128",
-		"1.2.840.10008.5.1.4.1.1.1.1",
-		"1.2.840.10008.5.1.4.1.1.1.1.1",
-	}
+	return dimse.DefaultStorageSOPClassUIDs()
 }
 
 func TransferSyntaxUIDsForPreference(preference string) ([]string, error) {
 	preference = strings.TrimSpace(preference)
 	if preference == "" || strings.EqualFold(preference, PreferredTransferSyntaxAuto) {
-		return defaultSupportedTransferSyntaxUIDs(), nil
+		return transfer.ReceiveTransferSyntaxUIDs(transfer.ImplicitVRLittleEndian, transfer.ExplicitVRLittleEndian), nil
 	}
 	switch preference {
 	case PreferredTransferSyntaxExplicitVRLittleEndian:
-		return []string{
-			transfer.ExplicitVRLittleEndian.UID,
-			transfer.ImplicitVRLittleEndian.UID,
-		}, nil
+		return transfer.ReceiveTransferSyntaxUIDs(transfer.ExplicitVRLittleEndian, transfer.ImplicitVRLittleEndian), nil
 	case PreferredTransferSyntaxImplicitVRLittleEndian:
-		return defaultSupportedTransferSyntaxUIDs(), nil
+		return transfer.ReceiveTransferSyntaxUIDs(transfer.ImplicitVRLittleEndian, transfer.ExplicitVRLittleEndian), nil
 	default:
 		return nil, fmt.Errorf("unsupported receive preferred transfer syntax %q", preference)
 	}
 }
 
-func defaultSupportedTransferSyntaxUIDs() []string {
+func decompressionTransferSyntaxUIDs() []string {
 	return []string{
-		transfer.ImplicitVRLittleEndian.UID,
-		transfer.ExplicitVRLittleEndian.UID,
+		transfer.JPEGBaseline.UID,
+		transfer.JPEGExtended.UID,
+		transfer.JPEGLosslessNonHierarchical.UID,
+		transfer.JPEGLosslessSV1.UID,
+		transfer.RLELossless.UID,
 	}
+}
+
+func appendUniqueTransferSyntaxUIDs(base []string, extra ...string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(base)+len(extra))
+	for _, uid := range append(base, extra...) {
+		uid = transfer.NormalizeUID(uid)
+		if uid == "" || seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		out = append(out, uid)
+	}
+	return out
 }

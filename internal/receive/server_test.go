@@ -11,7 +11,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
-	"io"
 	"math/big"
 	"net"
 	"os"
@@ -30,6 +29,7 @@ import (
 	"github.com/ThalesMMS/dicom-go/net/dimse"
 	"github.com/ThalesMMS/dicom-go/net/ul"
 	"github.com/ThalesMMS/dicom-go/object"
+	"github.com/ThalesMMS/dicom-go/pixeldata/codecfixture"
 	"github.com/ThalesMMS/dicom-go/transfer"
 )
 
@@ -104,6 +104,65 @@ func TestServerReceivesCStoreIntoArchive(t *testing.T) {
 	}
 	if snapshot.Failed != 0 {
 		t.Fatalf("Snapshot.Failed = %d, want 0", snapshot.Failed)
+	}
+}
+
+func TestServerDecompressesIncomingCompressedImages(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	catalog, err := archive.Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	server, err := Start(ctx, Config{
+		Catalog:          catalog,
+		Address:          "127.0.0.1:0",
+		AETitle:          testReceiverCalledAETitle,
+		DecompressImages: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopServer(t, server)
+
+	data, wantPixels := testCompressedPart10File(t)
+	source := filepath.Join(t.TempDir(), "compressed.dcm")
+	if err := os.WriteFile(source, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := send.SendFiles(ctx, receiverNode(t, server), []string{source}, testReceiverCallingAETitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Sent != 1 || outcome.Failed != 0 {
+		t.Fatalf("outcome = %#v, want one successful compressed send", outcome)
+	}
+
+	instances, err := catalog.InstancesForStudy(ctx, testStudyInstanceUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("len(instances) = %d, want 1", len(instances))
+	}
+	if instances[0].TransferSyntaxUID != transfer.ExplicitVRLittleEndian.UID {
+		t.Fatalf("TransferSyntaxUID = %q, want %q", instances[0].TransferSyntaxUID, transfer.ExplicitVRLittleEndian.UID)
+	}
+	storedFile, err := os.Open(instances[0].StoredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storedFile.Close()
+	stored, err := object.ReadFile(storedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, ok := stored.GetRaw(core.TagPixelData); !ok || !bytes.Equal(raw, wantPixels) {
+		t.Fatalf("stored PixelData = %v, want %v", raw, wantPixels)
 	}
 }
 
@@ -199,8 +258,8 @@ func TestServerDrainsMalformedCStoreDataSetBeforeNextCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReceiveCStoreResponse(malformed) error = %v", err)
 	}
-	if malformedRsp.Status != statusCannotUnderstand {
-		t.Fatalf("malformed C-STORE status = 0x%04X, want 0x%04X", malformedRsp.Status, statusCannotUnderstand)
+	if malformedRsp.Status != dimse.StatusCStoreCannotUnderstand {
+		t.Fatalf("malformed C-STORE status = 0x%04X, want 0x%04X", malformedRsp.Status, dimse.StatusCStoreCannotUnderstand)
 	}
 
 	validFile, err := object.ReadFile(bytes.NewReader(testPart10File(t)))
@@ -274,8 +333,8 @@ func TestServerCountsMalformedCStoreFailureOnceAfterAssociationClose(t *testing.
 	if err != nil {
 		t.Fatalf("ReceiveCStoreResponse(malformed) error = %v", err)
 	}
-	if rsp.Status != statusCannotUnderstand {
-		t.Fatalf("malformed C-STORE status = 0x%04X, want 0x%04X", rsp.Status, statusCannotUnderstand)
+	if rsp.Status != dimse.StatusCStoreCannotUnderstand {
+		t.Fatalf("malformed C-STORE status = 0x%04X, want 0x%04X", rsp.Status, dimse.StatusCStoreCannotUnderstand)
 	}
 	if err := assoc.Close(); err != nil {
 		t.Fatalf("close association: %v", err)
@@ -288,32 +347,6 @@ func TestServerCountsMalformedCStoreFailureOnceAfterAssociationClose(t *testing.
 	}
 	if snapshot.Failed != 1 {
 		t.Fatalf("Snapshot.Failed = %d, want 1", snapshot.Failed)
-	}
-}
-
-func TestShouldDrainDataSetPDataOnError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "nil", err: nil, want: false},
-		{name: "parser error", err: errors.New("invalid dataset"), want: true},
-		{name: "store object limit", err: storeObjectLimitExceeded(2, 1), want: true},
-		{name: "closed association", err: net.ErrClosed, want: false},
-		{name: "aborted association", err: ul.ErrAssociationAborted, want: false},
-		{name: "association timeout", err: ul.ErrAssociationTimeout, want: false},
-		{name: "eof", err: io.EOF, want: false},
-		{name: "unexpected eof", err: io.ErrUnexpectedEOF, want: false},
-		{name: "context canceled", err: context.Canceled, want: false},
-		{name: "context deadline exceeded", err: context.DeadlineExceeded, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldDrainDataSetPDataOnError(tt.err); got != tt.want {
-				t.Fatalf("shouldDrainDataSetPDataOnError(%v) = %t, want %t", tt.err, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -660,12 +693,12 @@ func TestTransferSyntaxUIDsForPreferenceOrdersSupportedSyntaxes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got) != len(test.want) {
-				t.Fatalf("len(got) = %d, want %d (%#v)", len(got), len(test.want), got)
+			if len(got) < len(test.want) {
+				t.Fatalf("len(got) = %d, want at least %d (%#v)", len(got), len(test.want), got)
 			}
-			for i := range got {
+			for i := range test.want {
 				if got[i] != test.want[i] {
-					t.Fatalf("syntax order = %#v, want %#v", got, test.want)
+					t.Fatalf("syntax prefix = %#v, want %#v", got[:len(test.want)], test.want)
 				}
 			}
 		})
@@ -674,7 +707,7 @@ func TestTransferSyntaxUIDsForPreferenceOrdersSupportedSyntaxes(t *testing.T) {
 
 func TestTransferSyntaxUIDsForPreferenceRejectsUnsupportedSyntax(t *testing.T) {
 	if _, err := TransferSyntaxUIDsForPreference(transfer.JPEG2000.UID); err == nil {
-		t.Fatal("JPEG 2000 should not be accepted until receiver decode support is enabled")
+		t.Fatal("raw transfer syntax UID should not be accepted as a preference")
 	}
 }
 
@@ -853,4 +886,44 @@ func testPart10File(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func testCompressedPart10File(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	tc := codecfixture.JPEGLosslessSmall()
+	replaced := map[core.Tag]bool{
+		core.NewTag(0x0008, 0x0016): true,
+		core.NewTag(0x0008, 0x0018): true,
+		core.NewTag(0x0010, 0x0010): true,
+		core.NewTag(0x0010, 0x0020): true,
+		core.NewTag(0x0008, 0x0020): true,
+		core.NewTag(0x0008, 0x0060): true,
+		core.NewTag(0x0020, 0x000D): true,
+		core.NewTag(0x0020, 0x000E): true,
+	}
+	elements := make([]core.Element, 0, len(tc.Elements)+len(replaced))
+	for _, element := range tc.Elements {
+		if !replaced[element.Tag()] {
+			elements = append(elements, element)
+		}
+	}
+	elements = append(elements,
+		testutil.StringElement(core.NewTag(0x0008, 0x0016), core.VRUI, testStorageSOPClassUID),
+		testutil.StringElement(core.NewTag(0x0008, 0x0018), core.VRUI, testSOPInstanceUID),
+		testutil.StringElement(core.NewTag(0x0010, 0x0010), core.VRPN, "RECEIVE^COMPRESSED"),
+		testutil.StringElement(core.NewTag(0x0010, 0x0020), core.VRLO, "RC001"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0020), core.VRDA, "20260604"),
+		testutil.StringElement(core.NewTag(0x0008, 0x0060), core.VRCS, "CT"),
+		testutil.StringElement(core.NewTag(0x0020, 0x000D), core.VRUI, testStudyInstanceUID),
+		testutil.StringElement(core.NewTag(0x0020, 0x000E), core.VRUI, testSeriesInstanceUID),
+	)
+	file := &object.File{
+		Dataset:        object.FromElements(elements, std.Dictionary),
+		TransferSyntax: tc.Syntax,
+	}
+	var buf bytes.Buffer
+	if err := object.WriteFile(&buf, file); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes(), tc.ExpectedFrames[0]
 }

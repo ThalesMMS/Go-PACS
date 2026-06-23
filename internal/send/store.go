@@ -169,7 +169,7 @@ func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, 
 			SOPInstanceUID:             file.sopInstanceUID,
 			RequestedTransferSyntaxUID: file.transferSyntaxUID,
 		}
-		status, negotiatedTransferSyntaxUID, err := sendOne(assoc, file, uint16(i+1))
+		status, negotiatedTransferSyntaxUID, err := sendOne(ctx, assoc, file, uint16(i+1))
 		result.Status = status
 		result.NegotiatedTransferSyntaxUID = negotiatedTransferSyntaxUID
 		if err != nil {
@@ -180,7 +180,7 @@ func SendFilesWithOptions(ctx context.Context, node nodes.Node, paths []string, 
 			reportSendProgress(opts.OnProgress, outcome, len(files), file.path, status, result.Error)
 			continue
 		}
-		if isWarningStatus(status) {
+		if dimse.IsCStoreWarningStatus(status) {
 			outcome.Warnings++
 		}
 		outcome.Sent++
@@ -289,42 +289,23 @@ func presentationContexts(files []storeFile, preferredTransferSyntax string) []u
 	return contexts
 }
 
-func sendOne(assoc *ul.Association, file storeFile, messageID uint16) (uint16, string, error) {
+func sendOne(ctx context.Context, assoc *ul.Association, file storeFile, messageID uint16) (uint16, string, error) {
 	defer file.file.Close()
-	pc, err := dimse.AcceptedContextForSOPClass(assoc, file.sopClassUID)
-	if err != nil {
-		return 0, "", err
-	}
-	negotiatedTransferSyntaxUID := pc.TransferSyntaxUID
-	negotiatedSyntax, ok := transfer.DefaultRegistry.Get(pc.TransferSyntaxUID)
-	if !ok {
-		return 0, negotiatedTransferSyntaxUID, fmt.Errorf("%w: %q", transfer.ErrUnknownTransferSyntax, pc.TransferSyntaxUID)
-	}
-	if err := dimse.SendCStoreRequest(assoc, pc.ID, dimse.CStoreRequest{
+	result, err := dimse.NewStoreClient(assoc).StoreWithOptions(ctx, file.file.Dataset, dimse.CStoreOptions{
 		AffectedSOPClassUID:    file.sopClassUID,
 		MessageID:              messageID,
 		Priority:               dimse.PriorityMedium,
 		AffectedSOPInstanceUID: file.sopInstanceUID,
-	}); err != nil {
-		return 0, negotiatedTransferSyntaxUID, err
+	})
+	status := uint16(0)
+	if result.Response != nil {
+		status = result.Response.Status
 	}
-	if err := dimse.SendDataSet(assoc, pc.ID, file.file.Dataset, negotiatedSyntax); err != nil {
-		return 0, negotiatedTransferSyntaxUID, err
+	negotiatedTransferSyntaxUID := result.TransferSyntax.UID
+	if negotiatedTransferSyntaxUID == "" {
+		negotiatedTransferSyntaxUID = result.PresentationContext.TransferSyntaxUID
 	}
-	response, err := dimse.ReceiveCStoreResponse(assoc, pc.ID)
-	if err != nil {
-		return 0, negotiatedTransferSyntaxUID, err
-	}
-	if response.MessageIDBeingRespondedTo != messageID {
-		return response.Status, negotiatedTransferSyntaxUID, fmt.Errorf("C-STORE response message ID %d, want %d", response.MessageIDBeingRespondedTo, messageID)
-	}
-	if response.AffectedSOPInstanceUID != file.sopInstanceUID {
-		return response.Status, negotiatedTransferSyntaxUID, fmt.Errorf("C-STORE response SOP Instance UID %q, want %q", response.AffectedSOPInstanceUID, file.sopInstanceUID)
-	}
-	if response.Status != dimse.StatusSuccess && !isWarningStatus(response.Status) {
-		return response.Status, negotiatedTransferSyntaxUID, fmt.Errorf("C-STORE failed with status 0x%04X", response.Status)
-	}
-	return response.Status, negotiatedTransferSyntaxUID, nil
+	return status, negotiatedTransferSyntaxUID, err
 }
 
 func fileSOPClassUID(file *object.File) (string, error) {
@@ -362,54 +343,12 @@ func fileTransferSyntaxUID(file *object.File) (string, error) {
 }
 
 func proposedTransferSyntaxes(fileTransferSyntaxUID string, preferredTransferSyntax string) []string {
-	seen := map[string]bool{}
-	var uids []string
-	for _, uid := range proposedTransferSyntaxCandidates(fileTransferSyntaxUID, preferredTransferSyntax) {
-		uid = transfer.NormalizeUID(uid)
-		if uid == "" || seen[uid] {
-			continue
-		}
-		seen[uid] = true
-		uids = append(uids, uid)
-	}
-	return uids
-}
-
-func proposedTransferSyntaxCandidates(fileTransferSyntaxUID string, preferredTransferSyntax string) []string {
-	if !isNativeSendTransferSyntax(fileTransferSyntaxUID) {
-		return []string{fileTransferSyntaxUID}
-	}
 	switch preferredTransferSyntax {
 	case nodes.SendTransferSyntaxExplicitVRLittleEndian:
-		return []string{
-			transfer.ExplicitVRLittleEndian.UID,
-			fileTransferSyntaxUID,
-			transfer.ImplicitVRLittleEndian.UID,
-		}
+		return transfer.ProposedStoreTransferSyntaxUIDs(fileTransferSyntaxUID, transfer.NativeStoreExplicitLittleEndianFirst)
 	case nodes.SendTransferSyntaxImplicitVRLittleEndian:
-		return []string{
-			transfer.ImplicitVRLittleEndian.UID,
-			fileTransferSyntaxUID,
-			transfer.ExplicitVRLittleEndian.UID,
-		}
+		return transfer.ProposedStoreTransferSyntaxUIDs(fileTransferSyntaxUID, transfer.NativeStoreImplicitLittleEndianFirst)
 	default:
-		return []string{
-			fileTransferSyntaxUID,
-			transfer.ExplicitVRLittleEndian.UID,
-			transfer.ImplicitVRLittleEndian.UID,
-		}
+		return transfer.ProposedStoreTransferSyntaxUIDs(fileTransferSyntaxUID, transfer.NativeStoreSourceFirst)
 	}
-}
-
-func isNativeSendTransferSyntax(uid string) bool {
-	switch transfer.NormalizeUID(uid) {
-	case transfer.ExplicitVRLittleEndian.UID, transfer.ImplicitVRLittleEndian.UID:
-		return true
-	default:
-		return false
-	}
-}
-
-func isWarningStatus(status uint16) bool {
-	return status == 0x0001 || status == 0x0107 || status == 0x0116 || (status >= 0xB000 && status <= 0xBFFF)
 }

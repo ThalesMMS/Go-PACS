@@ -16,6 +16,7 @@ import (
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/object"
+	"github.com/ThalesMMS/dicom-go/pixeldata/codecfixture"
 	"github.com/ThalesMMS/dicom-go/transfer"
 )
 
@@ -125,6 +126,130 @@ func TestImportPathWithOptionsReportsProgressAfterEachFile(t *testing.T) {
 	final := updates[len(updates)-1]
 	if final.ScannedFiles != 2 || final.StoredFiles != 1 || final.InvalidFiles != 1 {
 		t.Fatalf("final progress update = %#v", final)
+	}
+}
+
+func TestImportPathWithOptionsDecompressesDicomFiles(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	tc := codecfixture.JPEGLosslessSmall()
+	data, err := tc.Part10Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "compressed.dcm")
+	if err := os.WriteFile(source, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := catalog.ImportPathWithOptions(ctx, source, ImportOptions{DecompressImages: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.StoredFiles != 1 || report.InvalidFiles != 0 {
+		t.Fatalf("report = %#v, want one decompressed stored file", report)
+	}
+	studies, err := catalog.Studies(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies) != 1 {
+		t.Fatalf("studies = %d, want 1", len(studies))
+	}
+	instances, err := catalog.InstancesForStudy(ctx, studies[0].StudyInstanceUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("instances = %d, want 1", len(instances))
+	}
+	if instances[0].TransferSyntaxUID != transfer.ExplicitVRLittleEndian.UID {
+		t.Fatalf("TransferSyntaxUID = %q, want %q", instances[0].TransferSyntaxUID, transfer.ExplicitVRLittleEndian.UID)
+	}
+	storedFile, err := os.Open(instances[0].StoredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storedFile.Close()
+	stored, err := object.ReadFile(storedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.TransferSyntax.UID != transfer.ExplicitVRLittleEndian.UID {
+		t.Fatalf("stored TransferSyntax = %q, want %q", stored.TransferSyntax.UID, transfer.ExplicitVRLittleEndian.UID)
+	}
+	if raw, ok := stored.GetRaw(core.TagPixelData); !ok || !bytes.Equal(raw, tc.ExpectedFrames[0]) {
+		t.Fatalf("stored PixelData = %v, want %v", raw, tc.ExpectedFrames[0])
+	}
+}
+
+func TestDecompressStudyReplacesCompressedArchiveFiles(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+
+	tc := codecfixture.JPEGLosslessSmall()
+	data, err := tc.Part10Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "compressed.dcm")
+	if err := os.WriteFile(source, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ImportPath(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	studies, err := catalog.Studies(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(studies) != 1 {
+		t.Fatalf("studies before decompress = %d, want 1", len(studies))
+	}
+	studyUID := studies[0].StudyInstanceUID
+	before, err := catalog.InstancesForStudy(ctx, studyUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("instances before decompress = %d, want 1", len(before))
+	}
+	if before[0].TransferSyntaxUID != tc.Syntax.UID {
+		t.Fatalf("before TransferSyntaxUID = %q, want %q", before[0].TransferSyntaxUID, tc.Syntax.UID)
+	}
+	oldPath := before[0].StoredPath
+
+	report, err := catalog.DecompressStudy(ctx, studyUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DecompressedFiles != 1 || report.FailedFiles != 0 {
+		t.Fatalf("decompress report = %#v, want one decompressed file", report)
+	}
+	after, err := catalog.InstancesForStudy(ctx, studyUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("instances after decompress = %d, want 1", len(after))
+	}
+	if after[0].TransferSyntaxUID != transfer.ExplicitVRLittleEndian.UID {
+		t.Fatalf("after TransferSyntaxUID = %q, want %q", after[0].TransferSyntaxUID, transfer.ExplicitVRLittleEndian.UID)
+	}
+	if after[0].StoredPath == oldPath {
+		t.Fatal("decompressed instance kept old stored path")
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old compressed object still exists: %v", err)
 	}
 }
 

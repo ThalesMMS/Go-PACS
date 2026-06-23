@@ -254,6 +254,17 @@ func NewNode(draft Draft) (Node, error) {
 	}, nil
 }
 
+// Key returns a stable identity string for the node, preferring its ID and
+// falling back to its endpoint. It is the canonical key for indexing per-node
+// state (verify statuses, query-source failures, …) so every frontend keys the
+// same node identically.
+func (n Node) Key() string {
+	if id := strings.TrimSpace(n.ID); id != "" {
+		return "id:" + id
+	}
+	return fmt.Sprintf("endpoint:%s:%s:%d", strings.TrimSpace(n.Name), strings.TrimSpace(n.Host), n.Port)
+}
+
 func (n Node) Enabled() bool {
 	return !n.Disabled
 }
@@ -280,6 +291,23 @@ func (n Node) SendTransferSyntaxOrDefault() string {
 		return SendTransferSyntaxAuto
 	}
 	return syntax
+}
+
+// CallingAETitles returns the de-duplicated, normalized AE titles of the given
+// nodes. It is the canonical source for a receiver's Calling-AE allowlist, so
+// every frontend and the headless receiver derive the same set.
+func CallingAETitles(nodeList []Node) []string {
+	seen := map[string]bool{}
+	var aeTitles []string
+	for _, node := range nodeList {
+		aeTitle := NormalizeAETitle(node.AETitle)
+		if aeTitle == "" || seen[aeTitle] {
+			continue
+		}
+		seen[aeTitle] = true
+		aeTitles = append(aeTitles, aeTitle)
+	}
+	return aeTitles
 }
 
 type RemoteHostAllowlistResult struct {

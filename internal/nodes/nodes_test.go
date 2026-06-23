@@ -323,3 +323,19 @@ func TestStoreDeleteRemovesNode(t *testing.T) {
 		t.Fatal("Store.Delete accepted missing ID")
 	}
 }
+
+func TestKeyPrefersIDThenEndpoint(t *testing.T) {
+	withID := Node{ID: "abc", Name: "n", Host: "h", Port: 1}
+	if got, want := withID.Key(), "id:abc"; got != want {
+		t.Errorf("Key() with ID = %q, want %q", got, want)
+	}
+	noID := Node{Name: "RADIANT", Host: "10.0.0.1", Port: 104}
+	if got, want := noID.Key(), "endpoint:RADIANT:10.0.0.1:104"; got != want {
+		t.Errorf("Key() without ID = %q, want %q", got, want)
+	}
+	// Distinct endpoints yield distinct keys.
+	other := Node{Name: "RADIANT", Host: "10.0.0.2", Port: 104}
+	if noID.Key() == other.Key() {
+		t.Errorf("distinct endpoints produced same key %q", noID.Key())
+	}
+}

@@ -65,7 +65,7 @@ func PlanFromArchiveDir(opts Options) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	plan.AllowedCallingAETitles = configuredNodeAETitles(nodeList)
+	plan.AllowedCallingAETitles = nodes.CallingAETitles(nodeList)
 	remoteAllowlist := nodes.RemoteHostAllowlist(nodeList)
 	plan.AllowedRemoteHosts = remoteAllowlist.Hosts
 	plan.AllowlistWarnings = remoteAllowlist.Warnings
@@ -114,18 +114,4 @@ func optionalInt64Value(value *int64) int64 {
 		return 0
 	}
 	return *value
-}
-
-func configuredNodeAETitles(nodeList []nodes.Node) []string {
-	seen := map[string]bool{}
-	var aeTitles []string
-	for _, node := range nodeList {
-		aeTitle := nodes.NormalizeAETitle(node.AETitle)
-		if aeTitle == "" || seen[aeTitle] {
-			continue
-		}
-		seen[aeTitle] = true
-		aeTitles = append(aeTitles, aeTitle)
-	}
-	return aeTitles
 }

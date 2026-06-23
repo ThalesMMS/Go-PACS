@@ -22,6 +22,10 @@ import (
 	"github.com/ThalesMMS/dicom-go/core"
 	"github.com/ThalesMMS/dicom-go/dictionary/std"
 	"github.com/ThalesMMS/dicom-go/object"
+	"github.com/ThalesMMS/dicom-go/pixeldata"
+	"github.com/ThalesMMS/dicom-go/pixeldata/jpeg"
+	"github.com/ThalesMMS/dicom-go/pixeldata/jpeglossless"
+	"github.com/ThalesMMS/dicom-go/pixeldata/rle"
 	"github.com/ThalesMMS/dicom-go/transfer"
 )
 
@@ -58,8 +62,9 @@ type ImportProgress struct {
 }
 
 type ImportOptions struct {
-	Limits     ImportLimits
-	OnProgress func(ImportProgress)
+	Limits           ImportLimits
+	DecompressImages bool
+	OnProgress       func(ImportProgress)
 }
 
 type ImportLimits struct {
@@ -70,6 +75,14 @@ type ImportLimits struct {
 	MaxImportTotalFiles     int
 	MaxImportPathLength     int
 	MaxImportDirectoryDepth int
+}
+
+type DecompressReport struct {
+	ScannedFiles      int
+	DecompressedFiles int
+	SkippedFiles      int
+	FailedFiles       int
+	Rejections        []Rejection
 }
 
 type Rejection struct {
@@ -102,7 +115,13 @@ type Instance struct {
 	InstanceNumber    string
 	TransferSyntaxUID string
 	TransferSyntax    string
-	ImportedAt        time.Time
+
+	StudyID                 string
+	BodyPartExamined        string
+	ReferringPhysicianName  string
+	PerformingPhysicianName string
+
+	ImportedAt time.Time
 }
 
 type Study struct {
@@ -118,14 +137,21 @@ type Study struct {
 	AccessionNumber  string
 	Status           string
 	Comments         string
-	SeriesCount      int
-	InstanceCount    int
-	ImportedAt       time.Time
+
+	StudyID                 string
+	BodyPartExamined        string
+	ReferringPhysicianName  string
+	PerformingPhysicianName string
+
+	SeriesCount   int
+	InstanceCount int
+	ImportedAt    time.Time
 }
 
 type StudyMetadata struct {
 	Status   string
 	Comments string
+	Report   string
 }
 
 type Series struct {
@@ -156,6 +182,16 @@ type StudyFilters struct {
 	SourcePath         string
 	Status             string
 	HasComments        bool
+
+	AllFields           string
+	PatientBirthDate    string
+	StudyID             string
+	StudyInstanceUID    string
+	Comments            string
+	BodyPart            string
+	Modality            string
+	ReferringPhysician  string
+	PerformingPhysician string
 }
 
 type SeriesFilters struct {
@@ -475,15 +511,23 @@ func safeZipEntryName(name string) (string, bool) {
 }
 
 func (c *Catalog) ImportPart10File(ctx context.Context, path string, sourcePath string) (ImportReport, error) {
+	return c.ImportPart10FileWithOptions(ctx, path, sourcePath, ImportOptions{})
+}
+
+func (c *Catalog) ImportPart10FileWithOptions(ctx context.Context, path string, sourcePath string, opts ImportOptions) (ImportReport, error) {
 	if sourcePath == "" {
 		sourcePath = path
 	}
 	var report ImportReport
-	c.importFileWithSource(ctx, path, sourcePath, &report, ImportOptions{})
+	c.importFileWithSource(ctx, path, sourcePath, &report, opts)
 	return report, nil
 }
 
 func (c *Catalog) ImportObject(ctx context.Context, sourcePath string, dataset *object.Object, syntax transfer.Syntax) (ImportReport, error) {
+	return c.ImportObjectWithOptions(ctx, sourcePath, dataset, syntax, ImportOptions{})
+}
+
+func (c *Catalog) ImportObjectWithOptions(ctx context.Context, sourcePath string, dataset *object.Object, syntax transfer.Syntax, opts ImportOptions) (ImportReport, error) {
 	if dataset == nil {
 		return ImportReport{}, errors.New("dataset is required")
 	}
@@ -531,12 +575,79 @@ func (c *Catalog) ImportObject(ctx context.Context, sourcePath string, dataset *
 		return ImportReport{}, fmt.Errorf("close network import file: %w", err)
 	}
 
-	report, err := c.ImportPart10File(ctx, tempPath, sourcePath)
+	report, err := c.ImportPart10FileWithOptions(ctx, tempPath, sourcePath, opts)
 	if err != nil {
 		return report, err
 	}
 	committed = true
 	_ = os.Remove(tempPath)
+	return report, nil
+}
+
+func (c *Catalog) DecompressStudy(ctx context.Context, studyInstanceUID string) (DecompressReport, error) {
+	instances, err := c.InstancesForStudy(ctx, studyInstanceUID)
+	if err != nil {
+		return DecompressReport{}, err
+	}
+	var report DecompressReport
+	for _, instance := range instances {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		report.ScannedFiles++
+		if !pathUnderRoot(c.storeDir, instance.StoredPath) {
+			report.FailedFiles++
+			report.Rejections = append(report.Rejections, Rejection{Path: instance.StoredPath, Reason: "stored object is outside archive store"})
+			continue
+		}
+		stagedPath, digest, size, changed, err := c.decompressFileToStage(instance.StoredPath)
+		if err != nil {
+			report.FailedFiles++
+			report.Rejections = append(report.Rejections, Rejection{Path: instance.StoredPath, Reason: err.Error()})
+			continue
+		}
+		if !changed {
+			report.SkippedFiles++
+			continue
+		}
+		removeStaged := true
+		func() {
+			defer func() {
+				if removeStaged {
+					_ = os.Remove(stagedPath)
+				}
+			}()
+			summary, err := dicominspect.InspectFile(stagedPath, dicominspect.DefaultOptions())
+			if err != nil {
+				report.FailedFiles++
+				report.Rejections = append(report.Rejections, Rejection{Path: instance.StoredPath, Reason: err.Error()})
+				return
+			}
+			storedPath := filepath.Join(c.storeDir, digest+".dcm")
+			if _, err := os.Stat(storedPath); errors.Is(err, os.ErrNotExist) {
+				if err := os.Rename(stagedPath, storedPath); err != nil {
+					report.FailedFiles++
+					report.Rejections = append(report.Rejections, Rejection{Path: instance.StoredPath, Reason: err.Error()})
+					return
+				}
+				removeStaged = false
+			} else if err != nil {
+				report.FailedFiles++
+				report.Rejections = append(report.Rejections, Rejection{Path: instance.StoredPath, Reason: err.Error()})
+				return
+			}
+			next := instanceFromSummary(summary, digest, storedPath, instance.SourcePath, size, time.Now().UTC())
+			if err := c.replaceInstance(ctx, instance.SHA256, next); err != nil {
+				report.FailedFiles++
+				report.Rejections = append(report.Rejections, Rejection{Path: instance.StoredPath, Reason: err.Error()})
+				return
+			}
+			if instance.StoredPath != storedPath {
+				_ = os.Remove(instance.StoredPath)
+			}
+			report.DecompressedFiles++
+		}()
+	}
 	return report, nil
 }
 
@@ -560,6 +671,10 @@ SELECT
   COALESCE(MAX(NULLIF(accession_number, '')), '') AS accession_number,
   COALESCE(MAX(NULLIF(sm.status, '')), '') AS status,
   COALESCE(MAX(NULLIF(sm.comments, '')), '') AS comments,
+  COALESCE(MAX(NULLIF(study_id, '')), '') AS study_id,
+  COALESCE(MAX(NULLIF(body_part_examined, '')), '') AS body_part_examined,
+  COALESCE(MAX(NULLIF(referring_physician_name, '')), '') AS referring_physician_name,
+  COALESCE(MAX(NULLIF(performing_physician_name, '')), '') AS performing_physician_name,
   COUNT(DISTINCT COALESCE(NULLIF(series_instance_uid, ''), '(missing)')) AS series_count,
   COUNT(*) AS instance_count,
   COALESCE(MAX(imported_at), '') AS imported_at
@@ -612,8 +727,40 @@ func studyFilterWhere(filters StudyFilters) (string, []any) {
 	addLike("study_description", filters.StudyDescription)
 	addLike("source_path", filters.SourcePath)
 	addLike("sm.status", filters.Status)
+	addLike("patient_birth_date", filters.PatientBirthDate)
+	addLike("study_id", filters.StudyID)
+	addLike("study_instance_uid", filters.StudyInstanceUID)
+	addLike("body_part_examined", filters.BodyPart)
+	addLike("modality", filters.Modality)
+	addLike("referring_physician_name", filters.ReferringPhysician)
+	addLike("performing_physician_name", filters.PerformingPhysician)
+	addLike("sm.comments", filters.Comments)
 	if filters.HasComments {
 		clauses = append(clauses, "TRIM(COALESCE(sm.comments, '')) <> ''")
+	}
+
+	if allFields := strings.TrimSpace(filters.AllFields); allFields != "" {
+		orColumns := []string{
+			"patient_name",
+			"patient_id",
+			"study_description",
+			"accession_number",
+			"modality",
+			"study_instance_uid",
+			"study_id",
+			"body_part_examined",
+			"referring_physician_name",
+			"performing_physician_name",
+			"patient_birth_date",
+			"COALESCE(sm.comments, '')",
+		}
+		orClauses := make([]string, len(orColumns))
+		pattern := "%" + allFields + "%"
+		for i, column := range orColumns {
+			orClauses[i] = column + " COLLATE NOCASE LIKE ?"
+			args = append(args, pattern)
+		}
+		clauses = append(clauses, "("+strings.Join(orClauses, " OR ")+")")
 	}
 
 	if value := strings.TrimSpace(filters.StudyDateFrom); value != "" {
@@ -803,6 +950,10 @@ func scanStudy(rows *sql.Rows) (Study, error) {
 		&study.AccessionNumber,
 		&study.Status,
 		&study.Comments,
+		&study.StudyID,
+		&study.BodyPartExamined,
+		&study.ReferringPhysicianName,
+		&study.PerformingPhysicianName,
 		&study.SeriesCount,
 		&study.InstanceCount,
 		&importedAt,
@@ -821,7 +972,9 @@ SELECT
   study_date, study_time, series_date, series_time, study_description, modality, accession_number,
   study_instance_uid, series_instance_uid, series_number, series_description,
   sop_class_uid, sop_instance_uid, instance_number,
-  transfer_syntax_uid, transfer_syntax, imported_at
+  transfer_syntax_uid, transfer_syntax,
+  study_id, body_part_examined, referring_physician_name, performing_physician_name,
+  imported_at
 FROM instances
 WHERE study_instance_uid = ?
 ORDER BY series_instance_uid ASC, sop_instance_uid ASC, imported_at ASC`, storedLookupUID(studyInstanceUID))
@@ -915,7 +1068,9 @@ SELECT
   study_date, study_time, series_date, series_time, study_description, modality, accession_number,
   study_instance_uid, series_instance_uid, series_number, series_description,
   sop_class_uid, sop_instance_uid, instance_number,
-  transfer_syntax_uid, transfer_syntax, imported_at
+  transfer_syntax_uid, transfer_syntax,
+  study_id, body_part_examined, referring_physician_name, performing_physician_name,
+  imported_at
 FROM instances
 WHERE series_instance_uid = ?
 ORDER BY
@@ -954,7 +1109,9 @@ SELECT
   study_date, study_time, series_date, series_time, study_description, modality, accession_number,
   study_instance_uid, series_instance_uid, series_number, series_description,
   sop_class_uid, sop_instance_uid, instance_number,
-  transfer_syntax_uid, transfer_syntax, imported_at
+  transfer_syntax_uid, transfer_syntax,
+  study_id, body_part_examined, referring_physician_name, performing_physician_name,
+  imported_at
 FROM instances
 WHERE sop_instance_uid = ?
 ORDER BY imported_at ASC, sha256 ASC
@@ -1058,10 +1215,17 @@ CREATE TABLE IF NOT EXISTS study_metadata (
 		{name: "study_time", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "series_date", definition: "TEXT NOT NULL DEFAULT ''"},
 		{name: "series_time", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "study_id", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "body_part_examined", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "referring_physician_name", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "performing_physician_name", definition: "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := c.ensureInstanceColumn(column.name, column.definition); err != nil {
 			return err
 		}
+	}
+	if err := c.ensureStudyMetadataColumn("report", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
 	}
 	if err := c.recordSchemaMigration(CatalogSchemaVersion, "create_instances_and_metadata_columns"); err != nil {
 		return err
@@ -1069,6 +1233,7 @@ CREATE TABLE IF NOT EXISTS study_metadata (
 	if err := c.backfillInstancePatientSoundex(); err != nil {
 		return err
 	}
+	c.backfillInstanceExtraTags()
 	return nil
 }
 
@@ -1096,20 +1261,22 @@ func (c *Catalog) SetStudyMetadata(ctx context.Context, studyInstanceUID string,
 	}
 	metadata.Status = strings.TrimSpace(metadata.Status)
 	metadata.Comments = strings.TrimSpace(metadata.Comments)
-	if metadata.Status == "" && metadata.Comments == "" {
+	metadata.Report = strings.TrimSpace(metadata.Report)
+	if metadata.Status == "" && metadata.Comments == "" && metadata.Report == "" {
 		if _, err := c.db.ExecContext(ctx, `DELETE FROM study_metadata WHERE study_uid = ?`, studyInstanceUID); err != nil {
 			return fmt.Errorf("delete study metadata: %w", err)
 		}
 		return nil
 	}
 	if _, err := c.db.ExecContext(ctx, `
-INSERT INTO study_metadata (study_uid, status, comments, updated_at)
-VALUES (?, ?, ?, ?)
+INSERT INTO study_metadata (study_uid, status, comments, report, updated_at)
+VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(study_uid) DO UPDATE SET
   status = excluded.status,
   comments = excluded.comments,
+  report = excluded.report,
   updated_at = excluded.updated_at
-`, studyInstanceUID, metadata.Status, metadata.Comments, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+`, studyInstanceUID, metadata.Status, metadata.Comments, metadata.Report, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("upsert study metadata: %w", err)
 	}
 	return nil
@@ -1121,7 +1288,7 @@ func (c *Catalog) StudyMetadata(ctx context.Context, studyInstanceUID string) (S
 		return StudyMetadata{}, errors.New("study instance UID is required")
 	}
 	var metadata StudyMetadata
-	err := c.db.QueryRowContext(ctx, `SELECT status, comments FROM study_metadata WHERE study_uid = ?`, studyInstanceUID).Scan(&metadata.Status, &metadata.Comments)
+	err := c.db.QueryRowContext(ctx, `SELECT status, comments, report FROM study_metadata WHERE study_uid = ?`, studyInstanceUID).Scan(&metadata.Status, &metadata.Comments, &metadata.Report)
 	if errors.Is(err, sql.ErrNoRows) {
 		return StudyMetadata{}, nil
 	}
@@ -1286,6 +1453,35 @@ func (c *Catalog) ensureInstanceColumn(name string, definition string) error {
 	return nil
 }
 
+func (c *Catalog) ensureStudyMetadataColumn(name string, definition string) error {
+	rows, err := c.db.Query(`PRAGMA table_info(study_metadata)`)
+	if err != nil {
+		return fmt.Errorf("inspect study metadata schema: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var columnName, columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan study metadata schema: %w", err)
+		}
+		if columnName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate study metadata schema: %w", err)
+	}
+	if _, err := c.db.Exec("ALTER TABLE study_metadata ADD COLUMN " + name + " " + definition); err != nil {
+		return fmt.Errorf("migrate study metadata schema: add %s: %w", name, err)
+	}
+	return nil
+}
+
 type sqlScanner interface {
 	Scan(dest ...any) error
 }
@@ -1318,6 +1514,10 @@ func scanInstance(rows sqlScanner) (Instance, error) {
 		&instance.InstanceNumber,
 		&instance.TransferSyntaxUID,
 		&instance.TransferSyntax,
+		&instance.StudyID,
+		&instance.BodyPartExamined,
+		&instance.ReferringPhysicianName,
+		&instance.PerformingPhysicianName,
 		&importedAt,
 	); err != nil {
 		return Instance{}, fmt.Errorf("scan instance: %w", err)
@@ -1390,6 +1590,25 @@ func (c *Catalog) importFileWithSource(ctx context.Context, path string, sourceP
 			_ = os.Remove(stagedPath)
 		}
 	}()
+	if opts.DecompressImages {
+		nextPath, nextDigest, nextSize, changed, err := c.decompressFileToStage(stagedPath)
+		if err != nil {
+			report.InvalidFiles++
+			report.Rejections = append(report.Rejections, Rejection{Path: sourcePath, Reason: err.Error()})
+			return
+		}
+		if changed {
+			_ = os.Remove(stagedPath)
+			stagedPath, digest, size = nextPath, nextDigest, nextSize
+			if opts.Limits.MaxFileImportBytes > 0 && size > opts.Limits.MaxFileImportBytes {
+				report.Rejections = append(report.Rejections, Rejection{
+					Path:   sourcePath,
+					Reason: limitExceededReason("max_file_import_bytes", size, opts.Limits.MaxFileImportBytes),
+				})
+				return
+			}
+		}
+	}
 
 	summary, err := dicominspect.InspectFile(stagedPath, dicominspect.DefaultOptions())
 	if err != nil {
@@ -1415,7 +1634,20 @@ func (c *Catalog) importFileWithSource(ctx context.Context, path string, sourceP
 		return
 	}
 
-	instance := Instance{
+	instance := instanceFromSummary(summary, digest, storedPath, sourcePath, size, time.Now().UTC())
+	if err := c.upsertInstance(ctx, instance); err != nil {
+		report.Rejections = append(report.Rejections, Rejection{Path: sourcePath, Reason: err.Error()})
+		return
+	}
+	if duplicate {
+		report.Duplicates++
+		return
+	}
+	report.StoredFiles++
+}
+
+func instanceFromSummary(summary dicominspect.Summary, digest string, storedPath string, sourcePath string, size int64, importedAt time.Time) Instance {
+	return Instance{
 		SHA256:            digest,
 		StoredPath:        storedPath,
 		SourcePath:        sourcePath,
@@ -1440,17 +1672,14 @@ func (c *Catalog) importFileWithSource(ctx context.Context, path string, sourceP
 		InstanceNumber:    summary.InstanceNumber,
 		TransferSyntaxUID: summary.TransferSyntaxUID,
 		TransferSyntax:    summary.TransferSyntax,
-		ImportedAt:        time.Now().UTC(),
+
+		StudyID:                 summary.StudyID,
+		BodyPartExamined:        summary.BodyPartExamined,
+		ReferringPhysicianName:  summary.ReferringPhysicianName,
+		PerformingPhysicianName: summary.PerformingPhysicianName,
+
+		ImportedAt: importedAt,
 	}
-	if err := c.upsertInstance(ctx, instance); err != nil {
-		report.Rejections = append(report.Rejections, Rejection{Path: sourcePath, Reason: err.Error()})
-		return
-	}
-	if duplicate {
-		report.Duplicates++
-		return
-	}
-	report.StoredFiles++
 }
 
 func reportImportProgress(onProgress func(ImportProgress), report ImportReport, path string) {
@@ -1519,6 +1748,77 @@ func (c *Catalog) stage(path string, maxBytes int64) (string, string, int64, err
 	return temp.Name(), hex.EncodeToString(hash.Sum(nil)), size, nil
 }
 
+func (c *Catalog) decompressFileToStage(path string) (string, string, int64, bool, error) {
+	source, err := os.Open(path)
+	if err != nil {
+		return "", "", 0, false, fmt.Errorf("open DICOM file for decompression: %w", err)
+	}
+	file, err := object.ReadFile(source)
+	closeErr := source.Close()
+	if err != nil {
+		return "", "", 0, false, fmt.Errorf("read DICOM file for decompression: %w", err)
+	}
+	if closeErr != nil {
+		return "", "", 0, false, fmt.Errorf("close DICOM file for decompression: %w", closeErr)
+	}
+	if !shouldDecompressSyntax(file.TransferSyntax) {
+		return "", "", 0, false, nil
+	}
+	registry, err := decompressionRegistry()
+	if err != nil {
+		return "", "", 0, false, err
+	}
+	decompressed, err := pixeldata.DecompressFile(file, pixeldata.DecompressOptions{Registry: registry})
+	if err != nil {
+		return "", "", 0, false, fmt.Errorf("decompress DICOM file: %w", err)
+	}
+
+	temp, err := os.CreateTemp(c.storeDir, ".decompress-*.dcm")
+	if err != nil {
+		return "", "", 0, false, fmt.Errorf("create decompressed staged file: %w", err)
+	}
+	tempPath := temp.Name()
+	committed := false
+	defer func() {
+		_ = temp.Close()
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	hash := sha256.New()
+	if err := object.WriteFile(io.MultiWriter(temp, hash), decompressed); err != nil {
+		return "", "", 0, false, fmt.Errorf("write decompressed DICOM file: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return "", "", 0, false, fmt.Errorf("close decompressed staged file: %w", err)
+	}
+	info, err := os.Stat(tempPath)
+	if err != nil {
+		return "", "", 0, false, fmt.Errorf("stat decompressed staged file: %w", err)
+	}
+	committed = true
+	return tempPath, hex.EncodeToString(hash.Sum(nil)), info.Size(), true, nil
+}
+
+func shouldDecompressSyntax(syntax transfer.Syntax) bool {
+	return syntax.RequiresCodec()
+}
+
+func decompressionRegistry() (pixeldata.Registry, error) {
+	registry := pixeldata.NewMemoryRegistry()
+	for _, register := range []func(pixeldata.Registry) error{
+		jpeg.Register,
+		jpeglossless.Register,
+		rle.Register,
+	} {
+		if err := register(registry); err != nil {
+			return nil, err
+		}
+	}
+	return registry, nil
+}
+
 func (c *Catalog) hasInstance(ctx context.Context, sha string) (bool, error) {
 	var exists int
 	err := c.db.QueryRowContext(ctx, `SELECT 1 FROM instances WHERE sha256 = ?`, sha).Scan(&exists)
@@ -1558,8 +1858,10 @@ INSERT INTO instances (
   study_date, study_time, series_date, series_time, study_description, modality, accession_number,
   study_instance_uid, series_instance_uid, series_number, series_description,
   sop_class_uid, sop_instance_uid, instance_number,
-  transfer_syntax_uid, transfer_syntax, imported_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  transfer_syntax_uid, transfer_syntax,
+  study_id, body_part_examined, referring_physician_name, performing_physician_name,
+  imported_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(sha256) DO UPDATE SET
   source_path = excluded.source_path,
   imported_at = excluded.imported_at
@@ -1588,6 +1890,10 @@ ON CONFLICT(sha256) DO UPDATE SET
 		instance.InstanceNumber,
 		instance.TransferSyntaxUID,
 		instance.TransferSyntax,
+		instance.StudyID,
+		instance.BodyPartExamined,
+		instance.ReferringPhysicianName,
+		instance.PerformingPhysicianName,
 		instance.ImportedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -1598,6 +1904,36 @@ ON CONFLICT(sha256) DO UPDATE SET
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit upsert instance: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func (c *Catalog) replaceInstance(ctx context.Context, oldSHA string, instance Instance) error {
+	if err := c.upsertInstance(ctx, instance); err != nil {
+		return err
+	}
+	if oldSHA == "" || oldSHA == instance.SHA256 {
+		return nil
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin replace instance: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM instance_patient_soundex WHERE instance_sha256 = ?`, oldSHA); err != nil {
+		return fmt.Errorf("delete replaced instance soundex: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM instances WHERE sha256 = ?`, oldSHA); err != nil {
+		return fmt.Errorf("delete replaced instance: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit replace instance: %w", err)
 	}
 	committed = true
 	return nil
@@ -1665,4 +2001,84 @@ func (c *Catalog) backfillInstancePatientSoundex() error {
 	}
 	committed = true
 	return nil
+}
+
+// backfillInstanceExtraTags populates study_id, body_part_examined,
+// referring_physician_name and performing_physician_name for rows imported
+// before those columns existed. It is fully best-effort: rows whose stored file
+// is missing or fails to parse are skipped, and any error short-circuits the
+// pass without failing catalog open.
+func (c *Catalog) backfillInstanceExtraTags() {
+	const maxBackfillRows = 5000
+	rows, err := c.db.Query(`
+SELECT sha256, stored_path
+FROM instances
+WHERE stored_path <> ''
+  AND study_id = ''
+  AND body_part_examined = ''
+  AND referring_physician_name = ''
+  AND performing_physician_name = ''
+LIMIT ?`, maxBackfillRows)
+	if err != nil {
+		return
+	}
+	type row struct {
+		sha        string
+		storedPath string
+	}
+	var rowsToBackfill []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.sha, &item.storedPath); err != nil {
+			_ = rows.Close()
+			return
+		}
+		rowsToBackfill = append(rowsToBackfill, item)
+	}
+	if err := rows.Close(); err != nil {
+		return
+	}
+	if err := rows.Err(); err != nil {
+		return
+	}
+	if len(rowsToBackfill) == 0 {
+		return
+	}
+
+	tx, err := c.db.Begin()
+	if err != nil {
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, item := range rowsToBackfill {
+		summary, err := dicominspect.InspectFile(item.storedPath, dicominspect.DefaultOptions())
+		if err != nil {
+			continue
+		}
+		if summary.StudyID == "" && summary.BodyPartExamined == "" &&
+			summary.ReferringPhysicianName == "" && summary.PerformingPhysicianName == "" {
+			continue
+		}
+		if _, err := tx.Exec(`
+UPDATE instances
+SET study_id = ?, body_part_examined = ?, referring_physician_name = ?, performing_physician_name = ?
+WHERE sha256 = ?`,
+			summary.StudyID,
+			summary.BodyPartExamined,
+			summary.ReferringPhysicianName,
+			summary.PerformingPhysicianName,
+			item.sha,
+		); err != nil {
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return
+	}
+	committed = true
 }
